@@ -32,6 +32,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration via figment (serde defaults + env vars).
     let config = Arc::new(AppConfig::load()?);
 
+    // In locked mode IMAP_HOST must be set - there is no fallback at login time.
+    if !config.allow_custom_mail_servers && config.imap_host.is_none() {
+        return Err(
+            "ALLOW_CUSTOM_MAIL_SERVERS is false but IMAP_HOST is not set. \
+             Set IMAP_HOST or enable custom mail servers."
+                .into(),
+        );
+    }
+
     // Create the in-memory session store with the configured timeout.
     let store = Arc::new(SessionStore::new(Duration::from_secs(
         config.session_timeout_hours * 3600,

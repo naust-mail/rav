@@ -23,16 +23,99 @@ pub struct LoginRequest {
     pub remember: bool,
     pub imap_host: Option<String>,
     pub imap_port: Option<u16>,
-    #[serde(default = "default_tls")]
-    pub imap_tls: bool,
+    pub imap_tls: Option<bool>,
     pub smtp_host: Option<String>,
     pub smtp_port: Option<u16>,
-    #[serde(default = "default_tls")]
-    pub smtp_tls: bool,
+    pub smtp_tls: Option<bool>,
     pub browser_id: Option<String>,
 }
-fn default_tls() -> bool {
-    true
+
+impl LoginRequest {
+    /// Returns true if the request contains any mail server override fields.
+    /// Used to reject client-supplied server config when custom servers are disabled.
+    fn has_server_config(&self) -> bool {
+        self.imap_host.is_some()
+            || self.imap_port.is_some()
+            || self.imap_tls.is_some()
+            || self.smtp_host.is_some()
+            || self.smtp_port.is_some()
+            || self.smtp_tls.is_some()
+    }
+}
+
+/// Resolved mail server configuration for a login attempt.
+/// Either sourced entirely from app config (locked mode) or merged from
+/// request overrides and app config defaults (custom mode).
+#[derive(Debug)]
+struct EffectiveServerConfig {
+    imap_host: String,
+    imap_port: u16,
+    imap_tls: bool,
+    smtp_host: String,
+    smtp_port: u16,
+    smtp_tls: bool,
+}
+
+impl EffectiveServerConfig {
+    fn build(request: &LoginRequest, config: &AppConfig) -> Result<Self, (StatusCode, String)> {
+        if !config.allow_custom_mail_servers {
+            if request.has_server_config() {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    "Custom mail server configuration is not allowed. \
+                     Provide only email and password."
+                        .to_string(),
+                ));
+            }
+
+            let imap_host = config.imap_host.clone().ok_or_else(|| {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Server not configured with default IMAP host".to_string(),
+                )
+            })?;
+
+            let smtp_host = config
+                .smtp_host
+                .clone()
+                .unwrap_or_else(|| imap_host.clone());
+
+            Ok(Self {
+                imap_host,
+                imap_port: config.imap_port,
+                imap_tls: config.tls_enabled,
+                smtp_host,
+                smtp_port: config.smtp_port,
+                smtp_tls: config.tls_enabled,
+            })
+        } else {
+            let imap_host = request
+                .imap_host
+                .clone()
+                .or_else(|| config.imap_host.clone())
+                .ok_or_else(|| {
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "IMAP server not configured".to_string(),
+                    )
+                })?;
+
+            let smtp_host = request
+                .smtp_host
+                .clone()
+                .or_else(|| config.smtp_host.clone())
+                .unwrap_or_else(|| imap_host.clone());
+
+            Ok(Self {
+                imap_host,
+                imap_port: request.imap_port.unwrap_or(config.imap_port),
+                imap_tls: request.imap_tls.unwrap_or(config.tls_enabled),
+                smtp_host,
+                smtp_port: request.smtp_port.unwrap_or(config.smtp_port),
+                smtp_tls: request.smtp_tls.unwrap_or(config.tls_enabled),
+            })
+        }
+    }
 }
 
 fn browser_cookie(browser_id: &str, max_age_secs: u64, secure: bool) -> String {
@@ -133,35 +216,34 @@ pub async fn login(
             .into_response();
     }
 
-    let imap_host = body.imap_host.clone().or(config.imap_host.clone());
-    let Some(imap_host) = imap_host else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [("content-type", "application/json")],
-            serde_json::json!({
-                "error": {
-                    "code": "SERVICE_UNAVAILABLE",
-                    "message": "IMAP server not configured",
-                    "status": 503
-                }
-            })
-            .to_string(),
-        )
-            .into_response();
+    let server = match EffectiveServerConfig::build(&body, &config) {
+        Ok(s) => s,
+        Err((status, msg)) => {
+            let code = match status {
+                StatusCode::FORBIDDEN => "FORBIDDEN",
+                StatusCode::SERVICE_UNAVAILABLE => "SERVICE_UNAVAILABLE",
+                _ => "ERROR",
+            };
+            return (
+                status,
+                [("content-type", "application/json")],
+                serde_json::json!({
+                    "error": {
+                        "code": code,
+                        "message": msg,
+                        "status": status.as_u16()
+                    }
+                })
+                .to_string(),
+            )
+                .into_response();
+        }
     };
 
-    let smtp_host = body.smtp_host.clone().or(config.smtp_host.clone());
-    let smtp_host = smtp_host.unwrap_or_else(|| imap_host.clone());
-
-    let imap_port = body.imap_port.unwrap_or(config.imap_port);
-    let imap_tls = body.imap_tls;
-    let smtp_port = body.smtp_port.unwrap_or(config.smtp_port);
-    let smtp_tls = body.smtp_tls;
-
     let result = imap_auth::validate_imap_credentials(
-        &imap_host,
-        imap_port,
-        imap_tls,
+        &server.imap_host,
+        server.imap_port,
+        server.imap_tls,
         &body.email,
         &body.password,
     )
@@ -174,13 +256,13 @@ pub async fn login(
             if let Some(ref browser_id) = provided_browser_id {
                 let existing_accounts = store.get_browser_accounts(browser_id);
                 let duplicate = existing_accounts.iter().find(|a| {
-                    a.email == body.email && a.imap_host == imap_host
+                    a.email == body.email && a.imap_host == server.imap_host
                 });
                 
                 if let Some(dup) = duplicate {
                     tracing::debug!(
                         email = %body.email,
-                        imap_host = %imap_host,
+                        imap_host = %server.imap_host,
                         existing_account_id = %dup.account_id,
                         "login: duplicate account detected"
                     );
@@ -259,12 +341,12 @@ pub async fn login(
                 body.email.clone(),
                 body.password,
                 user_hash,
-                imap_host.clone(),
-                imap_port,
-                imap_tls,
-                smtp_host.clone(),
-                smtp_port,
-                smtp_tls,
+                server.imap_host.clone(),
+                server.imap_port,
+                server.imap_tls,
+                server.smtp_host.clone(),
+                server.smtp_port,
+                server.smtp_tls,
             );
 
             let max_age = session_hours * 3600;
@@ -279,8 +361,8 @@ pub async fn login(
                     "account": {
                         "id": account_id,
                         "email": body.email,
-                        "imapHost": imap_host,
-                        "smtpHost": smtp_host
+                        "imapHost": server.imap_host,
+                        "smtpHost": server.smtp_host
                     }
                 })
                 .to_string(),
@@ -584,6 +666,108 @@ mod tests {
     #[derive(Serialize)]
     struct LogoutResponse {
         status: &'static str,
+    }
+
+    fn locked_config(imap_host: Option<&str>) -> AppConfig {
+        let mut f = figment::Figment::new()
+            .merge(("allow_custom_mail_servers", false))
+            .merge(("imap_port", 143u16))
+            .merge(("smtp_port", 587u16))
+            .merge(("tls_enabled", false));
+        if let Some(h) = imap_host {
+            f = f.merge(("imap_host", h));
+        }
+        f.extract().unwrap()
+    }
+
+    fn custom_config(imap_host: Option<&str>) -> AppConfig {
+        let mut f = figment::Figment::new()
+            .merge(("allow_custom_mail_servers", true))
+            .merge(("imap_port", 993u16))
+            .merge(("smtp_port", 587u16))
+            .merge(("tls_enabled", true));
+        if let Some(h) = imap_host {
+            f = f.merge(("imap_host", h));
+        }
+        f.extract().unwrap()
+    }
+
+    fn login_request(overrides: Option<(&str, u16, bool)>) -> LoginRequest {
+        LoginRequest {
+            email: "user@example.com".to_string(),
+            password: "secret".to_string(),
+            remember: false,
+            imap_host: overrides.map(|(h, _, _)| h.to_string()),
+            imap_port: overrides.map(|(_, p, _)| p),
+            imap_tls: overrides.map(|(_, _, t)| t),
+            smtp_host: overrides.map(|(h, _, _)| h.to_string()),
+            smtp_port: overrides.map(|(_, p, _)| p),
+            smtp_tls: overrides.map(|(_, _, t)| t),
+            browser_id: None,
+        }
+    }
+
+    #[test]
+    fn locked_mode_rejects_override_fields() {
+        let config = locked_config(Some("127.0.0.1"));
+        let req = login_request(Some(("evil.com", 993, true)));
+        let err = EffectiveServerConfig::build(&req, &config).unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn locked_mode_uses_server_config() {
+        let config = locked_config(Some("127.0.0.1"));
+        let req = login_request(None);
+        let server = EffectiveServerConfig::build(&req, &config).unwrap();
+        assert_eq!(server.imap_host, "127.0.0.1");
+        assert_eq!(server.imap_port, 143);
+        assert!(!server.imap_tls);
+        assert_eq!(server.smtp_host, "127.0.0.1");
+        assert_eq!(server.smtp_port, 587);
+        assert!(!server.smtp_tls);
+    }
+
+    #[test]
+    fn locked_mode_missing_imap_host_returns_503() {
+        let config = locked_config(None);
+        let req = login_request(None);
+        let err = EffectiveServerConfig::build(&req, &config).unwrap_err();
+        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn custom_mode_request_override_wins() {
+        let config = custom_config(Some("default.example.com"));
+        let req = login_request(Some(("override.example.com", 143, false)));
+        let server = EffectiveServerConfig::build(&req, &config).unwrap();
+        assert_eq!(server.imap_host, "override.example.com");
+        assert_eq!(server.imap_port, 143);
+        assert!(!server.imap_tls);
+    }
+
+    #[test]
+    fn custom_mode_falls_back_to_config() {
+        let config = custom_config(Some("default.example.com"));
+        let req = login_request(None);
+        let server = EffectiveServerConfig::build(&req, &config).unwrap();
+        assert_eq!(server.imap_host, "default.example.com");
+        assert_eq!(server.imap_port, 993);
+        assert!(server.imap_tls);
+    }
+
+    #[test]
+    fn smtp_host_falls_back_to_imap_host() {
+        // When no smtp_host is set anywhere, it should mirror imap_host.
+        let config: AppConfig = figment::Figment::new()
+            .merge(("allow_custom_mail_servers", false))
+            .merge(("imap_host", "mail.example.com"))
+            // smtp_host intentionally absent
+            .extract()
+            .unwrap();
+        let req = login_request(None);
+        let server = EffectiveServerConfig::build(&req, &config).unwrap();
+        assert_eq!(server.smtp_host, "mail.example.com");
     }
 
     #[test]

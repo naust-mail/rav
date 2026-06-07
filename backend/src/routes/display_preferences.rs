@@ -76,6 +76,7 @@ mod tests {
             static_dir: "nonexistent_static_dir".to_string(),
             environment: "development".to_string(),
             base_path: None,
+            allow_custom_mail_servers: true,
         })
     }
 

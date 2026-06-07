@@ -56,6 +56,16 @@ pub struct AppConfig {
     /// Optional base path prefix (e.g. "/oxi") for serving behind a reverse proxy subpath.
     #[serde(default)]
     pub base_path: Option<String>,
+
+    /// Allow users to configure their own mail servers.
+    /// If false, IMAP_HOST must be configured and users cannot override mail server settings.
+    /// SMTP_HOST is optional and falls back to IMAP_HOST when not set.
+    #[serde(default = "default_allow_custom_mail_servers")]
+    pub allow_custom_mail_servers: bool,
+}
+
+fn default_allow_custom_mail_servers() -> bool {
+    true
 }
 
 fn default_host() -> String {
@@ -128,6 +138,7 @@ mod tests {
         assert_eq!(config.session_timeout_hours, 24);
         assert_eq!(config.static_dir, "./static");
         assert_eq!(config.environment, "development");
+        assert!(config.allow_custom_mail_servers);
     }
 
     #[test]
@@ -146,6 +157,7 @@ mod tests {
             .merge(("session_timeout_hours", 48u64))
             .merge(("static_dir", "/srv/static"))
             .merge(("environment", "production"))
+            .merge(("allow_custom_mail_servers", false))
             .extract()
             .expect("overrides should load");
 
@@ -160,6 +172,7 @@ mod tests {
         assert_eq!(config.session_timeout_hours, 48);
         assert_eq!(config.static_dir, "/srv/static");
         assert_eq!(config.environment, "production");
+        assert!(!config.allow_custom_mail_servers);
     }
 
     #[test]
