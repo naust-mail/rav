@@ -42,9 +42,13 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
 
   useEffect(() => {
     if (open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setEmail("");
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPassword("");
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setError(null);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemember(false);
       const timer = setTimeout(() => emailInputRef.current?.focus(), 50);
       return () => clearTimeout(timer);

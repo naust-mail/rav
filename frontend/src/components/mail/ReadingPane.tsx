@@ -36,7 +36,6 @@ import {
 } from "./ReadingPane/index";
 
 type HeaderMode = "summary" | "details";
-type BodyMode = "html" | "plain";
 
 export function ReadingPane() {
   const activeFolder = useUiStore((s) => s.activeFolder);
@@ -50,7 +49,13 @@ export function ReadingPane() {
   const showHeaders = useUiStore((s) => s.readingShowHeaders);
   const toggleBodyMode = useUiStore((s) => s.toggleReadingBodyMode);
   const toggleShowHeaders = useUiStore((s) => s.toggleReadingShowHeaders);
-  const [emailTheme, setEmailTheme] = useState<"auto" | "light" | "dark">("auto");
+  const [emailThemeState, setEmailThemeState] = useState<{
+    uid: number | null;
+    theme: "auto" | "light" | "dark";
+  }>({
+    uid: null,
+    theme: "auto",
+  });
   const [allowedRemoteUids, setAllowedRemoteUids] = useState<Set<string>>(
     new Set()
   );
@@ -67,6 +72,7 @@ export function ReadingPane() {
   const updateFlags = useUpdateFlags();
 
   const paneVariants = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
+  const emailTheme = emailThemeState.uid === data?.uid ? emailThemeState.theme : "auto";
 
   // When a message is not found on the server (stale cache), deselect it and
   // refresh the message list and search results so the ghost entry disappears.
@@ -89,7 +95,6 @@ export function ReadingPane() {
     } else {
       setReadingBodyMode("html");
     }
-    setEmailTheme("auto");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.uid]);
 
@@ -248,9 +253,16 @@ export function ReadingPane() {
           <button
             type="button"
             onClick={() => {
-              if (emailTheme === "auto") setEmailTheme("light");
-              else if (emailTheme === "light") setEmailTheme("dark");
-              else setEmailTheme("auto");
+              setEmailThemeState((prev) => {
+                const baseUid = data.uid;
+                const current = prev.uid === baseUid ? prev.theme : "auto";
+                const next = current === "auto" ? "light" : current === "light" ? "dark" : "auto";
+
+                return {
+                  uid: baseUid,
+                  theme: next,
+                };
+              });
             }}
             className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
               emailTheme !== "auto"
