@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   useDisplayPreferences,
   useUpdateDisplayPreferences,
+  parseMobileNavTabs,
 } from "@/hooks/useDisplayPreferences";
 import { runThemeSpreadTransition } from "@/lib/motion/theme-spread";
 import { useUiStore } from "@/stores/useUiStore";
@@ -122,6 +123,8 @@ export function DisplaySettings() {
         compose_format: "html",
         animation_mode: null,
         deep_index: false,
+        mobile_nav_tabs: null,
+        mobile_compose: null,
       },
       { onError: (e) => toast.error(`Failed to reset: ${e.message}`) },
     );
@@ -227,6 +230,8 @@ export function DisplaySettings() {
         </div>
       </div>
 
+      <MobileNavSection prefs={prefs} updatePrefs={updatePrefs} />
+
       <button
         type="button"
         onClick={handleReset}
@@ -234,6 +239,116 @@ export function DisplaySettings() {
       >
         Reset to defaults
       </button>
+    </div>
+  );
+}
+
+const OPTIONAL_TABS = ["calendar", "contacts", "search", "compose"] as const;
+type OptionalTab = (typeof OPTIONAL_TABS)[number];
+
+function MobileNavSection({
+  prefs,
+  updatePrefs,
+}: {
+  prefs: ReturnType<typeof useDisplayPreferences>["data"];
+  updatePrefs: ReturnType<typeof useUpdateDisplayPreferences>;
+}) {
+  if (!prefs) return null;
+
+  const enabledTabs = parseMobileNavTabs(prefs.mobile_nav_tabs);
+  const composeMode = prefs.mobile_compose ?? "fab";
+
+  const handleTabToggle = (tab: OptionalTab) => {
+    const isCompose = tab === "compose";
+    if (isCompose) {
+      // Toggle compose in tabs vs FAB
+      const newMode = composeMode === "tab" ? "fab" : "tab";
+      updatePrefs.mutate(
+        { mobile_compose: newMode },
+        { onError: (e) => toast.error(`Failed to update: ${e.message}`) },
+      );
+      return;
+    }
+
+    const next = enabledTabs.includes(tab)
+      ? enabledTabs.filter((t) => t !== tab)
+      : [...enabledTabs, tab];
+
+    updatePrefs.mutate(
+      { mobile_nav_tabs: JSON.stringify(next) },
+      { onError: (e) => toast.error(`Failed to update: ${e.message}`) },
+    );
+  };
+
+  // Max 3 optional tabs (compose counts if it's in tabs)
+  const optionalCount = enabledTabs.filter((t) => t !== "compose").length + (composeMode === "tab" ? 1 : 0);
+  const atMax = optionalCount >= 3;
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold">Mobile navigation</h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Configure the bottom navigation on small screens.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-border p-4 space-y-3">
+          <div>
+            <div className="text-sm font-medium">Tab items</div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Mail is always first. Choose up to 3 additional tabs.
+            </p>
+          </div>
+          <div className="space-y-2">
+            {OPTIONAL_TABS.map((tab) => {
+              const isCompose = tab === "compose";
+              const checked = isCompose ? composeMode === "tab" : enabledTabs.includes(tab);
+              const disabled = !checked && atMax;
+
+              return (
+                <label
+                  key={tab}
+                  className={cn(
+                    "flex items-start gap-3 cursor-pointer",
+                    disabled && "opacity-40 cursor-not-allowed",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    disabled={disabled}
+                    onChange={() => handleTabToggle(tab)}
+                    className="mt-0.5 size-4 rounded border-border accent-primary"
+                  />
+                  <div>
+                    <span className="text-sm font-medium capitalize">{tab}</span>
+                    {isCompose && (
+                      <p className="text-xs text-muted-foreground">
+                        Adds Compose to the tab bar and removes the floating button.
+                      </p>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+      {composeMode !== "tab" && (
+        <SegmentedControl
+          label="Compose button"
+          description="Where to place the compose action when it is not in the tab bar"
+          value={composeMode}
+          options={[{ value: "fab", label: "Floating button (FAB)" }]}
+          onChange={(v) =>
+            updatePrefs.mutate(
+              { mobile_compose: v },
+              { onError: (e) => toast.error(`Failed to update: ${e.message}`) },
+            )
+          }
+        />
+      )}
     </div>
   );
 }

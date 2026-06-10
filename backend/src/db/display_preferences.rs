@@ -10,6 +10,9 @@ pub struct DisplayPreferences {
     pub deep_index: bool,
     pub animation_mode: Option<String>,
     pub updated_at: String,
+    pub mobile_nav_style: Option<String>,
+    pub mobile_nav_tabs: Option<String>,
+    pub mobile_compose: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -21,6 +24,9 @@ pub struct UpdateDisplayPreferences {
     pub deep_index: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_animation_mode_field")]
     pub animation_mode: Option<Option<String>>,
+    pub mobile_nav_style: Option<String>,
+    pub mobile_nav_tabs: Option<String>,
+    pub mobile_compose: Option<String>,
 }
 
 fn deserialize_animation_mode_field<'de, D>(
@@ -37,7 +43,7 @@ where
 /// Returns sensible defaults if the row does not yet exist.
 pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> {
     let result = conn.query_row(
-        "SELECT density, theme, language, compose_format, deep_index, animation_mode, updated_at FROM display_preferences WHERE id = 1",
+        "SELECT density, theme, language, compose_format, deep_index, animation_mode, updated_at, mobile_nav_style, mobile_nav_tabs, mobile_compose FROM display_preferences WHERE id = 1",
         [],
         |row| {
             let deep_index_int: i32 = row.get(4)?;
@@ -49,6 +55,9 @@ pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> 
                 deep_index: deep_index_int != 0,
                 animation_mode: row.get(5)?,
                 updated_at: row.get(6)?,
+                mobile_nav_style: row.get(7)?,
+                mobile_nav_tabs: row.get(8)?,
+                mobile_compose: row.get(9)?,
             })
         },
     );
@@ -63,6 +72,9 @@ pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> 
             deep_index: false,
             animation_mode: None,
             updated_at: String::new(),
+            mobile_nav_style: None,
+            mobile_nav_tabs: None,
+            mobile_compose: None,
         }),
         Err(e) => Err(format!("Failed to get display preferences: {e}")),
     }
@@ -130,6 +142,27 @@ pub fn update_preferences(
         }
         sets.push(format!("animation_mode = ?{idx}"));
         values.push(Box::new(animation_mode.clone()));
+        idx += 1;
+    }
+    if let Some(ref v) = data.mobile_nav_style {
+        if v != "tabs" && v != "drawer" {
+            return Err(format!("Invalid mobile_nav_style: {v}"));
+        }
+        sets.push(format!("mobile_nav_style = ?{idx}"));
+        values.push(Box::new(v.clone()));
+        idx += 1;
+    }
+    if let Some(ref v) = data.mobile_nav_tabs {
+        sets.push(format!("mobile_nav_tabs = ?{idx}"));
+        values.push(Box::new(v.clone()));
+        idx += 1;
+    }
+    if let Some(ref v) = data.mobile_compose {
+        if v != "fab" && v != "tab" {
+            return Err(format!("Invalid mobile_compose: {v}"));
+        }
+        sets.push(format!("mobile_compose = ?{idx}"));
+        values.push(Box::new(v.clone()));
         idx += 1;
     }
 

@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create the IMAP and SMTP clients for production use.
-    let imap_client: Arc<dyn imap::client::ImapClient> = Arc::new(RealImapClient);
+    let imap_client: Arc<dyn imap::client::ImapClient> = Arc::new(RealImapClient::new());
     let smtp_client: Arc<dyn smtp::client::SmtpClient> = Arc::new(RealSmtpClient);
 
     // Create the Tantivy search engine for full-text indexing.

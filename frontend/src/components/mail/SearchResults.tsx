@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence } from "framer-motion";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { ArrowDown, ArrowUp, Loader2, Paperclip, X, SearchX } from "lucide-react";
@@ -179,6 +179,9 @@ export function SearchResults() {
     data,
     isLoading,
     isError,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage,
   } = useSearch(searchQuery, undefined, searchSortOrder);
 
   // Parse filters for display in the results header
@@ -195,10 +198,11 @@ export function SearchResults() {
   );
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   const prevSelectionKeyRef = useRef<string | null>(null);
 
-  const results = data?.results ?? [];
-  const totalCount = data?.total_count ?? 0;
+  const results = useMemo(() => data?.pages.flatMap((p) => p.results) ?? [], [data?.pages]);
+  const totalCount = data?.pages[0]?.total_count ?? 0;
 
   // Sync result count to the store so sibling components (e.g. SearchBar) can
   // read it without subscribing to the full query cache.
@@ -237,6 +241,19 @@ export function SearchResults() {
       scrollEl.scrollTop = rowBottom - scrollEl.clientHeight + buffer;
     }
   }, [selectedMessageUid, activeFolder, results.length]);
+
+  // rootMargin "30%" is 30% of the scroll container's visible height —
+  // constant regardless of total content length, adapts to device size.
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !hasNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => { if (entries[0]?.isIntersecting) fetchNextPage(); },
+      { root: scrollRef.current, rootMargin: "30%" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasNextPage, fetchNextPage]);
 
   const handleResultClick = useCallback(
     (result: SearchResultItem) => {
@@ -357,6 +374,12 @@ export function SearchResults() {
                     </AnimatedDiv>
                   ))}
                 </AnimatePresence>
+                <div ref={sentinelRef} className="h-px" />
+                {isFetchingNextPage && (
+                  <div className="flex justify-center py-3">
+                    <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                  </div>
+                )}
               </AnimatedDiv>
             )}
           </AnimatePresence>

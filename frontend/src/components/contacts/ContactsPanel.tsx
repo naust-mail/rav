@@ -12,7 +12,9 @@ import {
   Download,
   Pencil,
   Trash2,
+  ChevronLeft,
 } from "lucide-react";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { Button } from "@/components/ui/button";
 import {
   useContacts,
@@ -48,6 +50,7 @@ export function ContactsPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
   const panelTransition = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
+  const isMobile = useIsMobile();
 
   const { data, isLoading, error } = useContacts(search || undefined);
   const createContact = useCreateContact();
@@ -149,6 +152,9 @@ export function ContactsPanel() {
     window.open((process.env.NEXT_PUBLIC_BASE_PATH || "") + "/api/contacts/export", "_blank");
   }, []);
 
+  const showList = !isMobile || !selectedContact;
+  const showDetail = !isMobile || !!selectedContact;
+
   return (
     <AnimatedDiv
       data-testid="contacts-panel-transition"
@@ -159,7 +165,7 @@ export function ContactsPanel() {
       className="flex h-full min-w-0 flex-1"
     >
       {/* Contact list */}
-      <div className="flex w-[360px] shrink-0 flex-col border-r border-border">
+      {showList && <div className="flex w-full shrink-0 flex-col border-r border-border md:w-[360px] md:shrink-0">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
@@ -372,46 +378,62 @@ export function ContactsPanel() {
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       {/* Detail pane */}
-      <div className="flex min-w-0 flex-1 items-center justify-center">
-        <AnimatePresence mode="wait" initial={false}>
-          {selectedContact ? (
-            <AnimatedDiv
-              key={`contact-detail-${selectedContact.id}`}
-              data-testid="contacts-detail-transition"
-              variants={panelTransition}
-              initial={panelTransition.initial}
-              animate={panelTransition.animate}
-              exit={panelTransition.exit}
-              className="w-full max-w-lg p-6"
+      {showDetail && <div className="flex min-w-0 flex-1 flex-col">
+        {/* Mobile back button */}
+        {isMobile && selectedContact && (
+          <div className="flex shrink-0 items-center gap-2 border-b border-border px-2 py-2">
+            <button
+              type="button"
+              aria-label="Back to contacts"
+              onClick={() => setSelectedContact(null)}
+              className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
             >
-              <ContactCard
-                contact={selectedContact}
-                onDelete={handleDelete}
-                isDeleting={deleteContact.isPending}
-                groups={groups}
-              />
-            </AnimatedDiv>
-          ) : (
-            <AnimatedDiv
-              key="contacts-detail-empty"
-              data-testid="contacts-empty-transition"
-              variants={panelTransition}
-              initial={panelTransition.initial}
-              animate={panelTransition.animate}
-              exit={panelTransition.exit}
-              className="flex flex-col items-center gap-2"
-            >
-              <Users className="size-12 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">
-                Select a contact to view details
-              </p>
-            </AnimatedDiv>
-          )}
-        </AnimatePresence>
-      </div>
+              <ChevronLeft className="size-5" />
+            </button>
+            <span className="truncate text-sm font-semibold">{selectedContact.name || selectedContact.email}</span>
+          </div>
+        )}
+        <div className="flex min-w-0 flex-1 items-center justify-center overflow-y-auto">
+          <AnimatePresence mode="wait" initial={false}>
+            {selectedContact ? (
+              <AnimatedDiv
+                key={`contact-detail-${selectedContact.id}`}
+                data-testid="contacts-detail-transition"
+                variants={panelTransition}
+                initial={panelTransition.initial}
+                animate={panelTransition.animate}
+                exit={panelTransition.exit}
+                className="w-full max-w-lg p-6"
+              >
+                <ContactCard
+                  contact={selectedContact}
+                  onDelete={handleDelete}
+                  isDeleting={deleteContact.isPending}
+                  groups={groups}
+                />
+              </AnimatedDiv>
+            ) : (
+              <AnimatedDiv
+                key="contacts-detail-empty"
+                data-testid="contacts-empty-transition"
+                variants={panelTransition}
+                initial={panelTransition.initial}
+                animate={panelTransition.animate}
+                exit={panelTransition.exit}
+                className="flex flex-col items-center gap-2"
+              >
+                <Users className="size-12 text-muted-foreground/30" />
+                <p className="text-sm text-muted-foreground">
+                  Select a contact to view details
+                </p>
+              </AnimatedDiv>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>}
 
       {/* Create contact dialog */}
       <ContactDialog

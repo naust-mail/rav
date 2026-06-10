@@ -177,7 +177,7 @@ function ToggleReadingPaneButton() {
       aria-label={visible ? "Hide reading pane" : "Show reading pane"}
       onClick={() => setVisible(!visible)}
       className={cn(
-        "flex size-6 items-center justify-center rounded transition-colors hover:bg-accent",
+        "hidden md:flex size-6 items-center justify-center rounded transition-colors hover:bg-accent",
         !visible && "text-primary",
       )}
     >
@@ -447,6 +447,14 @@ export function MessageList() {
           <p className="text-sm font-medium text-muted-foreground">
             {isTagView ? "No messages with this tag" : "No messages in this folder"}
           </p>
+          <button
+            type="button"
+            onClick={() => useComposeStore.getState().openCompose()}
+            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <PenLine className="size-4" />
+            Compose
+          </button>
         </div>
       )}
 

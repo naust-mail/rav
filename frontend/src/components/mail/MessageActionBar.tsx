@@ -264,7 +264,7 @@ export function MessageActionBar() {
         ) : (
           <Trash2 className="size-4" />
         )}
-        <span className="hidden xl:inline">{activeFolder === "Trash" ? "Delete" : "Delete"}</span>
+        <span className="hidden xl:inline">{activeFolder === "Trash" ? "Delete permanently" : "Move to Trash"}</span>
       </Button>
 
       {/* Archive */}

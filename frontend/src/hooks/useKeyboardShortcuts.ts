@@ -50,8 +50,8 @@ export function useKeyboardShortcuts() {
     searchSortOrder,
   );
   const searchResults = useMemo(
-    () => searchData?.results ?? [],
-    [searchData?.results],
+    () => searchData?.pages.flatMap((p) => p.results) ?? [],
+    [searchData?.pages],
   );
 
   const folderMessages = useMemo(

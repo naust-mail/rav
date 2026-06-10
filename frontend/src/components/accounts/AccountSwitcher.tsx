@@ -51,10 +51,12 @@ export function AccountSwitcher() {
   useEffect(() => {
     if (isOpen && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      setDropdownPosition({
-        top: rect.top,
-        left: rect.right + 16,
-      });
+      const POPUP_WIDTH = 288; // w-72
+      const left = Math.max(
+        8,
+        Math.min(rect.right + 16, window.innerWidth - POPUP_WIDTH - 8),
+      );
+      setDropdownPosition({ top: rect.top, left });
     }
   }, [isOpen]);
 

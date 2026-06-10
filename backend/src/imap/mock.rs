@@ -555,7 +555,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_imap_client_connection_fails_with_bad_host() {
-        let client = RealImapClient;
+        let client = RealImapClient::new();
         let creds = test_creds();
 
         let err = client.list_folders(&creds).await.unwrap_err();
@@ -716,7 +716,7 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_list_folders -- --ignored
     async fn real_imap_list_folders() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient;
+        let client = RealImapClient::new();
         let folders = client.list_folders(&creds).await.unwrap();
         assert!(!folders.is_empty(), "expected at least one folder");
         let names: Vec<_> = folders.iter().map(|f| f.name.as_str()).collect();
@@ -730,7 +730,7 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_fetch_headers -- --ignored
     async fn real_imap_fetch_headers() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient;
+        let client = RealImapClient::new();
         let headers = client
             .fetch_headers(&creds, "INBOX", "1:5")
             .await
@@ -745,7 +745,7 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_fetch_body -- --ignored
     async fn real_imap_fetch_body() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient;
+        let client = RealImapClient::new();
 
         // First fetch headers to find a UID.
         let headers = client

@@ -116,7 +116,7 @@ export function NavRail() {
 
   return (
     <Tooltip.Provider delayDuration={400}>
-      <div className="relative flex h-full w-14 flex-col items-center border-r border-border bg-sidebar py-3">
+      <div className="relative hidden md:flex h-full w-14 flex-col items-center border-r border-border bg-sidebar py-3">
         {/* Logo */}
         <div className="mb-4 flex size-10 items-center justify-center">
           <span className="text-lg font-bold text-primary">o.</span>

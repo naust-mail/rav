@@ -12,6 +12,9 @@ export interface DisplayPreferences {
   animation_mode?: AnimationMode | null;
   deep_index: boolean;
   updated_at: string;
+  mobile_nav_style?: string | null;
+  mobile_nav_tabs?: string | null;
+  mobile_compose?: string | null;
 }
 
 interface UpdateDisplayPreferences {
@@ -21,6 +24,18 @@ interface UpdateDisplayPreferences {
   compose_format?: "html" | "text";
   animation_mode?: AnimationMode | null;
   deep_index?: boolean;
+  mobile_nav_style?: string | null;
+  mobile_nav_tabs?: string | null;
+  mobile_compose?: string | null;
+}
+
+/** Safely parse the mobile_nav_tabs JSON array. Malformed input returns []. */
+export function parseMobileNavTabs(raw: string | null | undefined): string[] {
+  try {
+    return JSON.parse(raw ?? "[]");
+  } catch {
+    return [];
+  }
 }
 
 export function useDisplayPreferences() {

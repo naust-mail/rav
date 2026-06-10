@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ThreePanelLayout } from "@/components/shared/ThreePanelLayout";
 import { NavRail } from "@/components/shared/NavRail";
+import { BottomTabBar } from "@/components/shared/BottomTabBar";
+import { ComposeFab } from "@/components/shared/ComposeFab";
 import { FolderTree } from "@/components/mail/FolderTree";
 import { MessageList } from "@/components/mail/MessageList";
 import { ReadingPane } from "@/components/mail/ReadingPane";
@@ -15,6 +17,7 @@ import type { UiState } from "@/stores/useUiStore";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useNotifications } from "@/hooks/useNotifications";
+import { useMobileNav } from "@/hooks/useMobileNav";
 import { WsContext } from "@/lib/ws-context";
 import { NotificationBanner } from "@/components/shared/NotificationBanner";
 import { KeyboardShortcuts } from "@/components/shared/KeyboardShortcuts";
@@ -25,6 +28,7 @@ export default function MailPage() {
   const viewMode = useUiStore((s: UiState) => s.viewMode);
   const effectiveAnimationMode = useUiStore((s: UiState) => s.effectiveAnimationMode);
   useKeyboardShortcuts();
+  useMobileNav();
   const { showBanner, requestPermission, dismissBanner, handleEvent } = useNotifications();
   const { status: wsStatus, failCount: wsFailCount } = useWebSocket(handleEvent);
 
@@ -69,7 +73,7 @@ export default function MailPage() {
       <motion.div
         key={viewMode}
         data-testid={`mail-view-transition-${viewMode}`}
-        className="absolute inset-0"
+        className="absolute inset-0 pb-[calc(env(safe-area-inset-bottom)+56px)] md:pb-0"
         initial={{ opacity: 0, x: 6 }}
         animate={{ opacity: 1, x: 0, transition: { duration: 0.18, ease: [0.2, 0, 0, 1] as const } }}
         exit={{ opacity: 0, x: -4, transition: { duration: 0.12, ease: [0.2, 0, 0, 1] as const } }}
@@ -78,7 +82,7 @@ export default function MailPage() {
       </motion.div>
     </AnimatePresence>
   ) : (
-    <div data-testid={`mail-view-static-${viewMode}`} className="h-full min-h-0">
+    <div data-testid={`mail-view-static-${viewMode}`} className="h-full min-h-0 pb-[calc(env(safe-area-inset-bottom)+56px)] md:pb-0">
       {viewContent}
     </div>
   );
@@ -89,7 +93,11 @@ export default function MailPage() {
       {showBanner && <NotificationBanner onEnable={requestPermission} onDismiss={dismissBanner} />}
       <div className="flex h-dvh w-full overflow-hidden">
         <NavRail />
-        <div className="relative min-w-0 flex-1">{content}</div>
+        <div className="relative min-w-0 flex-1">
+          {content}
+        </div>
+        <BottomTabBar />
+        <ComposeFab />
       </div>
       <KeyboardShortcuts />
       <CommandPalette />

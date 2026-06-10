@@ -18,6 +18,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "@/stores/useUiStore";
 import { useAuthStore } from "@/stores/useAuthStore";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { useMessage, useUpdateFlags } from "@/hooks/useMessages";
 import { createFadeSlideVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
@@ -40,11 +41,15 @@ type BodyMode = "html" | "plain";
 export function ReadingPane() {
   const activeFolder = useUiStore((s) => s.activeFolder);
   const selectedMessageUid = useUiStore((s) => s.selectedMessageUid);
+  const mobilePanelView = useUiStore((s) => s.mobilePanelView);
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
+  const isMobile = useIsMobile();
   const activeAccountId = useAuthStore((s) => s.activeAccountId);
   const [headerMode, setHeaderMode] = useState<HeaderMode>("details");
-  const [bodyMode, setBodyMode] = useState<BodyMode>("html");
-  const [showHeaders, setShowHeaders] = useState(false);
+  const bodyMode = useUiStore((s) => s.readingBodyMode);
+  const showHeaders = useUiStore((s) => s.readingShowHeaders);
+  const toggleBodyMode = useUiStore((s) => s.toggleReadingBodyMode);
+  const toggleShowHeaders = useUiStore((s) => s.toggleReadingShowHeaders);
   const [emailTheme, setEmailTheme] = useState<"auto" | "light" | "dark">("auto");
   const [allowedRemoteUids, setAllowedRemoteUids] = useState<Set<string>>(
     new Set()
@@ -78,27 +83,34 @@ export function ReadingPane() {
 
   // Auto-switch to plain text mode for plaintext-only emails
   useEffect(() => {
+    const { setReadingBodyMode } = useUiStore.getState();
     if (data && !data.html && data.text) {
-      setBodyMode("plain");
+      setReadingBodyMode("plain");
     } else {
-      setBodyMode("html");
+      setReadingBodyMode("html");
     }
     setEmailTheme("auto");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.uid]);
 
   // Auto-mark unread messages as read when opened.
+  // On mobile, only mark as read when the reading pane is visible, with a 1.5s dwell timer.
   useEffect(() => {
-    if (data && !data.flags.includes("\\Seen")) {
+    if (isMobile && mobilePanelView !== "reading") return;
+    if (!data || data.flags.includes("\\Seen")) return;
+
+    const delay = isMobile ? 1500 : 0;
+    const timer = setTimeout(() => {
       updateFlags.mutate({
         folder: activeFolder,
         uid: data.uid,
         flags: ["\\Seen"],
         add: true,
       });
-    }
+    }, delay);
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.uid, data?.folder]);
+  }, [data?.uid, data?.folder, mobilePanelView, isMobile]);
 
   // No message selected
   if (selectedMessageUid === null) {
@@ -204,14 +216,11 @@ export function ReadingPane() {
             {headerMode === "details" ? "Summary" : "Details"}
           </button>
 
-          {/* Plain text / HTML toggle */}
+          {/* Plain text / HTML toggle - hidden on mobile (accessible via ... menu) */}
           <button
             type="button"
-            onClick={() => {
-              setBodyMode(bodyMode === "html" ? "plain" : "html");
-              setShowHeaders(false);
-            }}
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            onClick={toggleBodyMode}
+            className="md:inline-flex hidden items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             {bodyMode === "html" ? (
               <Type className="size-3" />
@@ -221,11 +230,11 @@ export function ReadingPane() {
             {bodyMode === "html" ? "Plain text" : "HTML"}
           </button>
 
-          {/* Headers toggle (shows as selected when active) */}
+          {/* Headers toggle - hidden on mobile (accessible via ... menu) */}
           <button
             type="button"
-            onClick={() => setShowHeaders(!showHeaders)}
-            className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
+            onClick={toggleShowHeaders}
+            className={`md:inline-flex hidden items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
               showHeaders
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground"

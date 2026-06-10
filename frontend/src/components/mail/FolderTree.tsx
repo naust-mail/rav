@@ -14,8 +14,10 @@ import {
   Check,
   X,
   ChevronRight,
+  Settings,
 } from "lucide-react";
 import { useIsFetching } from "@tanstack/react-query";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { useFolders, useRenameFolder } from "@/hooks/useFolders";
 import { useQuota } from "@/hooks/useQuota";
 import { useMoveMessage, usePrefetchAllFolders } from "@/hooks/useMessages";
@@ -23,6 +25,7 @@ import { useListDrafts } from "@/hooks/useCompose";
 import { useUiStore } from "@/stores/useUiStore";
 import { Button } from "@/components/ui/button";
 import { FolderContextMenu } from "@/components/mail/FolderContextMenu";
+import { FolderRowMenu } from "@/components/mail/FolderRowMenu";
 import { CreateFolderDialog } from "@/components/mail/CreateFolderDialog";
 import { AccountSwitcher } from "@/components/accounts/AccountSwitcher";
 import { cn } from "@/lib/utils";
@@ -57,14 +60,22 @@ export function isDraftsFolder(name: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Sort priority for well-known folders — lower value sorts higher. */
-function folderSortOrder(name: string): number {
-  const lower = name.toLowerCase();
-  if (lower === "inbox") return 0;
-  if (lower === "drafts" || lower.includes("draft")) return 1;
-  if (lower === "sent" || lower.includes("sent")) return 2;
-  if (lower === "junk" || lower === "spam" || lower.includes("junk") || lower.includes("spam")) return 3;
-  if (lower === "trash" || lower.includes("trash")) return 4;
-  if (lower === "archive" || lower.includes("archive")) return 5;
+function folderSortOrder(folder: FolderType, displayName: string): number {
+  if (folder.name.toLowerCase() === "inbox") return 0;
+  // Use IMAP special-use attributes first — more reliable than name matching.
+  const attrs = folder.attributes.map((a) => a.toLowerCase());
+  if (attrs.includes("\\drafts")) return 1;
+  if (attrs.includes("\\sent")) return 2;
+  if (attrs.includes("\\junk")) return 3;
+  if (attrs.includes("\\trash")) return 4;
+  if (attrs.includes("\\archive") || attrs.includes("\\all")) return 5;
+  // Name-based fallback for servers that don't set special-use attributes.
+  const lower = displayName.toLowerCase();
+  if (lower === "drafts" || lower === "draft") return 1;
+  if (lower === "sent" || lower === "sent mail" || lower === "sent items") return 2;
+  if (lower === "junk" || lower === "spam") return 3;
+  if (lower === "trash" || lower === "deleted" || lower === "deleted items") return 4;
+  if (lower === "archive" || lower === "all mail") return 5;
   return 6;
 }
 
@@ -134,7 +145,7 @@ function buildFolderTree(folders: FolderType[]): TreeNode[] {
     return nodes
       .sort(
         (a, b) =>
-          folderSortOrder(a.folder.name) - folderSortOrder(b.folder.name) ||
+          folderSortOrder(a.folder, a.displayName) - folderSortOrder(b.folder, b.displayName) ||
           a.displayName.localeCompare(b.displayName),
       )
       .map((n) => ({ ...n, children: sortNodes(n.children) }));
@@ -302,6 +313,7 @@ function FolderItem({
   onStartRename: () => void;
   onEndRename: () => void;
 }) {
+  const openMenuRef = useRef<((pos: { x: number; y: number }) => void) | null>(null);
   const activeFolder = useUiStore((s) => s.activeFolder);
   const setActiveFolder = useUiStore((s) => s.setActiveFolder);
   const isActive = activeFolder === folder.name;
@@ -315,9 +327,9 @@ function FolderItem({
     (a) => a.toLowerCase() === "\\noselect",
   );
 
-  // Left indent: 8px base + 12px per additional depth level.
+  // Left indent: 8px base + 8px per additional depth level.
   // The chevron/spacer (24px wide) sits after this indent before the icon.
-  const indentPx = 8 + depth * 12;
+  const indentPx = 8 + depth * 8;
 
   const handleDragOver = useCallback(
     (e: React.DragEvent) => {
@@ -463,6 +475,12 @@ function FolderItem({
           <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
         ) : null}
       </button>
+      {!isNoSelect && (
+        <FolderRowMenu
+          folder={folder}
+          onOpen={(pos) => openMenuRef.current?.(pos)}
+        />
+      )}
     </div>
   );
 
@@ -477,6 +495,7 @@ function FolderItem({
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onOpenMenu={(handler) => { openMenuRef.current = handler; }}
     >
       {row}
     </FolderContextMenu>
@@ -596,6 +615,7 @@ export function FolderTree() {
   const { data, isLoading, isError, refetch } = useFolders();
   const { data: quota } = useQuota();
   const activeFolder = useUiStore((s) => s.activeFolder);
+  const setViewMode = useUiStore((s) => s.setViewMode);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
   // Set of folder names that are currently collapsed.  Empty = all expanded.
@@ -620,7 +640,13 @@ export function FolderTree() {
   );
 
   // Prefetch messages for all folders in the background after folder list loads.
-  const folderNames = data?.folders.map((f) => f.name) ?? [];
+  // On mobile, only prefetch when the sidebar is visible to avoid wasting bandwidth.
+  const isMobile = useIsMobile();
+  const mobilePanelView = useUiStore((s) => s.mobilePanelView);
+  const folderNames =
+    !isMobile || mobilePanelView === "sidebar"
+      ? (data?.folders.map((f) => f.name) ?? [])
+      : [];
   usePrefetchAllFolders(folderNames, activeFolder);
 
   return (
@@ -662,7 +688,7 @@ export function FolderTree() {
         <TagSection />
       </nav>
 
-      {/* New folder button + mailbox space */}
+      {/* New folder button + settings + mailbox space */}
       <div className="border-t border-sidebar-border p-2">
         <Button
           variant="ghost"
@@ -672,6 +698,15 @@ export function FolderTree() {
         >
           <FolderPlus className="size-4" />
           New folder
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="md:hidden w-full justify-start gap-2 text-muted-foreground hover:text-foreground"
+          onClick={() => setViewMode("settings")}
+        >
+          <Settings className="size-4" />
+          Settings
         </Button>
         {quota?.usage_bytes != null && (
           <>

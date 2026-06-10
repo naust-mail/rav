@@ -73,6 +73,11 @@ export interface UiState {
   effectiveAnimationMode: AnimationMode;
   searchSortOrder: "date_desc" | "date_asc";
   searchResultCount: number | null;
+  mobilePanelView: "sidebar" | "list" | "reading";
+  /** Whether to render the message body as plain text instead of HTML. Persists across messages. */
+  readingBodyMode: "html" | "plain";
+  /** Whether to show raw email headers. Resets when navigating to a new message. */
+  readingShowHeaders: boolean;
 
   setActiveTag: (tagId: string | null) => void;
   setActiveFolder: (folder: string) => void;
@@ -98,6 +103,10 @@ export interface UiState {
   isAnimationOff: () => boolean;
   setSearchSortOrder: (order: "date_desc" | "date_asc") => void;
   setSearchResultCount: (count: number | null) => void;
+  setMobilePanelView: (view: "sidebar" | "list" | "reading") => void;
+  setReadingBodyMode: (mode: "html" | "plain") => void;
+  toggleReadingBodyMode: () => void;
+  toggleReadingShowHeaders: () => void;
 }
 
 const initial = loadSettings();
@@ -124,12 +133,15 @@ export const useUiStore: UseBoundStore<StoreApi<UiState>> = create<UiState>((set
   effectiveAnimationMode: DEFAULT_EFFECTIVE_ANIMATION_MODE,
   searchSortOrder: "date_desc",
   searchResultCount: null,
+  mobilePanelView: "list",
+  readingBodyMode: "html",
+  readingShowHeaders: false,
 
   setActiveTag: (tagId) =>
-    set({ activeTagId: tagId, selectedMessageUid: null, selectedMessageUids: [], bulkSelectMode: false }),
+    set({ activeTagId: tagId, selectedMessageUid: null, selectedMessageUids: [], bulkSelectMode: false, mobilePanelView: "list" }),
   setActiveFolder: (folder) =>
-    set({ activeFolder: folder, activeTagId: null, selectedMessageUid: null, selectedMessageUids: [], bulkSelectMode: false }),
-  selectMessage: (uid) => set({ selectedMessageUid: uid }),
+    set({ activeFolder: folder, activeTagId: null, selectedMessageUid: null, selectedMessageUids: [], bulkSelectMode: false, mobilePanelView: "list" }),
+  selectMessage: (uid) => set({ selectedMessageUid: uid, mobilePanelView: uid !== null ? "reading" : "list", readingShowHeaders: false }),
   setSidebarWidth: (width) => {
     saveSettings({ sidebarWidth: width });
     set({ sidebarWidth: width });
@@ -172,4 +184,10 @@ export const useUiStore: UseBoundStore<StoreApi<UiState>> = create<UiState>((set
   isAnimationOff: () => useUiStore.getState().effectiveAnimationMode === "off",
   setSearchSortOrder: (order) => set({ searchSortOrder: order }),
   setSearchResultCount: (count) => set({ searchResultCount: count }),
+  setMobilePanelView: (view) => set({ mobilePanelView: view }),
+  setReadingBodyMode: (mode) => set({ readingBodyMode: mode, readingShowHeaders: false }),
+  toggleReadingBodyMode: () =>
+    set((s) => ({ readingBodyMode: s.readingBodyMode === "html" ? "plain" : "html", readingShowHeaders: false })),
+  toggleReadingShowHeaders: () =>
+    set((s) => ({ readingShowHeaders: !s.readingShowHeaders })),
 }));

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { HelpCircle, Search, X } from "lucide-react";
 import { useUiStore } from "@/stores/useUiStore";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import {
   getFilterLabel,
   isValidCommittedSearch,
@@ -16,10 +17,11 @@ const SEARCH_TIPS = [
   { operator: "to:", example: "to:bob@example.com", desc: "Filter by recipient" },
   { operator: "subject:", example: 'subject:"meeting notes"', desc: "Search subject only" },
   { operator: "in: / folder:", example: "in:Sent", desc: "Filter by folder" },
-  { operator: "date:", example: "date:2024-01-15", desc: "Exact date" },
-  { operator: "after:", example: "after:2024-01-01", desc: "Messages after date" },
-  { operator: "before:", example: "before:2024-06-01", desc: "Messages before date" },
+  { operator: "date:", example: "date:2022  or  date:2022-06", desc: "Year, month, or exact date" },
+  { operator: "after:", example: "after:2024-01-01  or  after:last-week", desc: "After a date or relative period" },
+  { operator: "before:", example: "before:2023  or  before:yesterday", desc: "Before a date or relative period" },
   { operator: "has:attachment", example: "has:attachment", desc: "Has attachments" },
+  { operator: "is:", example: "is:unread  /  is:flagged  /  is:read", desc: "Filter by read/flag state" },
 ];
 
 export function SearchBar() {
@@ -30,6 +32,7 @@ export function SearchBar() {
   const clearSearch = useUiStore((s) => s.clearSearch);
   const searchResultCount = useUiStore((s) => s.searchResultCount);
 
+  const isMobile = useIsMobile();
   const [inputValue, setInputValue] = useState(searchQuery);
   const [showTips, setShowTips] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -152,6 +155,13 @@ export function SearchBar() {
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
+  // On mobile, focus search input 230ms after becoming active (after panel slide completes)
+  useEffect(() => {
+    if (!searchActive) return;
+    const t = setTimeout(() => inputRef.current?.focus(), 230);
+    return () => clearTimeout(t);
+  }, [searchActive]);
+
   // Dismiss tips popover on outside click or Escape
   useEffect(() => {
     if (!showTips) return;
@@ -211,7 +221,7 @@ export function SearchBar() {
             onChange={handleChange}
             onKeyDown={handleKeyDown}
             onBlur={handleBlur}
-            placeholder="Search mail... (Ctrl+K)"
+            placeholder={isMobile ? "Search mail..." : "Search mail... (Ctrl+K)"}
             data-search-input
             className="h-8 w-full rounded-md border border-border bg-background py-1 pl-8 pr-14 text-sm placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
           />

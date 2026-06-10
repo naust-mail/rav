@@ -51,8 +51,8 @@ export function CalendarHeader() {
   ];
 
   return (
-    <div className="flex items-center justify-between border-b border-border px-4 py-3">
-      <div className="flex items-center gap-3">
+    <div className="flex flex-col gap-2 border-b border-border px-4 py-3 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center gap-2">
         <div className="flex items-center gap-2">
           <Calendar className="size-5 text-primary" />
           <h1 className="text-base font-semibold text-foreground">Calendar</h1>
@@ -70,7 +70,7 @@ export function CalendarHeader() {
           </Button>
         </div>
 
-        <span className="text-sm font-medium text-foreground">{headerText}</span>
+        <span className="truncate text-sm font-medium text-foreground">{headerText}</span>
       </div>
 
       <div className="flex items-center gap-2">

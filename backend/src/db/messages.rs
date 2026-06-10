@@ -567,6 +567,8 @@ pub fn search_messages_sqlite(
     date_from: Option<i64>,
     date_to: Option<i64>,
     has_attachment: Option<bool>,
+    is_read: Option<bool>,
+    is_flagged: Option<bool>,
     limit: usize,
 ) -> Result<Vec<CachedMessage>, String> {
     let mut conditions = Vec::new();
@@ -623,6 +625,22 @@ pub fn search_messages_sqlite(
     if let Some(ha) = has_attachment {
         conditions.push(format!("has_attachments = ?{idx}"));
         param_values.push(Box::new(ha as i32));
+        idx += 1;
+    }
+
+    if let Some(read) = is_read {
+        if read {
+            conditions.push(format!("flags LIKE ?{idx}"));
+        } else {
+            conditions.push(format!("flags NOT LIKE ?{idx}"));
+        }
+        param_values.push(Box::new("%\\Seen%".to_string()));
+        idx += 1;
+    }
+
+    if let Some(true) = is_flagged {
+        conditions.push(format!("flags LIKE ?{idx}"));
+        param_values.push(Box::new("%\\Flagged%".to_string()));
         idx += 1;
     }
 

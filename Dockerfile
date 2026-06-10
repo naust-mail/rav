@@ -21,7 +21,7 @@ RUN npm install -g bun
 
 # Copy dependency manifests first for layer caching
 COPY frontend/package.json frontend/bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install
 
 # Copy remaining frontend source and build static export
 COPY frontend/ .

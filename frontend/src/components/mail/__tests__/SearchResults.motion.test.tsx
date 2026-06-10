@@ -72,7 +72,22 @@ vi.mock("@/stores/useUiStore", () => ({
 
 vi.mock("@/hooks/useSearch", () => ({
   useSearch: mockUseSearch,
-}));
+}))
+
+/** Wrap a flat result list into the useInfiniteQuery data shape used by SearchResults. */
+function mockSearchResult(results: unknown[], totalCount = results.length) {
+  return {
+    isLoading: false,
+    isError: false,
+    isFetchingNextPage: false,
+    hasNextPage: false,
+    fetchNextPage: vi.fn(),
+    data: {
+      pages: [{ total_count: totalCount, results, query: "" }],
+      pageParams: [0],
+    },
+  };
+};
 
 import { SearchResults } from "../SearchResults";
 
@@ -80,35 +95,14 @@ describe("SearchResults motion transitions", () => {
   it("keeps the list mounted for exit when results become empty", () => {
     mockUiState.effectiveAnimationMode = "medium";
     mockUiState.searchQuery = "from:alice";
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        total_count: 1,
-        results: [
-          {
-            uid: 10,
-            folder: "INBOX",
-            from_name: "Alice",
-            from_address: "alice@example.com",
-            subject: "Hello",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: false,
-          },
-        ],
-      },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([
+      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+    ]));
 
     const { rerender } = render(<SearchResults />);
     expect(screen.getByTestId("search-results-list-transition")).toBeTruthy();
 
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { total_count: 0, results: [] },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([]));
     rerender(<SearchResults />);
     expect(screen.getByText("No results found")).toBeTruthy();
     expect(screen.queryByTestId("search-results-list-transition")).toBeTruthy();
@@ -117,37 +111,10 @@ describe("SearchResults motion transitions", () => {
   it("animates individual result items in non-off modes", () => {
     mockUiState.effectiveAnimationMode = "medium";
     mockUiState.searchQuery = "from:alice";
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        total_count: 2,
-        results: [
-          {
-            uid: 10,
-            folder: "INBOX",
-            from_name: "Alice",
-            from_address: "alice@example.com",
-            subject: "Hello",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: false,
-          },
-          {
-            uid: 11,
-            folder: "INBOX",
-            from_name: "Bob",
-            from_address: "bob@example.com",
-            subject: "World",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: false,
-          },
-        ],
-      },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([
+      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      { uid: 11, folder: "INBOX", from_name: "Bob", from_address: "bob@example.com", subject: "World", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+    ]));
 
     render(<SearchResults />);
 
@@ -158,26 +125,9 @@ describe("SearchResults motion transitions", () => {
   it("bypasses motion wrappers in off mode", () => {
     mockUiState.effectiveAnimationMode = "off";
     mockUiState.searchQuery = "from:alice";
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        total_count: 1,
-        results: [
-          {
-            uid: 10,
-            folder: "INBOX",
-            from_name: "Alice",
-            from_address: "alice@example.com",
-            subject: "Hello",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: false,
-          },
-        ],
-      },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([
+      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+    ]));
 
     render(<SearchResults />);
 
@@ -189,11 +139,7 @@ describe("SearchResults motion transitions", () => {
   it("does not show empty-results copy for invalid committed search", () => {
     mockUiState.effectiveAnimationMode = "medium";
     mockUiState.searchQuery = "   ";
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: { total_count: 0, results: [] },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([]));
 
     render(<SearchResults />);
 
@@ -205,26 +151,9 @@ describe("SearchResults motion transitions", () => {
     mockUiState.searchQuery = "a has:attachment";
     mockUiState.setSearchQuery.mockClear();
     mockUiState.setSearchActive.mockClear();
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        total_count: 1,
-        results: [
-          {
-            uid: 10,
-            folder: "INBOX",
-            from_name: "Alice",
-            from_address: "alice@example.com",
-            subject: "Hello",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: true,
-          },
-        ],
-      },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([
+      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
+    ]));
 
     render(<SearchResults />);
 
@@ -239,26 +168,9 @@ describe("SearchResults motion transitions", () => {
     mockUiState.searchQuery = "  report   has:attachment  ";
     mockUiState.setSearchQuery.mockClear();
     mockUiState.setSearchActive.mockClear();
-    mockUseSearch.mockReturnValue({
-      isLoading: false,
-      isError: false,
-      data: {
-        total_count: 1,
-        results: [
-          {
-            uid: 10,
-            folder: "INBOX",
-            from_name: "Alice",
-            from_address: "alice@example.com",
-            subject: "Hello",
-            snippet: "Snippet",
-            date: "2026-03-14T00:00:00Z",
-            flags: [],
-            has_attachments: true,
-          },
-        ],
-      },
-    });
+    mockUseSearch.mockReturnValue(mockSearchResult([
+      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
+    ]));
 
     render(<SearchResults />);
 
@@ -299,11 +211,7 @@ describe("SearchResults motion transitions", () => {
         has_attachments: false,
       }));
 
-      mockUseSearch.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: { total_count: 10, results },
-      });
+      mockUseSearch.mockReturnValue(mockSearchResult(results, 10));
 
       Element.prototype.getBoundingClientRect = function (
         this: HTMLElement,
@@ -373,26 +281,9 @@ describe("SearchResults motion transitions", () => {
       const rowHeight = 50;
       const viewportHeight = 100;
 
-      mockUseSearch.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: {
-          total_count: 1,
-          results: [
-            {
-              uid: 10,
-              folder: "INBOX",
-              from_name: "Alice",
-              from_address: "alice@example.com",
-              subject: "Hello",
-              snippet: "Snippet",
-              date: "2026-03-14T00:00:00Z",
-              flags: [],
-              has_attachments: false,
-            },
-          ],
-        },
-      });
+      mockUseSearch.mockReturnValue(mockSearchResult([
+        { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      ]));
 
       Element.prototype.getBoundingClientRect = function (
         this: HTMLElement,
@@ -481,11 +372,7 @@ describe("SearchResults motion transitions", () => {
         },
       ];
 
-      mockUseSearch.mockReturnValue({
-        isLoading: false,
-        isError: false,
-        data: { total_count: 2, results },
-      });
+      mockUseSearch.mockReturnValue(mockSearchResult(results, 2));
 
       Element.prototype.getBoundingClientRect = function (
         this: HTMLElement,

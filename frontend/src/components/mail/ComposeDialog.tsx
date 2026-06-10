@@ -36,6 +36,7 @@ import {
 import { useIdentities } from "@/hooks/useIdentities";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
 import {
   countRecipients,
@@ -93,6 +94,7 @@ export function ComposeDialog() {
   const { data: identities } = useIdentities();
   const [draftSaved, setDraftSaved] = useState(false);
   const [showDiscardAlert, setShowDiscardAlert] = useState(false);
+  const isMobile = useIsMobile();
   const [expanded, setExpanded] = useState(false);
   const [previewAttId, setPreviewAttId] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -552,11 +554,16 @@ export function ComposeDialog() {
                     animate="animate"
                     exit="exit"
                     className={cn(
-                      "fixed z-50 flex flex-col rounded-xl border border-border bg-background shadow-2xl",
-                      expanded
-                        ? "inset-4 sm:left-20"
-                        : "inset-x-4 bottom-4 top-auto mx-auto max-h-[80vh] w-full max-w-2xl sm:inset-x-auto sm:bottom-8 sm:ml-20"
+                      "fixed z-50 flex flex-col border border-border bg-background shadow-2xl",
+                      isMobile
+                        ? expanded
+                          ? "inset-0 rounded-none"
+                          : "inset-x-0 bottom-0 rounded-t-xl max-h-[45dvh]"
+                        : expanded
+                          ? "inset-4 rounded-xl sm:left-20"
+                          : "inset-x-4 bottom-4 top-auto rounded-xl mx-auto max-h-[80vh] w-full max-w-2xl sm:inset-x-auto sm:bottom-8 sm:ml-20"
                     )}
+                    style={isMobile ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}
                     onKeyDown={handleKeyDown}
                     onDragEnter={handleDragEnter}
                     onDragLeave={handleDragLeave}
@@ -577,14 +584,18 @@ export function ComposeDialog() {
             )}
 
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <div
+              className="flex items-center justify-between border-b border-border px-4 py-3"
+              onClick={isMobile && !expanded ? () => setExpanded(true) : undefined}
+              style={isMobile && !expanded ? { cursor: "pointer" } : undefined}
+            >
               <Dialog.Title className="text-sm font-semibold">
                 New Message
               </Dialog.Title>
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setExpanded((e) => !e)}
-                  className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
+                  className="hidden md:flex rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
                   title={expanded ? "Minimize" : "Maximize"}
                 >
                   {expanded ? (
@@ -593,6 +604,15 @@ export function ComposeDialog() {
                     <Maximize2 className="size-4" />
                   )}
                 </button>
+                {isMobile && expanded && (
+                  <button
+                    onClick={() => setExpanded(false)}
+                    className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    title="Collapse"
+                  >
+                    <Minimize2 className="size-4" />
+                  </button>
+                )}
                 <Dialog.Close asChild>
                   <button
                     className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"

@@ -8,6 +8,8 @@ import { SearchBar } from "@/components/mail/SearchBar";
 import { SearchResults } from "@/components/mail/SearchResults";
 import { MessageActionBar } from "@/components/mail/MessageActionBar";
 import { isValidCommittedSearch } from "@/lib/search-parser";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { MobileHeader } from "@/components/shared/MobileHeader";
 
 interface ThreePanelLayoutProps {
   sidebar: React.ReactNode;
@@ -106,6 +108,9 @@ export function ThreePanelLayout({
   readingPane,
 }: ThreePanelLayoutProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isMobile = useIsMobile();
+  const mobilePanelView = useUiStore((s) => s.mobilePanelView);
+  const isAnimating = useRef(false);
   const sidebarWidth = useUiStore((s) => s.sidebarWidth);
   const messageListWidth = useUiStore((s) => s.messageListWidth);
   const setSidebarWidth = useUiStore((s) => s.setSidebarWidth);
@@ -179,11 +184,66 @@ export function ThreePanelLayout({
     [maxMessageListWidth, setMessageListWidth],
   );
 
+  // Track animation state to let consumers avoid expensive work during transitions
+  useEffect(() => {
+    isAnimating.current = true;
+    const t = setTimeout(() => { isAnimating.current = false; }, 240);
+    return () => clearTimeout(t);
+  }, [mobilePanelView]);
+
+  // Mobile branch: three full-width panels sliding via CSS translateX
+  if (isMobile) {
+    const PANEL_ORDER = ["sidebar", "list", "reading"] as const;
+
+    function panelStyle(panel: "sidebar" | "list" | "reading"): React.CSSProperties {
+      const active = PANEL_ORDER.indexOf(mobilePanelView);
+      const target = PANEL_ORDER.indexOf(panel);
+      const offset = (target - active) * 100;
+      return {
+        position: "absolute",
+        inset: 0,
+        transform: `translateX(${offset}%)`,
+        transition: "transform 220ms cubic-bezier(0.2, 0, 0, 1)",
+        willChange: "transform",
+      };
+    }
+
+    return (
+      <div ref={containerRef} className="relative h-full min-h-0 w-full overflow-hidden">
+        <div
+          style={panelStyle("sidebar")}
+          {...(mobilePanelView !== "sidebar" ? { inert: true } : {})}
+        >
+          {sidebar}
+        </div>
+
+        <div
+          style={panelStyle("list")}
+          {...(mobilePanelView !== "list" ? { inert: true } : {})}
+          className="flex flex-col"
+        >
+          <MobileHeader panel="list" />
+          <SearchBar />
+          <div className="flex-1 min-h-0 overflow-y-auto">{messageList}</div>
+        </div>
+
+        <div
+          style={panelStyle("reading")}
+          {...(mobilePanelView !== "reading" ? { inert: true } : {})}
+          className="flex flex-col"
+        >
+          <MobileHeader panel="reading" />
+          <div className="flex-1 min-h-0 overflow-y-auto">{readingPane}</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div ref={containerRef} className="flex h-full min-h-0 w-full overflow-hidden">
       {/* Folder sidebar */}
       <aside
-        className="shrink-0 overflow-y-auto bg-sidebar"
+        className="shrink-0 overflow-x-hidden overflow-y-auto bg-sidebar"
         style={{ width: sidebarWidth }}
       >
         {sidebar}

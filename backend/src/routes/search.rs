@@ -25,6 +25,8 @@ struct ParsedQuery {
     date_from: Option<i64>,
     date_to: Option<i64>,
     has_attachment: Option<bool>,
+    is_read: Option<bool>,
+    is_flagged: Option<bool>,
 }
 
 /// Parse a search query string extracting structured operators like `from:`,
@@ -41,6 +43,8 @@ fn parse_search_query(input: &str) -> ParsedQuery {
     let mut date_from: Option<i64> = None;
     let mut date_to: Option<i64> = None;
     let mut has_attachment: Option<bool> = None;
+    let mut is_read: Option<bool> = None;
+    let mut is_flagged: Option<bool> = None;
 
     let tokens = tokenize_query(input);
 
@@ -71,6 +75,12 @@ fn parse_search_query(input: &str) -> ParsedQuery {
                 "has" if value.eq_ignore_ascii_case("attachment") => {
                     has_attachment = Some(true);
                 }
+                "is" => match value.to_lowercase().as_str() {
+                    "read" => is_read = Some(true),
+                    "unread" => is_read = Some(false),
+                    "flagged" | "starred" => is_flagged = Some(true),
+                    _ => text_parts.push(token),
+                },
                 _ => {
                     // Unknown operator, treat as plain text
                     text_parts.push(token);
@@ -90,6 +100,8 @@ fn parse_search_query(input: &str) -> ParsedQuery {
         date_from,
         date_to,
         has_attachment,
+        is_read,
+        is_flagged,
     }
 }
 
@@ -144,50 +156,114 @@ fn split_operator(token: &str) -> Option<(String, String)> {
     None
 }
 
-/// Parse a `YYYY-MM-DD` date string into a start-of-day and end-of-day epoch
-/// (UTC) pair.
-fn parse_date_range(date_str: &str) -> Option<(i64, i64)> {
-    let start = parse_date_start(date_str)?;
-    let end = start + 86_400 - 1; // end of day
-    Some((start, end))
-}
-
-/// Parse a `YYYY-MM-DD` date string into a start-of-day epoch (UTC).
-fn parse_date_start(date_str: &str) -> Option<i64> {
-    let parts: Vec<&str> = date_str.split('-').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let year: i64 = parts[0].parse().ok()?;
-    let month: i64 = parts[1].parse().ok()?;
-    let day: i64 = parts[2].parse().ok()?;
-
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-
-    // Convert to Unix epoch using a simplified calculation (UTC).
-    // Days from year 1970 to the given date.
-    let mut total_days: i64 = 0;
-
-    // Days from full years
-    for y in 1970..year {
-        total_days += if is_leap_year(y) { 366 } else { 365 };
-    }
-
-    // Days from full months in the target year
-    let days_in_months = [31, 28 + i64::from(is_leap_year(year)), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    for days in days_in_months.iter().take((month - 1) as usize) {
-        total_days += days;
-    }
-
-    total_days += day - 1;
-
-    Some(total_days * 86_400)
-}
-
 fn is_leap_year(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn now_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+/// Epoch of Jan 1 00:00:00 UTC for the given year.
+fn year_to_epoch(year: i64) -> Option<i64> {
+    if year < 1970 { return None; }
+    let days: i64 = (1970..year).map(|y| if is_leap_year(y) { 366 } else { 365 }).sum();
+    Some(days * 86_400)
+}
+
+/// Epoch of the 1st of the given month at 00:00:00 UTC.
+fn month_to_epoch(year: i64, month: i64) -> Option<i64> {
+    if !(1..=12).contains(&month) { return None; }
+    let year_start = year_to_epoch(year)?;
+    let days_per_month: [i64; 12] = [31, 28 + i64::from(is_leap_year(year)), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let offset: i64 = days_per_month.iter().take((month - 1) as usize).sum();
+    Some(year_start + offset * 86_400)
+}
+
+/// Epoch of the given day at 00:00:00 UTC.
+fn day_to_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    if !(1..=31).contains(&day) { return None; }
+    Some(month_to_epoch(year, month)? + (day - 1) * 86_400)
+}
+
+/// Parse a date expression into a (start, end) epoch range for the `date:` operator.
+/// Supports: YYYY, YYYY-MM, YYYY-MM-DD, MM/DD/YYYY, MM/YYYY, today, yesterday,
+/// last-week, last-month.
+fn parse_date_range(date_str: &str) -> Option<(i64, i64)> {
+    let s = date_str.trim().to_lowercase();
+
+    // Year only: date:2022 → full year
+    if s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()) {
+        let year: i64 = s.parse().ok()?;
+        let start = year_to_epoch(year)?;
+        let end = year_to_epoch(year + 1)? - 1;
+        return Some((start, end));
+    }
+
+    if s.contains('-') {
+        let parts: Vec<&str> = s.splitn(3, '-').collect();
+        if parts.len() == 2 {
+            // YYYY-MM → full month
+            let year: i64 = parts[0].parse().ok()?;
+            let month: i64 = parts[1].parse().ok()?;
+            let start = month_to_epoch(year, month)?;
+            let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+            let end = month_to_epoch(ny, nm)? - 1;
+            return Some((start, end));
+        }
+    }
+
+    // Everything else: fall back to single day
+    let start = parse_date_start(date_str)?;
+    Some((start, start + 86_400 - 1))
+}
+
+/// Parse a date expression into a start epoch for `after:` / `before:` operators.
+/// Supports: YYYY, YYYY-MM, YYYY-MM-DD, MM/DD/YYYY, MM/YYYY, today, yesterday,
+/// last-week, last-month.
+fn parse_date_start(date_str: &str) -> Option<i64> {
+    let s = date_str.trim().to_lowercase();
+
+    // Relative keywords
+    let today_start = now_epoch() - (now_epoch() % 86_400);
+    match s.as_str() {
+        "today"      => return Some(today_start),
+        "yesterday"  => return Some(today_start - 86_400),
+        "last-week"  => return Some(today_start - 7 * 86_400),
+        "last-month" => return Some(today_start - 30 * 86_400),
+        _ => {}
+    }
+
+    // Year only: 2022
+    if s.len() == 4 && s.chars().all(|c| c.is_ascii_digit()) {
+        let year: i64 = s.parse().ok()?;
+        return year_to_epoch(year);
+    }
+
+    if s.contains('-') {
+        let parts: Vec<&str> = s.splitn(3, '-').collect();
+        return match parts.len() {
+            2 => month_to_epoch(parts[0].parse().ok()?, parts[1].parse().ok()?),
+            3 => day_to_epoch(parts[0].parse().ok()?, parts[1].parse().ok()?, parts[2].parse().ok()?),
+            _ => None,
+        };
+    }
+
+    if s.contains('/') {
+        let parts: Vec<&str> = s.split('/').collect();
+        return match parts.len() {
+            // MM/YYYY
+            2 => month_to_epoch(parts[1].parse().ok()?, parts[0].parse().ok()?),
+            // MM/DD/YYYY
+            3 => day_to_epoch(parts[2].parse().ok()?, parts[0].parse().ok()?, parts[1].parse().ok()?),
+            _ => None,
+        };
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +296,10 @@ pub struct SearchParams {
     /// Sort order: "date_desc" (default) or "date_asc".
     #[serde(default = "default_sort")]
     pub sort: String,
+    /// Filter by read/unread: true = read only, false = unread only.
+    pub is_read: Option<bool>,
+    /// Filter by flagged/starred: true = flagged only.
+    pub is_flagged: Option<bool>,
 }
 
 fn default_sort() -> String {
@@ -227,7 +307,7 @@ fn default_sort() -> String {
 }
 
 fn default_limit() -> usize {
-    10_000
+    200
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +378,8 @@ pub async fn search_messages(
     let date_from = params.date_from.or(parsed.date_from);
     let date_to = params.date_to.or(parsed.date_to);
     let has_attachment = params.has_attachment.or(parsed.has_attachment);
+    let is_read = params.is_read.or(parsed.is_read);
+    let is_flagged = params.is_flagged.or(parsed.is_flagged);
 
     // Run SQLite queries in spawn_blocking to avoid blocking the Tokio executor.
     let data_dir = config.data_dir.clone();
@@ -318,6 +400,8 @@ pub async fn search_messages(
             date_from,
             date_to,
             has_attachment,
+            is_read,
+            is_flagged,
             limit,
         )
     })

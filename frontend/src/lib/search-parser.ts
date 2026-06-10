@@ -29,6 +29,7 @@ const KNOWN_OPERATORS = new Set([
   "after",
   "before",
   "has",
+  "is",
 ]);
 
 /**
@@ -153,6 +154,8 @@ export function getFilterLabel(filter: ParsedFilter): string {
       return `before: ${filter.value}`;
     case "has":
       return `has: ${filter.value}`;
+    case "is":
+      return filter.value;
     default:
       return `${filter.operator}: ${filter.value}`;
   }

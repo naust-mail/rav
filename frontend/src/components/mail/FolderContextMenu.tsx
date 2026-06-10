@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 import { useDeleteFolder } from "@/hooks/useFolders";
+import { useLongPress } from "@/hooks/useLongPress";
 import { cn } from "@/lib/utils";
 
 /** System folders that cannot be renamed or deleted. */
@@ -27,6 +28,8 @@ interface FolderContextMenuProps {
   onDragEnter?: (e: React.DragEvent) => void;
   onDragLeave?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
+  /** Exposed so external callers (FolderRowMenu) can open the menu programmatically. */
+  onOpenMenu?: (handler: (pos: { x: number; y: number }) => void) => void;
 }
 
 export function FolderContextMenu({
@@ -37,6 +40,7 @@ export function FolderContextMenu({
   onDragEnter,
   onDragLeave,
   onDrop,
+  onOpenMenu,
 }: FolderContextMenuProps) {
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(
     null,
@@ -52,18 +56,35 @@ export function FolderContextMenu({
     setConfirmDelete(false);
   }, []);
 
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      // Don't show context menu for system folders
+  const openFolderMenu = useCallback(
+    (pos: { x: number; y: number }) => {
       if (isSystem) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      setMenuPos({ x: e.clientX, y: e.clientY });
+      setMenuPos(pos);
       setConfirmDelete(false);
     },
     [isSystem],
   );
+
+  // Expose openFolderMenu to parent via callback ref pattern
+  useEffect(() => {
+    onOpenMenu?.(openFolderMenu);
+  }, [onOpenMenu, openFolderMenu]);
+
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openFolderMenu({ x: e.clientX, y: e.clientY });
+    },
+    [openFolderMenu],
+  );
+
+  const longPress = useLongPress({
+    onLongPress: (e) => {
+      const src = "touches" in e ? e.touches[0] : e;
+      openFolderMenu({ x: src.clientX, y: src.clientY });
+    },
+  });
 
   // Close on click outside
   useEffect(() => {
@@ -106,7 +127,15 @@ export function FolderContextMenu({
   }, [confirmDelete, deleteFolder, folderName, closeMenu]);
 
   return (
-    <div onContextMenu={handleContextMenu} onDragOver={onDragOver} onDragEnter={onDragEnter} onDragLeave={onDragLeave} onDrop={onDrop}>
+    <div
+      onContextMenu={handleContextMenu}
+      onDragOver={onDragOver}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      {...longPress}
+      style={{ userSelect: "none", WebkitUserSelect: "none" }}
+    >
       {children}
 
       {menuPos && (
@@ -115,7 +144,10 @@ export function FolderContextMenu({
           className={cn(
             "fixed z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md",
           )}
-          style={{ left: menuPos.x, top: menuPos.y }}
+          style={{
+            left: Math.max(4, Math.min(menuPos.x, window.innerWidth - 204)),
+            top: Math.max(4, Math.min(menuPos.y, window.innerHeight - 88)),
+          }}
         >
           <button
             type="button"
