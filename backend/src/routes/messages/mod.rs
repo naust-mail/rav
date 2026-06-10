@@ -911,11 +911,11 @@ pub async fn download_attachment(
         format!("attachment; filename=\"{}\"", filename.replace('"', "\\\""))
     };
 
-    Ok(Response::builder()
+    Response::builder()
         .header("content-type", &content_type)
         .header("content-disposition", &disposition)
         .body(axum::body::Body::from(attachment.data))
-        .map_err(|e| AppError::InternalError(format!("Failed to build response: {e}")))?)
+        .map_err(|e| AppError::InternalError(format!("Failed to build response: {e}")))
 }
 
 /// `DELETE /api/messages/:folder/:uid`
