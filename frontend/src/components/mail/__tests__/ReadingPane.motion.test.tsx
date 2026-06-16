@@ -52,6 +52,7 @@ const { mockUiState, mockAuthState, mockUseMessage } = vi.hoisted(() => ({
     selectedMessageUid: 1 as number | null,
     effectiveAnimationMode: "medium" as "rich" | "medium" | "subtle" | "off",
     selectMessage: vi.fn(),
+    setReadingBodyMode: vi.fn(),
   },
   mockAuthState: {
     activeAccountId: "acc-1",
@@ -65,9 +66,11 @@ vi.mock("@tanstack/react-query", () => ({
   }),
 }));
 
-vi.mock("@/stores/useUiStore", () => ({
-  useUiStore: (selector: (state: typeof mockUiState) => unknown) => selector(mockUiState),
-}));
+vi.mock("@/stores/useUiStore", () => {
+  const useUiStore = (selector: (state: typeof mockUiState) => unknown) => selector(mockUiState);
+  useUiStore.getState = () => mockUiState;
+  return { useUiStore };
+});
 
 vi.mock("@/stores/useAuthStore", () => ({
   useAuthStore: (selector: (state: typeof mockAuthState) => unknown) => selector(mockAuthState),

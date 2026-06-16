@@ -1006,10 +1006,14 @@ impl ImapClient for RealImapClient {
         let read_result = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             async {
-                while let Some(resp) = session.read_response().await {
-                    let resp = match resp {
-                        Ok(r) => r,
-                        Err(_) => break,
+                loop {
+                    let resp = match session.read_response().await {
+                        Ok(Some(r)) => r,
+                        Ok(None) => break,
+                        Err(e) => {
+                            tracing::warn!("GETQUOTAROOT read_response failed: {e}");
+                            break;
+                        }
                     };
                     match resp.parsed() {
                         async_imap::imap_proto::Response::Quota(q) => {
@@ -1022,7 +1026,7 @@ impl ImapClient for RealImapClient {
                                 }
                             }
                         }
-                        async_imap::imap_proto::Response::Done { tag, .. } if *tag == req_id => break,
+                        async_imap::imap_proto::Response::Done { tag, .. } if tag == &req_id => break,
                         _ => {}
                     }
                 }

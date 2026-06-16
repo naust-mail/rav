@@ -77,6 +77,14 @@ vi.mock("@/components/PreferencesLoader", () => ({
   PreferencesLoader: vi.fn(() => <div data-testid="preferences-loader" />),
 }));
 
+vi.mock("@/components/shared/BottomTabBar", () => ({
+  BottomTabBar: vi.fn(() => <div data-testid="bottom-tab-bar" />),
+}));
+
+vi.mock("@/components/shared/ComposeFab", () => ({
+  ComposeFab: vi.fn(() => <div data-testid="compose-fab" />),
+}));
+
 import MailPage from "../page";
 
 describe("Mail page motion transitions", () => {

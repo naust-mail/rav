@@ -138,7 +138,7 @@ vi.mock("cmdk", () => {
   CommandRoot.Group = ({ children, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
     <div {...props}>{children}</div>
   );
-  CommandRoot.Item = ({ children, onSelect, ...props }: React.HTMLAttributes<HTMLDivElement> & { onSelect?: () => void }) => (
+  CommandRoot.Item = ({ children, onSelect, ...props }: React.HTMLAttributes<HTMLButtonElement> & { onSelect?: () => void }) => (
     <button type="button" onClick={onSelect} {...props}>{children}</button>
   );
 
@@ -415,7 +415,7 @@ describe("Modal and action motion transitions", () => {
     expect(screen.getByTestId("message-action-archive-feedback-transition")).toBeTruthy();
     expect(screen.getByTestId("message-action-move-feedback-transition")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("Delete"));
+    fireEvent.click(screen.getByText("Move to Trash"));
     fireEvent.click(screen.getByText("Archive"));
     fireEvent.click(screen.getByText("Move to..."));
 

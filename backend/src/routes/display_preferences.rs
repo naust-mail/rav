@@ -113,6 +113,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("ultra".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             }),
         )
         .await;
@@ -153,6 +156,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("ultra".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             }),
         )
         .await;

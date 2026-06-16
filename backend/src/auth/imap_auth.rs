@@ -52,9 +52,9 @@ async fn validate_tls(host: &str, port: u16, email: &str, password: &str) -> Aut
 
     // Read the server greeting before attempting login.
     match client.read_response().await {
-        Some(Ok(_)) => {}
-        Some(Err(e)) => return AuthResult::ServerUnreachable(e.to_string()),
-        None => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
+        Ok(Some(_)) => {}
+        Ok(None) => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
+        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
     }
 
     attempt_login(client, email, password).await
@@ -74,9 +74,9 @@ async fn validate_plain(host: &str, port: u16, email: &str, password: &str) -> A
 
     // Read the server greeting before attempting login.
     match client.read_response().await {
-        Some(Ok(_)) => {}
-        Some(Err(e)) => return AuthResult::ServerUnreachable(e.to_string()),
-        None => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
+        Ok(Some(_)) => {}
+        Ok(None) => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
+        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
     }
 
     attempt_login(client, email, password).await

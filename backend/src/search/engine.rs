@@ -320,15 +320,14 @@ impl UserIndex {
         // Optional date range filter.
         if query.date_from.is_some() || query.date_to.is_some() {
             let lower = match query.date_from {
-                Some(ts) => Bound::Included(ts),
+                Some(ts) => Bound::Included(Term::from_field_i64(self.fields.date_epoch, ts)),
                 None => Bound::Unbounded,
             };
             let upper = match query.date_to {
-                Some(ts) => Bound::Included(ts),
+                Some(ts) => Bound::Included(Term::from_field_i64(self.fields.date_epoch, ts)),
                 None => Bound::Unbounded,
             };
-            let range_query =
-                RangeQuery::new_i64_bounds("date_epoch".to_string(), lower, upper);
+            let range_query = RangeQuery::new(lower, upper);
             clauses.push((Occur::Must, Box::new(range_query)));
         }
 
@@ -345,7 +344,10 @@ impl UserIndex {
         // Get total count and paginated results.
         let total_limit = query.offset + query.limit;
         let (total_count, top_docs) = searcher
-            .search(&combined_query, &(Count, TopDocs::with_limit(total_limit)))
+            .search(
+                &combined_query,
+                &(Count, TopDocs::with_limit(total_limit).order_by_score()),
+            )
             .map_err(|e| format!("Search failed: {e}"))?;
 
         // Build a snippet generator for the subject field.

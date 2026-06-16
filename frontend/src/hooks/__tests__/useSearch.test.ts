@@ -51,7 +51,7 @@ describe("useSearch", () => {
     });
 
     expect(mockApiGet).toHaveBeenCalledWith(
-      "/search?q=from%3Aalice+report&sort=date_desc",
+      "/search?q=from%3Aalice+report&sort=date_desc&limit=200&offset=0",
     );
   });
 

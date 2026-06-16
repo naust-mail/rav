@@ -212,6 +212,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -234,6 +237,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -255,6 +261,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -277,6 +286,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         );
 
@@ -297,6 +309,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         );
 
@@ -317,6 +332,9 @@ mod tests {
                 compose_format: Some("text".to_string()),
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -338,6 +356,9 @@ mod tests {
                 compose_format: Some("markdown".to_string()),
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         );
 
@@ -358,6 +379,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -387,6 +411,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("medium".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -407,6 +434,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("ultra".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         );
 
@@ -427,6 +457,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("medium".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -441,6 +474,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(None),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -461,6 +497,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: Some(Some("subtle".to_string())),
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();
@@ -475,6 +514,9 @@ mod tests {
                 compose_format: None,
                 deep_index: None,
                 animation_mode: None,
+                mobile_nav_style: None,
+                mobile_nav_tabs: None,
+                mobile_compose: None,
             },
         )
         .unwrap();

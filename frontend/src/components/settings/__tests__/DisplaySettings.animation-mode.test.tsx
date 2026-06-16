@@ -9,7 +9,8 @@ const { mockUseDisplayPreferences, mockUseUpdateDisplayPreferences, mockMutate }
   mockMutate: vi.fn(),
 }));
 
-vi.mock("@/hooks/useDisplayPreferences", () => ({
+vi.mock("@/hooks/useDisplayPreferences", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/useDisplayPreferences")>()),
   useDisplayPreferences: mockUseDisplayPreferences,
   useUpdateDisplayPreferences: mockUseUpdateDisplayPreferences,
 }));
