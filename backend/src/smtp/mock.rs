@@ -83,10 +83,12 @@ mod tests {
     fn test_creds() -> SmtpCredentials {
         SmtpCredentials {
             host: "smtp.example.com".to_string(),
+            connect_host: "smtp.example.com".to_string(),
             port: 587,
             tls: true,
             email: "user@example.com".to_string(),
             password: "hunter2".to_string(),
+            tls_params: None,
         }
     }
 
@@ -183,10 +185,12 @@ mod tests {
         let client = RealSmtpClient;
         let creds = SmtpCredentials {
             host: "invalid.host.test".to_string(),
+            connect_host: "invalid.host.test".to_string(),
             port: 587,
             tls: true,
             email: "user@invalid.host.test".to_string(),
             password: "password".to_string(),
+            tls_params: None,
         };
         let msg = test_message();
 

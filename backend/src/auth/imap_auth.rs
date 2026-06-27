@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_imap::error::Error as ImapError;
 
 /// Result of validating credentials against an IMAP server.
@@ -11,38 +13,54 @@ pub enum AuthResult {
     ServerUnreachable(String),
 }
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Validate an email/password pair against a real IMAP server.
 ///
-/// Connects to the given `host:port`, optionally using TLS, attempts a LOGIN
-/// command with the provided credentials, and immediately logs out on success.
-///
-/// This function does **not** maintain a persistent IMAP connection; it is
-/// intended solely for credential validation at login time.
+/// - `host`: TLS SNI hostname (must match the server certificate CN/SAN).
+/// - `connect_host`: TCP address to connect to. Pass `"127.0.0.1"` to avoid
+///   hairpin NAT when the server cannot reach its own public IP.
+/// - `tls_connector`: pre-built connector from `MailTransport`. Already includes
+///   any custom CA cert; no cert handling happens here.
 pub async fn validate_imap_credentials(
     host: &str,
+    connect_host: &str,
     port: u16,
     tls: bool,
     email: &str,
     password: &str,
+    tls_connector: &async_native_tls::TlsConnector,
 ) -> AuthResult {
-    if tls {
-        validate_tls(host, port, email, password).await
-    } else {
-        validate_plain(host, port, email, password).await
+    let inner = async {
+        if tls {
+            validate_tls(host, connect_host, port, email, password, tls_connector).await
+        } else {
+            validate_plain(connect_host, port, email, password).await
+        }
+    };
+
+    match tokio::time::timeout(CONNECT_TIMEOUT, inner).await {
+        Ok(result) => result,
+        Err(_) => AuthResult::ServerUnreachable("IMAP connection timed out".into()),
     }
 }
 
-/// TLS path: connect via `tokio::net::TcpStream`, upgrade with
-/// `async_native_tls::TlsConnector`, then wrap in `async_imap::Client`.
-async fn validate_tls(host: &str, port: u16, email: &str, password: &str) -> AuthResult {
-    let addr = format!("{host}:{port}");
+/// TLS path: TCP connects to `connect_host`, TLS SNI uses `host`.
+async fn validate_tls(
+    host: &str,
+    connect_host: &str,
+    port: u16,
+    email: &str,
+    password: &str,
+    tls_connector: &async_native_tls::TlsConnector,
+) -> AuthResult {
+    let addr = format!("{connect_host}:{port}");
 
     let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
         Ok(s) => s,
         Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
     };
 
-    let tls_connector = async_native_tls::TlsConnector::new();
     let tls_stream = match tls_connector.connect(host, tcp_stream).await {
         Ok(s) => s,
         Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
@@ -113,14 +131,26 @@ fn classify_login_error(err: ImapError) -> AuthResult {
 mod tests {
     use super::*;
 
+    fn default_connector() -> async_native_tls::TlsConnector {
+        async_native_tls::TlsConnector::new()
+    }
+
     /// Connecting to an unreachable server should return `ServerUnreachable`.
     ///
     /// We use 127.0.0.1:19999, a port that (with very high probability) has
     /// nothing listening on localhost.
     #[tokio::test]
     async fn unreachable_server_returns_server_unreachable() {
-        let result =
-            validate_imap_credentials("127.0.0.1", 19999, false, "user@test.com", "pass").await;
+        let result = validate_imap_credentials(
+            "127.0.0.1",
+            "127.0.0.1",
+            19999,
+            false,
+            "user@test.com",
+            "pass",
+            &default_connector(),
+        )
+        .await;
 
         assert!(
             matches!(result, AuthResult::ServerUnreachable(_)),
@@ -131,8 +161,16 @@ mod tests {
     /// Same test but with TLS enabled: should also return `ServerUnreachable`.
     #[tokio::test]
     async fn unreachable_server_tls_returns_server_unreachable() {
-        let result =
-            validate_imap_credentials("127.0.0.1", 19999, true, "user@test.com", "pass").await;
+        let result = validate_imap_credentials(
+            "127.0.0.1",
+            "127.0.0.1",
+            19999,
+            true,
+            "user@test.com",
+            "pass",
+            &default_connector(),
+        )
+        .await;
 
         assert!(
             matches!(result, AuthResult::ServerUnreachable(_)),

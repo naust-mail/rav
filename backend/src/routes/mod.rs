@@ -38,6 +38,7 @@ use crate::auth::middleware::auth_guard;
 use crate::auth::session::SessionStore;
 use crate::config::AppConfig;
 use crate::imap::client::ImapClient;
+use crate::mail_transport::MailTransport;
 use crate::realtime::events::EventBus;
 use crate::realtime::idle::IdleManager;
 use crate::smtp::client::SmtpClient;
@@ -87,8 +88,10 @@ impl KeyExtractor for PeerIpKeyExtractorFallback {
 /// - tower-http tracing
 /// - CSRF protection on auth routes
 /// - auth_guard on protected routes
+#[allow(clippy::too_many_arguments)]
 pub fn create_router(
     config: Arc<AppConfig>,
+    transport: Arc<MailTransport>,
     store: Arc<SessionStore>,
     imap_client: Arc<dyn ImapClient>,
     smtp_client: Arc<dyn SmtpClient>,
@@ -320,6 +323,7 @@ pub fn create_router(
         .layer(Extension(search_engine))
         .layer(Extension(imap_client))
         .layer(Extension(store))
+        .layer(Extension(transport))
         .layer(Extension(config.clone()))
         .layer(TraceLayer::new_for_http());
 

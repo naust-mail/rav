@@ -16,6 +16,7 @@ tower = "0.5"
 dashmap = "6"
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.6", default-features = false, features = ["runtime-tokio"] }
+native-tls = "0.2"
 tower_governor = "0.8"
 governor = "0.10"
 rand = "0.9"

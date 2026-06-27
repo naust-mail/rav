@@ -37,6 +37,23 @@ pub struct AppConfig {
     #[serde(default = "default_tls_enabled")]
     pub tls_enabled: bool,
 
+    /// Path to a PEM certificate to add to the in-process TLS trust store.
+    /// Use this when the mail server uses a self-signed cert not in the system
+    /// CA bundle. The cert is trusted only within oxi - no system-wide changes.
+    #[serde(default)]
+    pub tls_ca_cert_path: Option<String>,
+
+    /// TCP address for IMAP connections. Defaults to imap_host when not set.
+    /// Set to 127.0.0.1 on servers that cannot reach their own public IP (hairpin NAT).
+    /// The imap_host value is still used for TLS SNI.
+    #[serde(default)]
+    pub imap_connect_host: Option<String>,
+
+    /// TCP address for SMTP connections. Defaults to smtp_host when not set.
+    /// Same rationale as imap_connect_host.
+    #[serde(default)]
+    pub smtp_connect_host: Option<String>,
+
     /// Directory for persistent data storage.
     #[serde(default = "default_data_dir")]
     pub data_dir: String,

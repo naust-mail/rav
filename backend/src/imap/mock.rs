@@ -555,7 +555,12 @@ mod tests {
 
     #[tokio::test]
     async fn real_imap_client_connection_fails_with_bad_host() {
-        let client = RealImapClient::new();
+        let client = RealImapClient::new(std::sync::Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
+        }));
         let creds = test_creds();
 
         let err = client.list_folders(&creds).await.unwrap_err();
@@ -716,7 +721,12 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_list_folders -- --ignored
     async fn real_imap_list_folders() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient::new();
+        let client = RealImapClient::new(std::sync::Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
+        }));
         let folders = client.list_folders(&creds).await.unwrap();
         assert!(!folders.is_empty(), "expected at least one folder");
         let names: Vec<_> = folders.iter().map(|f| f.name.as_str()).collect();
@@ -730,7 +740,12 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_fetch_headers -- --ignored
     async fn real_imap_fetch_headers() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient::new();
+        let client = RealImapClient::new(std::sync::Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
+        }));
         let headers = client
             .fetch_headers(&creds, "INBOX", "1:5")
             .await
@@ -745,7 +760,12 @@ mod tests {
     #[ignore] // Run manually: cargo test real_imap_fetch_body -- --ignored
     async fn real_imap_fetch_body() {
         let creds = real_creds().expect("TEST_IMAP_* env vars required");
-        let client = RealImapClient::new();
+        let client = RealImapClient::new(std::sync::Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
+        }));
 
         // First fetch headers to find a UID.
         let headers = client

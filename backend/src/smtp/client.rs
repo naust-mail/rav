@@ -187,23 +187,41 @@ impl SmtpClient for RealSmtpClient {
         let smtp_creds =
             Credentials::new(creds.email.clone(), creds.password.clone());
 
-        let transport: AsyncSmtpTransport<Tokio1Executor> = if creds.tls && creds.port == 587 {
-            // STARTTLS on port 587.
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&creds.host)
-                .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
-                .port(creds.port)
-                .credentials(smtp_creds)
-                .build()
-        } else if creds.tls {
-            // Implicit TLS (typically port 465).
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&creds.host)
-                .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
-                .port(creds.port)
-                .credentials(smtp_creds)
-                .build()
+        let transport: AsyncSmtpTransport<Tokio1Executor> = if creds.tls {
+            use lettre::transport::smtp::client::Tls;
+
+            // When custom TLS params are available (including any extra trusted cert),
+            // use builder_dangerous to connect to connect_host for TCP while the
+            // params carry the correct SNI hostname and cert trust settings.
+            // Without custom params, fall back to lettre's relay helpers which use
+            // the host for both TCP and SNI with system CA roots.
+            if let Some(params) = creds.tls_params.clone() {
+                let tls_mode = if creds.port == 587 {
+                    Tls::Required(params)   // STARTTLS
+                } else {
+                    Tls::Wrapper(params)    // implicit TLS (port 465)
+                };
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&creds.connect_host)
+                    .port(creds.port)
+                    .credentials(smtp_creds)
+                    .tls(tls_mode)
+                    .build()
+            } else if creds.port == 587 {
+                AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&creds.host)
+                    .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
+                    .port(creds.port)
+                    .credentials(smtp_creds)
+                    .build()
+            } else {
+                AsyncSmtpTransport::<Tokio1Executor>::relay(&creds.host)
+                    .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
+                    .port(creds.port)
+                    .credentials(smtp_creds)
+                    .build()
+            }
         } else {
-            // No TLS — dangerous / plaintext.
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&creds.host)
+            // No TLS — plaintext submission.
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&creds.connect_host)
                 .port(creds.port)
                 .credentials(smtp_creds)
                 .build()

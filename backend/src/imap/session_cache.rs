@@ -32,7 +32,12 @@ impl SessionCache {
     ///
     /// The lock is released before the async connect so we never hold a
     /// `std::sync::MutexGuard` across an `.await`.
-    pub async fn acquire(&self, creds: &ImapCredentials) -> Result<ImapSession, ImapError> {
+    pub async fn acquire(
+        &self,
+        creds: &ImapCredentials,
+        connect_host: &str,
+        tls_connector: &async_native_tls::TlsConnector,
+    ) -> Result<ImapSession, ImapError> {
         let key = Self::key(creds);
         {
             let mut slots = self.slots.lock().unwrap();
@@ -40,7 +45,7 @@ impl SessionCache {
                 return Ok(session);
             }
         }
-        connect(creds).await
+        connect(creds, connect_host, tls_connector).await
     }
 
     /// Return a healthy session to the cache after a successful operation.

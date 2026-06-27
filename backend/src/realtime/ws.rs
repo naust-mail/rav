@@ -33,6 +33,7 @@ pub async fn ws_handler(
     headers: axum::http::HeaderMap,
     Extension(store): Extension<Arc<SessionStore>>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
     Extension(event_bus): Extension<Arc<EventBus>>,
     Extension(idle_manager): Extension<Arc<IdleManager>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
@@ -67,6 +68,7 @@ pub async fn ws_handler(
             socket,
             accounts,
             config,
+            transport,
             event_bus,
             idle_manager,
             imap_client,
@@ -80,6 +82,7 @@ async fn handle_socket_multi_account(
     socket: WebSocket,
     accounts: Vec<AccountSession>,
     config: Arc<AppConfig>,
+    transport: Arc<crate::mail_transport::MailTransport>,
     event_bus: Arc<EventBus>,
     idle_manager: Arc<IdleManager>,
     imap_client: Arc<dyn ImapClient>,
@@ -130,6 +133,7 @@ async fn handle_socket_multi_account(
                 creds.clone(),
                 event_bus.clone(),
                 config.clone(),
+                transport.clone(),
             )
             .await;
 

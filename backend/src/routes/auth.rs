@@ -198,6 +198,7 @@ fn extract_session_cookies(headers: &axum::http::HeaderMap) -> Vec<(String, Stri
 pub async fn login(
     Extension(store): Extension<Arc<SessionStore>>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
     if body.email.trim().is_empty() || body.password.trim().is_empty() {
@@ -242,10 +243,12 @@ pub async fn login(
 
     let result = imap_auth::validate_imap_credentials(
         &server.imap_host,
+        &transport.imap_connect_host,
         server.imap_port,
         server.imap_tls,
         &body.email,
         &body.password,
+        &transport.imap_connector,
     )
     .await;
 

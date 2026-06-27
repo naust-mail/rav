@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use futures::StreamExt;
 
@@ -6,6 +8,7 @@ use super::parse::{
     decode_rfc2047, flag_to_string, has_attachments, imap_address_to_email, name_attribute_to_string,
 };
 use super::session_cache::SessionCache;
+use crate::mail_transport::MailTransport;
 
 pub use super::error::ImapError;
 pub use super::types::{
@@ -190,12 +193,14 @@ pub trait ImapClient: Send + Sync {
 /// sequence every time.
 pub struct RealImapClient {
     cache: SessionCache,
+    transport: Arc<MailTransport>,
 }
 
 impl RealImapClient {
-    pub fn new() -> Self {
+    pub fn new(transport: Arc<MailTransport>) -> Self {
         RealImapClient {
             cache: SessionCache::new(),
+            transport,
         }
     }
 }
@@ -210,7 +215,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder: &str,
     ) -> Result<FolderStatus, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let mailbox = session
             .select(folder)
@@ -240,7 +245,7 @@ impl ImapClient for RealImapClient {
     }
 
     async fn list_folders(&self, creds: &ImapCredentials) -> Result<Vec<ImapFolder>, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let folders = {
             let names_stream = session
@@ -283,7 +288,7 @@ impl ImapClient for RealImapClient {
         folder: &str,
         uid_range: &str,
     ) -> Result<Vec<ImapMessageHeader>, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session
             .select(folder)
@@ -449,7 +454,7 @@ impl ImapClient for RealImapClient {
         folder: &str,
         uid: u32,
     ) -> Result<ImapMessageBody, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session
             .select(folder)
@@ -617,7 +622,7 @@ impl ImapClient for RealImapClient {
         uid: u32,
         flags: &[&str],
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         session.select(folder).await.map_err(map_imap_error)?;
 
         let uid_str = uid.to_string();
@@ -643,7 +648,7 @@ impl ImapClient for RealImapClient {
         uid: u32,
         flags: &[&str],
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         session.select(folder).await.map_err(map_imap_error)?;
 
         let uid_str = uid.to_string();
@@ -669,7 +674,7 @@ impl ImapClient for RealImapClient {
         uid: u32,
         flags: &[&str],
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session.select(folder).await.map_err(map_imap_error)?;
 
@@ -698,7 +703,7 @@ impl ImapClient for RealImapClient {
         uid: u32,
         to_folder: &str,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session
             .select(from_folder)
@@ -750,7 +755,7 @@ impl ImapClient for RealImapClient {
         folder: &str,
         uid: u32,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session.select(folder).await.map_err(map_imap_error)?;
 
@@ -799,7 +804,7 @@ impl ImapClient for RealImapClient {
         message_bytes: &[u8],
         flags: &[&str],
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let flags_str: Vec<String> = flags.iter().map(|f| f.to_string()).collect();
         let flags_joined = if flags_str.is_empty() {
@@ -826,7 +831,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder_name: &str,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         session.create(folder_name).await.map_err(map_imap_error)?;
         session
             .subscribe(folder_name)
@@ -842,7 +847,7 @@ impl ImapClient for RealImapClient {
         from: &str,
         to: &str,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         session.rename(from, to).await.map_err(map_imap_error)?;
         self.cache.release(creds, session);
         Ok(())
@@ -853,7 +858,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder_name: &str,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         session.delete(folder_name).await.map_err(map_imap_error)?;
         self.cache.release(creds, session);
         Ok(())
@@ -865,7 +870,7 @@ impl ImapClient for RealImapClient {
         folder_name: &str,
         subscribe: bool,
     ) -> Result<(), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
         if subscribe {
             session
                 .subscribe(folder_name)
@@ -886,7 +891,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder: &str,
     ) -> Result<Vec<(u32, Vec<String>)>, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         session
             .select(folder)
@@ -929,7 +934,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder: &str,
     ) -> Result<FolderStatusExtended, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let mailbox = session
             .status(folder, "(MESSAGES UIDNEXT UIDVALIDITY UNSEEN HIGHESTMODSEQ)")
@@ -954,7 +959,7 @@ impl ImapClient for RealImapClient {
         folder: &str,
         since_modseq: u64,
     ) -> Result<(Vec<(u32, Vec<String>)>, u64), ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let mailbox = session
             .select_condstore(folder)
@@ -988,7 +993,7 @@ impl ImapClient for RealImapClient {
         &self,
         creds: &ImapCredentials,
     ) -> Result<Option<MailboxQuota>, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         // Send GETQUOTAROOT INBOX — the server responds with QUOTAROOT + QUOTA lines.
         // If the server doesn't support QUOTA, it returns NO — we treat that as None.
@@ -1046,7 +1051,7 @@ impl ImapClient for RealImapClient {
         creds: &ImapCredentials,
         folder: &str,
     ) -> Result<u64, ImapError> {
-        let mut session = self.cache.acquire(creds).await?;
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let mailbox = session.select(folder).await.map_err(map_imap_error)?;
         if mailbox.exists == 0 {

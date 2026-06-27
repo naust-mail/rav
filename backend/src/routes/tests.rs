@@ -24,6 +24,9 @@
             smtp_host: None,
             smtp_port: 587,
             tls_enabled: true,
+            tls_ca_cert_path: None,
+            imap_connect_host: None,
+            smtp_connect_host: None,
             data_dir: "/tmp/oxi-test".to_string(),
             session_timeout_hours: 24,
             static_dir: static_dir.to_string(),
@@ -43,6 +46,9 @@
             smtp_host: None,
             smtp_port: 587,
             tls_enabled: true,
+            tls_ca_cert_path: None,
+            imap_connect_host: None,
+            smtp_connect_host: None,
             data_dir: data_dir.to_string(),
             session_timeout_hours: 24,
             static_dir: static_dir.to_string(),
@@ -62,12 +68,25 @@
             smtp_host: Some("smtp.example.com".to_string()),
             smtp_port: 587,
             tls_enabled: true,
+            tls_ca_cert_path: None,
+            imap_connect_host: None,
+            smtp_connect_host: None,
             data_dir: data_dir.to_string(),
             session_timeout_hours: 24,
             static_dir: static_dir.to_string(),
             environment: "development".to_string(),
             base_path: None,
             allow_custom_mail_servers: true,
+        })
+    }
+
+    /// Helper: create a default MailTransport with system CA roots and no connect-host overrides.
+    fn test_transport() -> Arc<crate::mail_transport::MailTransport> {
+        Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
         })
     }
 
@@ -159,7 +178,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -188,7 +207,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -217,7 +236,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -247,7 +266,7 @@
         fs::write(dir.path().join("style.css"), "body { color: red; }").unwrap();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -276,7 +295,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -305,7 +324,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -329,7 +348,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -366,7 +385,7 @@
         cfg.imap_host = Some("127.0.0.1".to_string());
         let config = Arc::new(cfg);
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -400,7 +419,7 @@
         cfg.imap_host = Some("127.0.0.1".to_string());
         let config = Arc::new(cfg);
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -429,7 +448,7 @@
         cfg.tls_enabled = false;
         let config = Arc::new(cfg);
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -464,7 +483,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -485,7 +504,7 @@
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/auth/session");
@@ -514,7 +533,7 @@
         let dir = setup_static_dir();
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -537,7 +556,7 @@
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
-        let app = create_router(config, store.clone(), test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store.clone(), test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -572,7 +591,7 @@
         let config = test_config(dir.path().to_str().unwrap());
         let store = test_store();
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -627,7 +646,7 @@
             },
         ]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/folders")
@@ -665,7 +684,7 @@
         let mock = MockImapClient::new()
             .with_error(ImapError::ConnectionFailed("test failure".to_string()));
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/folders")
@@ -690,7 +709,7 @@
             data_dir.path().to_str().unwrap(),
         );
         let store = test_store();
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine("/tmp/oxi-test"), test_event_bus(), test_idle_manager());
 
         let response = app
             .oneshot(
@@ -763,7 +782,7 @@
             },
         ]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/folders/INBOX/messages?page=0&per_page=50")
@@ -835,7 +854,7 @@
                 raw_headers: String::new(),
             }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config.clone(), store.clone(), imap_client.clone(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config.clone(), test_transport(), store.clone(), imap_client.clone(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         // First, populate the message cache by listing messages.
         let mut req1 = Request::builder()
@@ -851,7 +870,7 @@
         assert_eq!(response.status(), StatusCode::OK);
 
         // Now get the full message.
-        let app2 = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app2 = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
         let mut req2 = Request::builder()
             .uri("/api/messages/INBOX/42")
             .header("x-requested-with", "XMLHttpRequest");
@@ -918,7 +937,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -954,7 +973,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -992,7 +1011,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -1043,7 +1062,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1094,7 +1113,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("DELETE")
@@ -1144,7 +1163,7 @@
             raw_headers: String::new(),
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/messages/INBOX/42/attachments/0")
@@ -1214,7 +1233,7 @@
             raw_headers: String::new(),
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/messages/INBOX/1/attachments/0")
@@ -1268,7 +1287,7 @@
             raw_headers: String::new(),
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/messages/INBOX/42/attachments/99")
@@ -1312,7 +1331,7 @@
             raw_headers: String::new(),
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/messages/INBOX/42/attachments/abc")
@@ -1348,7 +1367,7 @@
 
         let mock_smtp: Arc<dyn SmtpClient> = Arc::new(MockSmtpClient::new());
         let mock_imap: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
-        let app = create_router(config, store, mock_imap, mock_smtp, test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, mock_imap, mock_smtp, test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1387,7 +1406,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1425,7 +1444,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1460,7 +1479,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(config, store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1502,7 +1521,7 @@
             MockSmtpClient::new()
                 .with_error(SmtpError::SendFailed("relay denied".to_string())),
         );
-        let app = create_router(config, store, test_imap_client(), failing_smtp, test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, test_imap_client(), failing_smtp, test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .method("POST")
@@ -1567,7 +1586,7 @@
         drop(conn);
 
         let imap_client: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
-        let app = create_router(config, store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
+        let app = create_router(config, test_transport(), store, imap_client, test_smtp_client(), test_search_engine(data_dir.path().to_str().unwrap()), test_event_bus(), test_idle_manager());
 
         let mut req = Request::builder()
             .uri("/api/contacts/c1/export")

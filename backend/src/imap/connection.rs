@@ -5,14 +5,21 @@ use super::types::ImapCredentials;
 
 /// Establish an authenticated IMAP session.
 ///
+/// - `connect_host`: TCP address to connect to (may differ from `creds.host`
+///   to avoid hairpin NAT). The TLS SNI hostname is always `creds.host`.
+/// - `tls_connector`: pre-built connector from `MailTransport`, already
+///   includes any custom CA cert.
+///
 /// Returns a `Session` over a TLS stream (when `creds.tls` is true) or a
 /// plain TCP stream.  Because the two stream types are different concrete
 /// types we use an enum wrapper that implements the traits `async-imap`
 /// requires (`tokio::io::AsyncRead + AsyncWrite + Unpin + Debug`).
 pub(crate) async fn connect(
     creds: &ImapCredentials,
+    connect_host: &str,
+    tls_connector: &async_native_tls::TlsConnector,
 ) -> Result<async_imap::Session<ImapStream>, ImapError> {
-    let connect_future = tokio::net::TcpStream::connect((creds.host.as_str(), creds.port));
+    let connect_future = tokio::net::TcpStream::connect((connect_host, creds.port));
     // 10 second timeout for the initial TCP connection
     let tcp = tokio::time::timeout(std::time::Duration::from_secs(10), connect_future)
         .await
@@ -20,8 +27,7 @@ pub(crate) async fn connect(
         .map_err(|e| ImapError::ConnectionFailed(e.to_string()))?;
 
     if creds.tls {
-        let tls = async_native_tls::TlsConnector::new();
-        let tls_stream = tls
+        let tls_stream = tls_connector
             .connect(&creds.host, tcp)
             .await
             .map_err(|e| ImapError::ConnectionFailed(e.to_string()))?;

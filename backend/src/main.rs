@@ -4,6 +4,7 @@ mod error;
 mod db;
 mod email_theme;
 mod imap;
+mod mail_transport;
 mod smtp;
 mod auth;
 mod realtime;
@@ -18,6 +19,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use crate::auth::session::SessionStore;
 use crate::imap::client::RealImapClient;
+use crate::mail_transport::MailTransport;
 use crate::smtp::client::RealSmtpClient;
 
 #[tokio::main]
@@ -59,8 +61,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Build transport config once: cert loading, TLS connector, connect addresses.
+    let transport = Arc::new(MailTransport::from_config(&config));
+
     // Create the IMAP and SMTP clients for production use.
-    let imap_client: Arc<dyn imap::client::ImapClient> = Arc::new(RealImapClient::new());
+    let imap_client: Arc<dyn imap::client::ImapClient> = Arc::new(RealImapClient::new(Arc::clone(&transport)));
     let smtp_client: Arc<dyn smtp::client::SmtpClient> = Arc::new(RealSmtpClient);
 
     // Create the Tantivy search engine for full-text indexing.
@@ -75,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the application router with auth, session, and static file serving.
     let app = routes::create_router(
         config.clone(),
+        transport,
         store,
         imap_client,
         smtp_client,

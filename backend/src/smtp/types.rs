@@ -2,13 +2,34 @@
 
 /// Parameters needed to establish an SMTP connection.
 /// Passed explicitly to every trait method so the trait stays stateless.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SmtpCredentials {
+    /// TLS SNI hostname, also used in Message-ID generation.
     pub host: String,
+    /// TCP connect address. May differ from host to avoid hairpin NAT.
+    /// When equal to host, behaves identically to the original single-host design.
+    pub connect_host: String,
     pub port: u16,
     pub tls: bool,
     pub email: String,
     pub password: String,
+    /// Pre-built TLS parameters from MailTransport. Includes any custom CA cert.
+    /// None falls back to lettre's default relay builders (system roots).
+    pub tls_params: Option<lettre::transport::smtp::client::TlsParameters>,
+}
+
+// Manual Debug impl: TlsParameters doesn't implement Debug, and we omit password.
+impl std::fmt::Debug for SmtpCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpCredentials")
+            .field("host", &self.host)
+            .field("connect_host", &self.connect_host)
+            .field("port", &self.port)
+            .field("tls", &self.tls)
+            .field("email", &self.email)
+            .field("tls_params", &self.tls_params.as_ref().map(|_| "TlsParameters(..)"))
+            .finish()
+    }
 }
 
 /// A message ready to be sent via SMTP.

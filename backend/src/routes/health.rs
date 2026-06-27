@@ -42,6 +42,9 @@ mod tests {
             smtp_host: None,
             smtp_port: 587,
             tls_enabled: true,
+            tls_ca_cert_path: None,
+            imap_connect_host: None,
+            smtp_connect_host: None,
             data_dir: "/tmp/oxi-test".to_string(),
             session_timeout_hours: 24,
             static_dir: "nonexistent_static_dir".to_string(),
@@ -50,6 +53,12 @@ mod tests {
             allow_custom_mail_servers: true,
         });
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
+        let transport = Arc::new(crate::mail_transport::MailTransport {
+            imap_connector: async_native_tls::TlsConnector::new(),
+            imap_connect_host: "127.0.0.1".to_string(),
+            smtp_connect_host: "127.0.0.1".to_string(),
+            smtp_tls_params: None,
+        });
         let imap_client: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
         let smtp_client: Arc<dyn SmtpClient> = Arc::new(MockSmtpClient::new());
         let search_engine = Arc::new(crate::search::engine::SearchEngine::new(
@@ -57,7 +66,7 @@ mod tests {
         ));
         let event_bus = Arc::new(crate::realtime::events::EventBus::new());
         let idle_manager = Arc::new(crate::realtime::idle::IdleManager::new());
-        let app = create_router(config, store, imap_client, smtp_client, search_engine, event_bus, idle_manager);
+        let app = create_router(config, transport, store, imap_client, smtp_client, search_engine, event_bus, idle_manager);
 
         let response = app
             .oneshot(

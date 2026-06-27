@@ -8,6 +8,7 @@ use crate::config::AppConfig;
 use crate::imap::client::ImapCredentials;
 use crate::imap::connection::ImapStream;
 use crate::imap::parse::{decode_rfc2047, flag_to_string, has_attachments, imap_address_to_email};
+use crate::mail_transport::MailTransport;
 use crate::realtime::events::{EventBus, MailEvent};
 use crate::{db, imap};
 
@@ -36,6 +37,7 @@ impl IdleManager {
         creds: ImapCredentials,
         event_bus: Arc<EventBus>,
         config: Arc<AppConfig>,
+        transport: Arc<MailTransport>,
     ) {
         let key = (user_hash.clone(), folder.clone());
         if self.tasks.contains_key(&key) {
@@ -46,7 +48,7 @@ impl IdleManager {
         let task_folder = folder.clone();
 
         let handle = tokio::spawn(async move {
-            idle_loop(&task_user_hash, &task_folder, &creds, &event_bus, &config).await;
+            idle_loop(&task_user_hash, &task_folder, &creds, &event_bus, &config, &transport).await;
         });
 
         self.tasks.insert(key, handle);
@@ -96,12 +98,13 @@ async fn idle_loop(
     creds: &ImapCredentials,
     event_bus: &EventBus,
     config: &AppConfig,
+    transport: &MailTransport,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(60);
 
     loop {
-        match run_idle_session(user_hash, folder, creds, event_bus, config).await {
+        match run_idle_session(user_hash, folder, creds, event_bus, config, transport).await {
             Ok(()) => {
                 // Session ended normally (shouldn't happen in practice).
                 tracing::info!(user_hash = %user_hash, folder = %folder, "IDLE session ended normally");
@@ -133,10 +136,11 @@ async fn run_idle_session(
     creds: &ImapCredentials,
     event_bus: &EventBus,
     config: &AppConfig,
+    transport: &MailTransport,
 ) -> Result<(), String> {
     use imap::client::connect;
 
-    let mut session = connect(creds)
+    let mut session = connect(creds, &transport.imap_connect_host, &transport.imap_connector)
         .await
         .map_err(|e| format!("IDLE connect failed: {e}"))?;
 

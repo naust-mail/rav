@@ -46,6 +46,7 @@ pub struct SendResponse {
 pub async fn send_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
     Extension(smtp_client): Extension<Arc<dyn SmtpClient>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Json(req): Json<SendRequest>,
@@ -73,13 +74,15 @@ pub async fn send_message_handler(
         .as_deref()
         .ok_or_else(|| AppError::ServiceUnavailable("SMTP server not configured".to_string()))?;
 
-    // Build SMTP credentials from config + session.
+    // Build SMTP credentials from config + session + transport.
     let smtp_creds = SmtpCredentials {
         host: smtp_host.to_string(),
+        connect_host: transport.smtp_connect_host.clone(),
         port: config.smtp_port,
         tls: config.tls_enabled,
         email: session.email.clone(),
         password: session.password.clone(),
+        tls_params: transport.smtp_tls_params.clone(),
     };
 
     // Resolve the From address: use identity if specified, else session email.
