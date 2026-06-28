@@ -20,6 +20,15 @@ function tween(duration: number): Transition {
   };
 }
 
+// Accelerate curve for exits - elements leave quickly (ease-in, "fast out")
+function tweenExit(duration: number): Transition {
+  return {
+    type: "tween",
+    duration,
+    ease: [0.4, 0, 1, 1] as const,
+  };
+}
+
 export type MotionVariants = Variants & {
   initial: TargetAndTransition;
   animate: TargetAndTransition;
@@ -42,7 +51,7 @@ export function createFadeSlideVariants(mode: AnimationMode, axis: Axis = "y"): 
     exit: {
       opacity: 0,
       ...axisOffset(axis, tokens.distance.xs),
-      transition: tween(tokens.duration.fast),
+      transition: tweenExit(tokens.duration.fast),
     },
   };
 }
@@ -63,8 +72,21 @@ export function createScaleFadeVariants(mode: AnimationMode): MotionVariants {
     exit: {
       opacity: 0,
       scale: 0.99,
-      transition: tween(tokens.duration.fast),
+      transition: tweenExit(tokens.duration.fast),
     },
+  };
+}
+
+/** Directional slide for calendar-style page navigation. direction: 1=forward, -1=backward. */
+export function createDirectionalSlideVariants(mode: AnimationMode, direction: 1 | -1): MotionVariants {
+  const tokens = getMotionTokens(mode);
+  const slideIn = mode === "off" ? 0 : mode === "subtle" ? 30 : mode === "medium" ? 50 : 70;
+  const slideOut = mode === "off" ? 0 : mode === "subtle" ? 20 : mode === "medium" ? 35 : 50;
+
+  return {
+    initial: { opacity: 0, x: direction > 0 ? slideIn : -slideIn },
+    animate: { opacity: 1, x: 0, transition: tween(tokens.duration.normal) },
+    exit: { opacity: 0, x: direction > 0 ? -slideOut : slideOut, transition: tweenExit(tokens.duration.fast) },
   };
 }
 

@@ -7,6 +7,7 @@ import {
   useMoveMessage,
   useDeleteMessage,
   useMessages,
+  useMessage,
 } from "@/hooks/useMessages";
 import { useSearch } from "@/hooks/useSearch";
 import {
@@ -14,7 +15,18 @@ import {
   normalizeSearchQuery,
 } from "@/lib/search-parser";
 import type { SearchResultItem } from "@/types/message";
-
+import { useComposeStore } from "@/stores/useComposeStore";
+import { useIdentities } from "@/hooks/useIdentities";
+import {
+  extractHeader,
+  buildReplySubject,
+  buildForwardSubject,
+  buildReplyQuoteHtml,
+  buildReplyQuoteText,
+  buildForwardBody,
+  buildForwardBodyHtml,
+  buildReferences,
+} from "@/lib/email-utils";
 function isInputFocused(): boolean {
   const el = document.activeElement;
   if (!el) return false;
@@ -40,6 +52,8 @@ export function useKeyboardShortcuts() {
   const moveMessage = useMoveMessage();
   const deleteMessage = useDeleteMessage();
   const { data } = useMessages(activeFolder);
+  const { data: messageData } = useMessage(activeFolder, selectedMessageUid ?? 0);
+  const { data: identities } = useIdentities();
 
   const normalizedQuery = normalizeSearchQuery(searchQuery);
   const hasActiveSearch = searchActive && isValidCommittedSearch(normalizedQuery);
@@ -101,6 +115,8 @@ export function useKeyboardShortcuts() {
   );
 
   useEffect(() => {
+    const hasModifier = (e: KeyboardEvent) => e.metaKey || e.ctrlKey || e.altKey;
+
     function handleKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
@@ -140,7 +156,7 @@ export function useKeyboardShortcuts() {
         return;
       }
 
-      if (isInputFocused()) {
+      if (isInputFocused() || hasModifier(e)) {
         return;
       }
 
@@ -156,6 +172,12 @@ export function useKeyboardShortcuts() {
         } else if (selectedMessageUid !== null) {
           selectMessage(null);
         }
+        return;
+      }
+
+      if (e.key === "c") {
+        e.preventDefault();
+        useComposeStore.getState().openCompose();
         return;
       }
 
@@ -182,6 +204,62 @@ export function useKeyboardShortcuts() {
       }
 
       switch (e.key) {
+        case "r":
+          if (!messageData) break;
+          e.preventDefault();
+          {
+            const messageId = extractHeader(messageData.raw_headers, "Message-ID");
+            const refs = extractHeader(messageData.raw_headers, "References");
+            const hasHtml = !!(messageData.html && messageData.html.trim());
+            const matchedIdentity = (() => {
+              if (!identities) return null;
+              const emails = [...messageData.to_addresses, ...messageData.cc_addresses].map((a) => a.address.toLowerCase());
+              return identities.find((i) => emails.includes(i.email.toLowerCase()))?.id ?? null;
+            })();
+            useComposeStore.getState().openReply({
+              to: messageData.from_address,
+              cc: "",
+              subject: buildReplySubject(messageData.subject),
+              body: hasHtml ? "<p><br></p>" : "",
+              quotedHtml: hasHtml ? buildReplyQuoteHtml(messageData.html!, messageData.from_address, messageData.date) : null,
+              quotedText: buildReplyQuoteText(messageData.text, messageData.from_address, messageData.date),
+              inReplyTo: messageId,
+              references: buildReferences(refs, messageId),
+              fromIdentityId: matchedIdentity,
+              isHtml: hasHtml,
+            });
+          }
+          break;
+
+        case "f":
+          if (!messageData) break;
+          e.preventDefault();
+          {
+            const toList = messageData.to_addresses
+              .map((a) => (a.name ? `${a.name} <${a.address}>` : a.address))
+              .join(", ");
+            const hasHtml = !!(messageData.html && messageData.html.trim());
+            useComposeStore.getState().openForward({
+              subject: buildForwardSubject(messageData.subject),
+              body: hasHtml
+                ? buildForwardBodyHtml(messageData.html!, messageData.from_address, messageData.date, messageData.subject, toList)
+                : buildForwardBody(messageData.text, messageData.from_address, messageData.date, messageData.subject, toList),
+              isHtml: hasHtml,
+            });
+          }
+          break;
+
+        case "e":
+          if (activeFolder !== "Archive") {
+            e.preventDefault();
+            moveMessage.mutate({
+              fromFolder: activeFolder,
+              toFolder: "Archive",
+              uid: selectedMessageUid,
+            });
+          }
+          break;
+
         case "Delete":
         case "Backspace":
           e.preventDefault();
@@ -288,5 +366,7 @@ export function useKeyboardShortcuts() {
     searchResults,
     selectSearchResult,
     getSearchNavigationTarget,
+    messageData,
+    identities,
   ]);
 }

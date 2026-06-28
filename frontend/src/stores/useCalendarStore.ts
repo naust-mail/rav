@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-interface CalendarState {
+type CalendarState = {
   selectedDate: Date;
   viewMode: "month" | "week" | "day";
   selectedEvent: string | null;
@@ -14,7 +14,7 @@ interface CalendarState {
   selectEvent: (id: string | null) => void;
   openEventForm: (editId?: string) => void;
   closeEventForm: () => void;
-}
+};
 
 export const useCalendarStore = create<CalendarState>((set) => ({
   selectedDate: new Date(),

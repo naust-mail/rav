@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useCalendarStore } from "@/stores/useCalendarStore";
 import { useCalendarEvents } from "@/hooks/useCalendar";
 import {
@@ -12,13 +12,16 @@ import {
   getEventColorClasses,
   formatTime,
 } from "./calendarUtils";
+import { EventListPopover, type EventListPopoverState } from "./EventListPopover";
+import { EventChip } from "./EventChip";
+import { CalendarContextMenu, type CalendarContextMenuState } from "./CalendarContextMenu";
 import { cn } from "@/lib/utils";
 import type { CalendarEvent } from "@/types/calendar";
 
-interface MonthViewProps {
+type MonthViewProps = {
   weekStartsOn: number;
   timeFormat: string;
-}
+};
 
 export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
   const selectedDate = useCalendarStore((s) => s.selectedDate);
@@ -86,8 +89,15 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
     setViewMode("day");
   };
 
+  const [overflowPopover, setOverflowPopover] = useState<EventListPopoverState | null>(null);
+  const [contextMenu, setContextMenu] = useState<CalendarContextMenuState | null>(null);
+
+  const handleEventContextMenu = (x: number, y: number, ev: CalendarEvent) => {
+    setContextMenu({ x, y, type: "event", eventId: ev.id, eventTitle: ev.title });
+  };
+
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-auto">
       {/* Day headers */}
       <div className="grid grid-cols-7 border-b border-border">
         {dayNames.map((name) => (
@@ -114,6 +124,7 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
               key={idx}
               onClick={() => handleDayClick(day)}
               onDoubleClick={() => handleDayDoubleClick(day)}
+              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "day", date: day }); }}
               className={cn(
                 "min-h-0 cursor-pointer border-b border-r border-border p-1 transition-colors hover:bg-accent/50",
                 !isCurrentMonth && "bg-muted/30",
@@ -127,6 +138,7 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
                   "mb-0.5 flex size-6 items-center justify-center rounded-full text-xs transition-colors hover:bg-primary hover:text-primary-foreground",
                   isTodayDate && "bg-primary text-primary-foreground font-bold",
                   !isCurrentMonth && "text-muted-foreground/50",
+                  isTodayDate && !isCurrentMonth && 'text-black/50 bg-primary/50'
                 )}
               >
                 {day.getDate()}
@@ -137,10 +149,11 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
                 {dayEvents.slice(0, 3).map((event) => {
                   const colors = getEventColorClasses(event.color);
                   return (
-                    <button
+                    <EventChip
                       key={event.id}
-                      type="button"
+                      event={event}
                       onClick={(e) => handleEventClick(e, event.id)}
+                      onContextMenu={handleEventContextMenu}
                       className={cn(
                         "block w-full truncate rounded px-1 py-0.5 text-left text-[10px] leading-tight",
                         colors.bg,
@@ -154,19 +167,42 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
                         </span>
                       )}
                       {event.title}
-                    </button>
+                    </EventChip>
                   );
                 })}
                 {dayEvents.length > 3 && (
-                  <div className="text-[10px] text-muted-foreground">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOverflowPopover({
+                        anchor: e.currentTarget.getBoundingClientRect(),
+                        events: dayEvents,
+                        title: day.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }),
+                      });
+                    }}
+                    className="text-[10px] text-muted-foreground hover:text-foreground"
+                  >
                     +{dayEvents.length - 3} more
-                  </div>
+                  </button>
                 )}
               </div>
             </div>
           );
         })}
       </div>
+
+      <EventListPopover
+        state={overflowPopover}
+        onClose={() => setOverflowPopover(null)}
+        timeFormat={timeFormat}
+        onEventContextMenu={handleEventContextMenu}
+      />
+      <CalendarContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        timeFormat={timeFormat}
+      />
     </div>
   );
 }

@@ -360,6 +360,29 @@ impl ImapClient for MockImapClient {
         }
         Ok(0)
     }
+
+    async fn mark_all_read(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+    ) -> Result<(), ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(())
+    }
+
+    async fn fetch_raw_bytes(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+        _uid: u32,
+    ) -> Result<Vec<u8>, ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(b"From: test@example.com\r\nSubject: Test\r\n\r\nBody".to_vec())
+    }
 }
 
 // -----------------------------------------------------------------------

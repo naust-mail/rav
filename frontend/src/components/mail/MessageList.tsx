@@ -4,7 +4,7 @@ import { useRef, useCallback, useEffect, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AnimatePresence } from "framer-motion";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
-import { PenLine, X, PanelRight, Inbox, Tag } from "lucide-react";
+import { PenLine, X, PanelRight, Inbox, Tag, RefreshCw } from "lucide-react";
 import { useMessages } from "@/hooks/useMessages";
 import { useTags, useTagMessages } from "@/hooks/useTags";
 import { useListDrafts, useGetDraft, useDeleteDraft } from "@/hooks/useCompose";
@@ -24,7 +24,7 @@ const ROW_MOTION_VARIANTS_BY_MODE: Record<AnimationMode, MotionVariants> = Objec
   ANIMATION_MODES.map((mode) => [mode, createFadeSlideVariants(mode, "y")]),
 ) as Record<AnimationMode, MotionVariants>;
 
-function SkeletonRows({ count, height }: { count: number; height: number }) {
+function SkeletonRows({ count, height, compact }: { count: number; height: number; compact: boolean }) {
   return (
     <div className="flex flex-col">
       {Array.from({ length: count }).map((_, i) => (
@@ -33,10 +33,23 @@ function SkeletonRows({ count, height }: { count: number; height: number }) {
           className="flex items-center gap-3 border-b border-border px-3"
           style={{ height }}
         >
-          <div className="h-3 w-3 animate-pulse rounded-full bg-muted" />
-          <div className="h-3 w-24 animate-pulse rounded bg-muted" />
-          <div className="h-3 flex-1 animate-pulse rounded bg-muted" />
-          <div className="h-3 w-12 animate-pulse rounded bg-muted" />
+          <div className="h-2 w-2 animate-pulse rounded-full bg-muted shrink-0" />
+          {compact ? (
+            <>
+              <div className="h-2.5 w-20 animate-pulse rounded bg-muted shrink-0" />
+              <div className="h-2.5 flex-1 animate-pulse rounded bg-muted" />
+              <div className="h-2.5 w-10 animate-pulse rounded bg-muted shrink-0" />
+            </>
+          ) : (
+            <div className="flex flex-1 flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <div className="h-2.5 w-24 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 flex-1 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-10 animate-pulse rounded bg-muted" />
+              </div>
+              <div className="h-2 w-3/4 animate-pulse rounded bg-muted/60" />
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -84,6 +97,7 @@ function DraftItems() {
   const deleteDraft = useDeleteDraft();
   const openDraft = useComposeStore((s) => s.openDraft);
   const isComposeOpen = useComposeStore((s) => s.isOpen);
+  const density = useUiStore((s) => s.density);
   const [loadingDraftId, setLoadingDraftId] = useState<string | null>(null);
   const getDraft = useGetDraft(loadingDraftId);
 
@@ -115,54 +129,75 @@ function DraftItems() {
 
   return (
     <>
-      {drafts.map((draft) => (
-        <div
-          key={draft.id}
-          role="row"
-          tabIndex={0}
-          onClick={() => {
-            if (!isComposeOpen) setLoadingDraftId(draft.id);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              if (!isComposeOpen) setLoadingDraftId(draft.id);
-            }
-          }}
-          className={cn(
-            "group flex h-16 cursor-pointer flex-col justify-center border-b border-border px-3 py-1.5 transition-colors",
-            "hover:bg-muted bg-transparent",
-          )}
-        >
-          {/* Top row: "Draft" label + date + delete */}
-          <div className="flex items-center gap-2">
-            <PenLine className="size-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate text-xs font-normal text-muted-foreground">
-              {draft.to || "No recipient"}
-            </span>
-            <span className="shrink-0 text-xs font-normal text-muted-foreground">
-              {humanizeDate(draft.updated_at)}
-            </span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                deleteDraft.mutate(draft.id);
-              }}
-              className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:flex items-center justify-center"
-              title="Delete draft"
-            >
-              <X className="size-3" />
-            </button>
-          </div>
+      {drafts.map((draft) => {
+        const openHandler = () => { if (!isComposeOpen) setLoadingDraftId(draft.id); };
+        const keyHandler = (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openHandler(); }
+        };
+        const deleteBtn = (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); deleteDraft.mutate(draft.id); }}
+            className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:flex items-center justify-center"
+            title="Delete draft"
+          >
+            <X className="size-3" />
+          </button>
+        );
 
-          {/* Bottom row: subject */}
-          <div className="flex items-center gap-2">
-            <span className="min-w-0 flex-1 truncate text-sm font-normal text-foreground">
-              {draft.subject || "(no subject)"}
-            </span>
+        if (density === "compact") {
+          return (
+            <div
+              key={draft.id}
+              role="row"
+              tabIndex={0}
+              onClick={openHandler}
+              onKeyDown={keyHandler}
+              className="group flex h-9 cursor-pointer items-center gap-2 border-b border-border px-3 text-sm transition-colors hover:bg-accent active:bg-accent/70"
+            >
+              <PenLine className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="w-32 shrink-0 truncate text-xs text-muted-foreground">
+                {draft.to || "No recipient"}
+              </span>
+              <span className="text-muted-foreground/50">&middot;</span>
+              <span className="min-w-0 flex-1 truncate text-foreground">
+                {draft.subject || "(no subject)"}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {humanizeDate(draft.updated_at)}
+              </span>
+              {deleteBtn}
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={draft.id}
+            role="row"
+            tabIndex={0}
+            onClick={openHandler}
+            onKeyDown={keyHandler}
+            className="group flex h-16 cursor-pointer flex-col justify-center border-b border-border px-3 py-1.5 transition-colors hover:bg-accent active:bg-accent/70"
+          >
+            <div className="flex items-center gap-2">
+              <PenLine className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-xs font-normal text-muted-foreground">
+                {draft.to || "No recipient"}
+              </span>
+              <span className="shrink-0 text-xs font-normal text-muted-foreground">
+                {humanizeDate(draft.updated_at)}
+              </span>
+              {deleteBtn}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm font-normal text-foreground">
+                {draft.subject || "(no subject)"}
+              </span>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 }
@@ -177,7 +212,7 @@ function ToggleReadingPaneButton() {
       aria-label={visible ? "Hide reading pane" : "Show reading pane"}
       onClick={() => setVisible(!visible)}
       className={cn(
-        "hidden md:flex size-6 items-center justify-center rounded transition-colors hover:bg-accent",
+        "hidden md:flex size-6 items-center justify-center rounded transition-colors hover:bg-accent active:bg-accent/70",
         !visible && "text-primary",
       )}
     >
@@ -367,14 +402,16 @@ export function MessageList() {
       <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2">
         <div className="flex items-center gap-2">
           {/* Select all checkbox */}
-          {!isLoading && !isError && messages.length > 0 && (
+          {!isLoading && !isError && (
             <button
               type="button"
               aria-label={allSelected ? "Deselect all" : "Select all"}
+              disabled={messages.length === 0}
               onClick={handleSelectAllToggle}
               className={cn(
-                "flex size-4 shrink-0 items-center justify-center rounded border transition-colors",
-                allSelected
+                "flex size-4 shrink-0 items-center justify-center rounded border transition-colors transition-opacity",
+                messages.length === 0 ? 'opacity-50'
+                 : allSelected
                   ? "border-primary bg-primary text-primary-foreground"
                   : "border-muted-foreground/40 bg-transparent hover:border-primary",
               )}
@@ -405,6 +442,15 @@ export function MessageList() {
           {isSyncing && (
             <span className="animate-pulse text-xs text-primary">syncing…</span>
           )}
+          <button
+            type="button"
+            aria-label="Refresh"
+            onClick={() => refetch()}
+            disabled={isFetching}
+            className="hidden md:flex size-6 items-center justify-center rounded transition-colors hover:bg-accent disabled:opacity-50"
+          >
+            <RefreshCw className={cn("size-3.5", isFetching && "animate-spin")} />
+          </button>
           <ToggleReadingPaneButton />
         </div>
       </div>
@@ -421,7 +467,7 @@ export function MessageList() {
 
       {/* Loading state (true initial load only) */}
       {isLoading && !data && (
-        <SkeletonRows count={8} height={rowHeight} />
+        <SkeletonRows count={8} height={rowHeight} compact={density === "compact"} />
       )}
 
       {/* Error state */}
@@ -447,14 +493,16 @@ export function MessageList() {
           <p className="text-sm font-medium text-muted-foreground">
             {isTagView ? "No messages with this tag" : "No messages in this folder"}
           </p>
-          <button
-            type="button"
-            onClick={() => useComposeStore.getState().openCompose()}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <PenLine className="size-4" />
-            Compose
-          </button>
+          {(isTagView || activeFolder === "INBOX") && (
+            <button
+              type="button"
+              onClick={() => useComposeStore.getState().openCompose()}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <PenLine className="size-4" />
+              Compose
+            </button>
+          )}
         </div>
       )}
 

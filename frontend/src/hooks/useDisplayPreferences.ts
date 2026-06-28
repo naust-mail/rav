@@ -15,6 +15,8 @@ export interface DisplayPreferences {
   mobile_nav_style?: string | null;
   mobile_nav_tabs?: string | null;
   mobile_compose?: string | null;
+  /** Seconds to wait before actually sending (0 = send immediately). */
+  undo_send_delay: number;
 }
 
 interface UpdateDisplayPreferences {
@@ -27,6 +29,7 @@ interface UpdateDisplayPreferences {
   mobile_nav_style?: string | null;
   mobile_nav_tabs?: string | null;
   mobile_compose?: string | null;
+  undo_send_delay?: number;
 }
 
 /** Safely parse the mobile_nav_tabs JSON array. Malformed input returns []. */

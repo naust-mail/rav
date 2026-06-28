@@ -13,6 +13,8 @@ pub struct DisplayPreferences {
     pub mobile_nav_style: Option<String>,
     pub mobile_nav_tabs: Option<String>,
     pub mobile_compose: Option<String>,
+    /// Seconds to wait before actually sending (0 = send immediately).
+    pub undo_send_delay: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +29,7 @@ pub struct UpdateDisplayPreferences {
     pub mobile_nav_style: Option<String>,
     pub mobile_nav_tabs: Option<String>,
     pub mobile_compose: Option<String>,
+    pub undo_send_delay: Option<i64>,
 }
 
 fn deserialize_animation_mode_field<'de, D>(
@@ -43,7 +46,9 @@ where
 /// Returns sensible defaults if the row does not yet exist.
 pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> {
     let result = conn.query_row(
-        "SELECT density, theme, language, compose_format, deep_index, animation_mode, updated_at, mobile_nav_style, mobile_nav_tabs, mobile_compose FROM display_preferences WHERE id = 1",
+        "SELECT density, theme, language, compose_format, deep_index, animation_mode, updated_at,
+                mobile_nav_style, mobile_nav_tabs, mobile_compose, undo_send_delay
+         FROM display_preferences WHERE id = 1",
         [],
         |row| {
             let deep_index_int: i32 = row.get(4)?;
@@ -58,6 +63,7 @@ pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> 
                 mobile_nav_style: row.get(7)?,
                 mobile_nav_tabs: row.get(8)?,
                 mobile_compose: row.get(9)?,
+                undo_send_delay: row.get::<_, Option<i64>>(10)?.unwrap_or(5),
             })
         },
     );
@@ -75,6 +81,7 @@ pub fn get_preferences(conn: &Connection) -> Result<DisplayPreferences, String> 
             mobile_nav_style: None,
             mobile_nav_tabs: None,
             mobile_compose: None,
+            undo_send_delay: 5,
         }),
         Err(e) => Err(format!("Failed to get display preferences: {e}")),
     }
@@ -165,6 +172,14 @@ pub fn update_preferences(
         values.push(Box::new(v.clone()));
         idx += 1;
     }
+    if let Some(delay) = data.undo_send_delay {
+        if !(0..=60).contains(&delay) {
+            return Err(format!("Invalid undo_send_delay: {delay} (must be 0-60)"));
+        }
+        sets.push(format!("undo_send_delay = ?{idx}"));
+        values.push(Box::new(delay));
+        idx += 1;
+    }
 
     if sets.is_empty() {
         return get_preferences(conn);
@@ -215,6 +230,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -240,6 +256,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -264,6 +281,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -289,6 +307,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         );
 
@@ -312,6 +331,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         );
 
@@ -335,6 +355,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -359,6 +380,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         );
 
@@ -382,6 +404,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -414,6 +437,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -437,6 +461,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         );
 
@@ -460,6 +485,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -477,6 +503,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -500,6 +527,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
@@ -517,11 +545,58 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             },
         )
         .unwrap();
 
         assert_eq!(updated_prefs.density, "compact");
         assert_eq!(updated_prefs.animation_mode.as_deref(), Some("subtle"));
+    }
+
+    fn blank() -> UpdateDisplayPreferences {
+        UpdateDisplayPreferences {
+            density: None,
+            theme: None,
+            language: None,
+            compose_format: None,
+            deep_index: None,
+            animation_mode: None,
+            mobile_nav_style: None,
+            mobile_nav_tabs: None,
+            mobile_compose: None,
+            undo_send_delay: None,
+        }
+    }
+
+    #[test]
+    fn test_undo_send_delay_default_is_5() {
+        let conn = open_test_db();
+        let prefs = get_preferences(&conn).unwrap();
+        assert_eq!(prefs.undo_send_delay, 5);
+    }
+
+    #[test]
+    fn test_undo_send_delay_round_trip() {
+        let conn = open_test_db();
+        for delay in [0_i64, 5, 10, 30, 60] {
+            let prefs = update_preferences(&conn, &UpdateDisplayPreferences { undo_send_delay: Some(delay), ..blank() }).unwrap();
+            assert_eq!(prefs.undo_send_delay, delay, "failed for delay={delay}");
+        }
+    }
+
+    #[test]
+    fn test_undo_send_delay_invalid_rejected() {
+        let conn = open_test_db();
+        assert!(update_preferences(&conn, &UpdateDisplayPreferences { undo_send_delay: Some(-1), ..blank() }).is_err());
+        assert!(update_preferences(&conn, &UpdateDisplayPreferences { undo_send_delay: Some(61), ..blank() }).is_err());
+    }
+
+    #[test]
+    fn test_undo_send_delay_none_keeps_existing() {
+        let conn = open_test_db();
+        update_preferences(&conn, &UpdateDisplayPreferences { undo_send_delay: Some(10), ..blank() }).unwrap();
+        let prefs = update_preferences(&conn, &UpdateDisplayPreferences { density: Some("compact".to_string()), ..blank() }).unwrap();
+        assert_eq!(prefs.undo_send_delay, 10);
     }
 }

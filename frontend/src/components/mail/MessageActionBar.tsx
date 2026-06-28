@@ -10,10 +10,13 @@ import {
   Star,
   Mail,
   MailOpen,
-  AlertCircle,
+  ShieldOff,
+  ShieldCheck,
   Loader2,
+  Printer,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
+import { toast } from "sonner";
 import { useUiStore } from "@/stores/useUiStore";
 import {
   useMessage,
@@ -24,15 +27,17 @@ import {
 import { MoveToFolderMenu } from "./MoveToFolderMenu";
 import { TagPicker } from "./TagPicker";
 import { Button } from "@/components/ui/button";
+import { ActionTooltip, ActionTooltipProvider } from "./ActionTooltip";
 import { useComposeStore } from "@/stores/useComposeStore";
+import { useReportSpam, useReportHam } from "@/hooks/useSpamReport";
 import { useAuthStore } from "@/stores/useAuthStore";
 import {
   extractHeader,
   buildReplySubject,
   buildForwardSubject,
-  buildReplyBody,
+  buildReplyQuoteHtml,
+  buildReplyQuoteText,
   buildForwardBody,
-  buildReplyBodyHtml,
   buildForwardBodyHtml,
   buildReferences,
 } from "@/lib/email-utils";
@@ -70,6 +75,8 @@ export function MessageActionBar() {
   const updateFlags = useUpdateFlags();
   const moveMessage = useMoveMessage();
   const deleteMessage = useDeleteMessage();
+  const reportSpam = useReportSpam();
+  const reportHam = useReportHam();
 
   const { data } = useMessage(activeFolder, selectedMessageUid ?? 0);
   const { data: identities } = useIdentities();
@@ -107,9 +114,9 @@ export function MessageActionBar() {
       to: data.from_address,
       cc: "",
       subject: buildReplySubject(data.subject),
-      body: hasHtml
-        ? buildReplyBodyHtml(data.html!, data.from_address, data.date)
-        : buildReplyBody(data.text, data.from_address, data.date),
+      body: hasHtml ? "<p><br></p>" : "",
+      quotedHtml: hasHtml ? buildReplyQuoteHtml(data.html!, data.from_address, data.date) : null,
+      quotedText: buildReplyQuoteText(data.text, data.from_address, data.date),
       inReplyTo: messageId,
       references: buildReferences(refs, messageId),
       fromIdentityId: matchedId,
@@ -138,9 +145,9 @@ export function MessageActionBar() {
       to: replyTo,
       cc: ccList,
       subject: buildReplySubject(data.subject),
-      body: hasHtml
-        ? buildReplyBodyHtml(data.html!, data.from_address, data.date)
-        : buildReplyBody(data.text, data.from_address, data.date),
+      body: hasHtml ? "<p><br></p>" : "",
+      quotedHtml: hasHtml ? buildReplyQuoteHtml(data.html!, data.from_address, data.date) : null,
+      quotedText: buildReplyQuoteText(data.text, data.from_address, data.date),
       inReplyTo: messageId,
       references: buildReferences(refs, messageId),
       fromIdentityId: matchedId,
@@ -164,31 +171,73 @@ export function MessageActionBar() {
   const handleDelete = () => {
     if (!data) return;
     setActionFeedback("delete");
-    if (activeFolder === "Trash") {
-      deleteMessage.mutate(
-        { folder: activeFolder, uid: data.uid },
-        { onSettled: () => setActionFeedback(null) },
-      );
-    } else {
-      moveMessage.mutate(
-        { fromFolder: activeFolder, toFolder: "Trash", uid: data.uid },
-        { onSettled: () => setActionFeedback(null) },
-      );
-    }
+    const isPermanent = activeFolder === "Trash";
+    const label = isPermanent ? "Permanently deleted" : "Moved to trash";
+    const uid = data.uid;
+    const folder = activeFolder;
+    let cancelled = false;
+
+    toast(label, {
+      duration: 5000,
+      action: {
+        label: "Undo",
+        onClick: () => { cancelled = true; setActionFeedback(null); },
+      },
+    });
+
+    setTimeout(() => {
+      if (cancelled) return;
+      if (isPermanent) {
+        deleteMessage.mutate(
+          { folder, uid },
+          { onSettled: () => setActionFeedback(null) },
+        );
+      } else {
+        moveMessage.mutate(
+          { fromFolder: folder, toFolder: "Trash", uid },
+          { onSettled: () => setActionFeedback(null) },
+        );
+      }
+    }, 5000);
   };
 
   const handleArchive = () => {
     if (!data) return;
     setActionFeedback("archive");
-    moveMessage.mutate(
-      { fromFolder: activeFolder, toFolder: "Archive", uid: data.uid },
-      { onSettled: () => setActionFeedback(null) },
-    );
+    const uid = data.uid;
+    const folder = activeFolder;
+    let cancelled = false;
+
+    toast("Archived", {
+      duration: 5000,
+      action: {
+        label: "Undo",
+        onClick: () => { cancelled = true; setActionFeedback(null); },
+      },
+    });
+
+    setTimeout(() => {
+      if (cancelled) return;
+      moveMessage.mutate(
+        { fromFolder: folder, toFolder: "Archive", uid },
+        { onSettled: () => setActionFeedback(null) },
+      );
+    }, 5000);
   };
 
   const handleJunk = () => {
     if (!data) return;
-    moveMessage.mutate({ fromFolder: activeFolder, toFolder: "Junk", uid: data.uid });
+    const uid = data.uid;
+    const folder = activeFolder;
+    reportSpam.mutate({ folder, uid });
+    moveMessage.mutate({ fromFolder: folder, toFolder: "Spam", uid });
+  };
+
+  const handleNotJunk = () => {
+    if (!data) return;
+    const uid = data.uid;
+    reportHam.mutate({ folder: "Spam", uid });
+    moveMessage.mutate({ fromFolder: "Spam", toFolder: "INBOX", uid });
   };
 
   const handleToggleStar = () => {
@@ -212,6 +261,7 @@ export function MessageActionBar() {
   };
 
   return (
+    <ActionTooltipProvider>
     <AnimatedDiv
       data-testid="message-action-bar-transition"
       variants={barMotionProps}
@@ -221,27 +271,34 @@ export function MessageActionBar() {
       className="flex shrink-0 flex-wrap items-center gap-0.5 border-b border-border px-2 py-1"
     >
       {/* Reply */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleReply}>
-        <Reply className="size-4" />
-        <span className="hidden xl:inline">Reply</span>
-      </Button>
+      <ActionTooltip label="Reply">
+        <Button aria-label="Reply" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleReply}>
+          <Reply className="size-4" />
+          <span className="hidden xl:inline">Reply</span>
+        </Button>
+      </ActionTooltip>
 
       {/* Reply All — disabled for 1-to-1 conversations */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled || isDirectConversation} onClick={handleReplyAll}>
-        <ReplyAll className="size-4" />
-        <span className="hidden xl:inline">Reply all</span>
-      </Button>
+      <ActionTooltip label="Reply all">
+        <Button aria-label="Reply all" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled || isDirectConversation} onClick={handleReplyAll}>
+          <ReplyAll className="size-4" />
+          <span className="hidden xl:inline">Reply all</span>
+        </Button>
+      </ActionTooltip>
 
       {/* Forward */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleForward}>
-        <Forward className="size-4" />
-        <span className="hidden xl:inline">Forward</span>
-      </Button>
+      <ActionTooltip label="Forward">
+        <Button aria-label="Forward" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleForward}>
+          <Forward className="size-4" />
+          <span className="hidden xl:inline">Forward</span>
+        </Button>
+      </ActionTooltip>
 
       <div className="mx-0.5 h-5 w-px shrink-0 bg-border" />
 
       {/* Delete */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleDelete}>
+      <ActionTooltip label={activeFolder === "Trash" ? "Delete permanently" : "Move to Trash"}>
+      <Button aria-label={activeFolder === "Trash" ? "Delete permanently" : "Move to Trash"} variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleDelete}>
         {shouldAnimate ? (
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
@@ -266,9 +323,11 @@ export function MessageActionBar() {
         )}
         <span className="hidden xl:inline">{activeFolder === "Trash" ? "Delete permanently" : "Move to Trash"}</span>
       </Button>
+      </ActionTooltip>
 
       {/* Archive */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled || activeFolder === "Archive"} onClick={handleArchive}>
+      <ActionTooltip label="Archive">
+      <Button aria-label="Archive" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled || activeFolder === "Archive"} onClick={handleArchive}>
         {shouldAnimate ? (
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
@@ -293,6 +352,7 @@ export function MessageActionBar() {
         )}
         <span className="hidden xl:inline">Archive</span>
       </Button>
+      </ActionTooltip>
 
       {/* Move to */}
       {shouldAnimate ? (
@@ -343,14 +403,26 @@ export function MessageActionBar() {
         />
       )}
 
-      {/* Junk */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleJunk}>
-        <AlertCircle className="size-4" />
-        <span className="hidden xl:inline">Junk</span>
-      </Button>
+      {/* Junk / Not Junk */}
+      {activeFolder === "Spam" ? (
+        <ActionTooltip label="Not junk - move to Inbox">
+          <Button aria-label="Not junk" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleNotJunk}>
+            <ShieldCheck className="size-4" />
+            <span className="hidden xl:inline">Not Junk</span>
+          </Button>
+        </ActionTooltip>
+      ) : (
+        <ActionTooltip label="Mark as junk">
+          <Button aria-label="Mark as junk" variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleJunk}>
+            <ShieldOff className="size-4" />
+            <span className="hidden xl:inline">Junk</span>
+          </Button>
+        </ActionTooltip>
+      )}
 
       {/* Star/Unstar */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleToggleStar}>
+      <ActionTooltip label={isFlagged ? "Unstar" : "Star"}>
+      <Button aria-label={isFlagged ? "Unstar" : "Star"} variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleToggleStar}>
         {shouldAnimate ? (
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
@@ -377,9 +449,11 @@ export function MessageActionBar() {
         )}
         <span className="hidden xl:inline">{isFlagged ? "Unstar" : "Star"}</span>
       </Button>
+      </ActionTooltip>
 
       {/* Mark read/unread */}
-      <Button variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleToggleRead}>
+      <ActionTooltip label={isSeen ? "Mark as unread" : "Mark as read"}>
+      <Button aria-label={isSeen ? "Mark as unread" : "Mark as read"} variant="ghost" size="sm" className="shrink-0 gap-1.5" disabled={disabled} onClick={handleToggleRead}>
         {shouldAnimate ? (
           <AnimatePresence mode="wait" initial={false}>
             <motion.span
@@ -406,11 +480,37 @@ export function MessageActionBar() {
         )}
         <span className="hidden xl:inline">{isSeen ? "Unread" : "Read"}</span>
       </Button>
+      </ActionTooltip>
+
+      {/* Print */}
+      <ActionTooltip label="Print">
+      <Button
+        aria-label="Print"
+        variant="ghost"
+        size="sm"
+        className="shrink-0 gap-1.5"
+        disabled={disabled}
+        onClick={() => {
+          if (!data) return;
+          const content = data.html || `<pre>${data.text}</pre>`;
+          const win = window.open("", "_blank");
+          if (!win) return;
+          win.document.write(`<!DOCTYPE html><html><head><title>${data.subject}</title></head><body>${content}</body></html>`);
+          win.document.close();
+          win.focus();
+          win.print();
+        }}
+      >
+        <Printer className="size-4" />
+        <span className="hidden xl:inline">Print</span>
+      </Button>
+      </ActionTooltip>
 
       {/* Tags */}
       {data && (
         <TagPicker folder={activeFolder} uid={data.uid} />
       )}
     </AnimatedDiv>
+    </ActionTooltipProvider>
   );
 }

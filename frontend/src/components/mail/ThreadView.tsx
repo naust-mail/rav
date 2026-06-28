@@ -116,7 +116,7 @@ export function ThreadView({ thread, currentUid }: ThreadViewProps) {
         <button
           type="button"
           onClick={() => setThreadExpanded((v) => !v)}
-          className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
           aria-label={threadExpanded ? "Collapse conversation" : "Expand conversation"}
         >
           {threadExpanded ? (
@@ -160,7 +160,7 @@ export function ThreadView({ thread, currentUid }: ThreadViewProps) {
                 "flex w-full gap-3 bg-background px-4 text-left transition-colors",
                 isExpanded ? "py-3" : "py-2",
                 isCurrent && "bg-accent/50",
-                !isExpanded && "cursor-pointer hover:bg-muted/50",
+                !isExpanded && "cursor-pointer hover:bg-accent/50 active:bg-accent/70",
               )}
             >
               {/* Avatar */}

@@ -40,3 +40,15 @@ export function useDeleteFolder() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["folders"] }),
   });
 }
+
+export function useMarkAllRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ folder }: { folder: string }) =>
+      apiPost(`/folders/${encodeURIComponent(folder)}/mark-all-read`, {}),
+    onSuccess: (_data, { folder }) => {
+      queryClient.invalidateQueries({ queryKey: ["messages", folder] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}

@@ -1,22 +1,26 @@
 "use client";
 
-import { useMemo, useRef, useEffect } from "react";
+import { useMemo, useRef, useEffect, useState } from "react";
 import { useCalendarStore } from "@/stores/useCalendarStore";
 import { useCalendarEvents } from "@/hooks/useCalendar";
 import {
   getDayViewRange,
   getHours,
-  getEventPosition,
+  layoutEvents,
+  getOverflowGroups,
   isToday,
   formatTime,
   getEventColorClasses,
 } from "./calendarUtils";
+import { EventListPopover, type EventListPopoverState } from "./EventListPopover";
+import { EventChip } from "./EventChip";
+import { CalendarContextMenu, type CalendarContextMenuState } from "./CalendarContextMenu";
 import { cn } from "@/lib/utils";
 import type { CalendarEvent } from "@/types/calendar";
 
-interface DayViewProps {
+type DayViewProps = {
   timeFormat: string;
-}
+};
 
 export function DayView({ timeFormat }: DayViewProps) {
   const selectedDate = useCalendarStore((s) => s.selectedDate);
@@ -68,8 +72,26 @@ export function DayView({ timeFormat }: DayViewProps) {
     selectEvent(eventId);
   };
 
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  const DAY_COL_CAP = 5;
+  const [overflowPopover, setOverflowPopover] = useState<EventListPopoverState | null>(null);
+  const [contextMenu, setContextMenu] = useState<CalendarContextMenuState | null>(null);
+
+  const handleEventContextMenu = (x: number, y: number, ev: CalendarEvent) => {
+    setContextMenu({ x, y, type: "event", eventId: ev.id, eventTitle: ev.title });
+  };
+
+  const [currentMinutes, setCurrentMinutes] = useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  });
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = new Date();
+      setCurrentMinutes(now.getHours() * 60 + now.getMinutes());
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const showIndicator = isToday(selectedDate);
 
   return (
@@ -129,6 +151,7 @@ export function DayView({ timeFormat }: DayViewProps) {
               <div
                 key={hour}
                 onClick={() => handleTimeSlotClick(hour)}
+                onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "slot", date: selectedDate, hour }); }}
                 className="h-[60px] cursor-pointer border-b border-border transition-colors hover:bg-accent/30"
               />
             ))}
@@ -144,43 +167,81 @@ export function DayView({ timeFormat }: DayViewProps) {
             )}
 
             {/* Events */}
-            {timedEvents.map((event) => {
-              const pos = getEventPosition(
-                event.start_time,
-                event.end_time,
-                selectedDate,
-              );
-              const colors = getEventColorClasses(event.color);
+            {(() => {
+              const laid = layoutEvents(timedEvents, selectedDate);
+              const overflowGroups = getOverflowGroups(laid, DAY_COL_CAP);
               return (
-                <button
-                  key={event.id}
-                  type="button"
-                  onClick={(e) => handleEventClick(e, event.id)}
-                  className={cn(
-                    "absolute left-1 right-4 overflow-hidden rounded px-2 py-1 text-left text-xs leading-tight",
-                    colors.bg,
-                    colors.text,
-                  )}
-                  style={{
-                    top: `${pos.top}px`,
-                    height: `${pos.height}px`,
-                  }}
-                  title={event.title}
-                >
-                  <div className="font-medium">{event.title}</div>
-                  <div className="opacity-80">
-                    {formatTime(event.start_time, timeFormat)} -{" "}
-                    {formatTime(event.end_time, timeFormat)}
-                  </div>
-                  {event.location && (
-                    <div className="mt-0.5 opacity-70">{event.location}</div>
-                  )}
-                </button>
+                <>
+                  {laid.filter((ev) => ev.column < DAY_COL_CAP).map((event) => {
+                    const colors = getEventColorClasses(event.color);
+                    const effectiveCols = Math.min(event.totalColumns, DAY_COL_CAP);
+                    const colWidth = 100 / effectiveCols;
+                    return (
+                      <EventChip
+                        key={event.id}
+                        event={event}
+                        onClick={(e) => handleEventClick(e, event.id)}
+                        onContextMenu={handleEventContextMenu}
+                        className={cn(
+                          "absolute overflow-hidden rounded px-2 py-1 text-left text-xs leading-tight",
+                          colors.bg,
+                          colors.text,
+                        )}
+                        style={{
+                          top: `${event.top}px`,
+                          height: `${event.height}px`,
+                          left: `calc(${event.column * colWidth}% + 2px)`,
+                          right: `calc(${(effectiveCols - event.column - 1) * colWidth}% + 2px)`,
+                        }}
+                        title={event.title}
+                      >
+                        <div className="truncate font-medium">{event.title}</div>
+                        <div className="opacity-80">
+                          {formatTime(event.start_time, timeFormat)} -{" "}
+                          {formatTime(event.end_time, timeFormat)}
+                        </div>
+                        {event.location && (
+                          <div className="mt-0.5 truncate opacity-70">{event.location}</div>
+                        )}
+                      </EventChip>
+                    );
+                  })}
+                  {overflowGroups.map((group, i) => (
+                    <button
+                      key={`overflow-${i}`}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOverflowPopover({
+                          anchor: e.currentTarget.getBoundingClientRect(),
+                          events: group.all as unknown as CalendarEvent[],
+                          title: `${group.all.length} events`,
+                        });
+                      }}
+                      className="absolute right-1 z-10 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                      style={{ top: `${group.top}px` }}
+                    >
+                      +{group.hidden.length}
+                    </button>
+                  ))}
+                </>
               );
-            })}
+            })()}
           </div>
         </div>
       </div>
+
+      <EventListPopover
+        state={overflowPopover}
+        onClose={() => setOverflowPopover(null)}
+        timeFormat={timeFormat}
+        onEventContextMenu={handleEventContextMenu}
+      />
+      <CalendarContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        timeFormat={timeFormat}
+      />
     </div>
   );
 }

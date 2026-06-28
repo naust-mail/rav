@@ -55,6 +55,9 @@ pub struct SendableMessage {
     pub references: Option<String>,
     /// File attachments.
     pub attachments: Vec<AttachmentData>,
+    /// When true, adds `Auto-Submitted: auto-replied` per RFC 3834.
+    /// Set on automated replies (vacation responder) to prevent mail loops.
+    pub auto_submitted: bool,
 }
 
 /// A single file attachment to include in an outgoing message.

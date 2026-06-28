@@ -51,6 +51,7 @@ mod tests {
             environment: "development".to_string(),
             base_path: None,
             allow_custom_mail_servers: true,
+            rspamd_url: None,
         });
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
         let transport = Arc::new(crate::mail_transport::MailTransport {
@@ -66,7 +67,8 @@ mod tests {
         ));
         let event_bus = Arc::new(crate::realtime::events::EventBus::new());
         let idle_manager = Arc::new(crate::realtime::idle::IdleManager::new());
-        let app = create_router(config, transport, store, imap_client, smtp_client, search_engine, event_bus, idle_manager);
+        let http_client = Arc::new(reqwest::Client::new());
+        let app = create_router(config, transport, store, imap_client, smtp_client, http_client, search_engine, event_bus, idle_manager);
 
         let response = app
             .oneshot(

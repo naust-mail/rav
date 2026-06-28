@@ -85,7 +85,7 @@
   --sidebar-foreground: hsl(20 15% 10%);
   --sidebar-primary: hsl(20 70% 50%);
   --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(30 10% 96%);
+  --sidebar-accent: hsl(30 10% 89%);
   --sidebar-accent-foreground: hsl(20 15% 10%);
   --sidebar-border: hsl(30 8% 90%);
   --sidebar-ring: hsl(20 70% 50%);
@@ -103,7 +103,7 @@
   --secondary: hsl(20 8% 12%);
   --secondary-foreground: hsl(30 15% 95%);
   --muted: hsl(20 8% 12%);
-  --muted-foreground: hsl(20 5% 55%);
+  --muted-foreground: hsl(20 5% 63%);
   --accent: hsl(25 15% 22%);
   --accent-foreground: hsl(30 15% 95%);
   --destructive: hsl(0 84% 60%);
@@ -120,7 +120,7 @@
   --sidebar-foreground: hsl(30 15% 95%);
   --sidebar-primary: hsl(20 75% 55%);
   --sidebar-primary-foreground: hsl(20 10% 7%);
-  --sidebar-accent: hsl(20 8% 12%);
+  --sidebar-accent: hsl(20 8% 20%);
   --sidebar-accent-foreground: hsl(30 15% 95%);
   --sidebar-border: hsl(20 6% 20%);
   --sidebar-ring: hsl(20 75% 55%);
@@ -223,4 +223,16 @@
 
 .animate-hdd-blink {
   animation: hdd-blink 400ms ease-in-out infinite;
+}
+
+/* Expand tap area for small icon buttons on touch devices without affecting layout */
+@media (pointer: coarse) {
+  .touch-expand {
+    position: relative;
+  }
+  .touch-expand::before {
+    content: "";
+    position: absolute;
+    inset: -14px;
+  }
 }

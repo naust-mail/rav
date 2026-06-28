@@ -36,7 +36,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <MotionProvider>{children}</MotionProvider>
       </LazyMotion>
       <Toaster
-        position="bottom-right"
+        position="bottom-center"
         toastOptions={{
           className:
             "!bg-foreground !text-background !border-border !shadow-lg !rounded-lg !text-sm",

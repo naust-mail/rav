@@ -33,7 +33,7 @@ export function AttachmentPreviewDialog({
 
   return (
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
           <Dialog.Overlay asChild>
             <AnimatedDiv
@@ -90,6 +90,12 @@ export function AttachmentPreviewDialog({
                     className="max-h-full max-w-full object-contain"
                   />
                 ) : attachment.contentType === "application/pdf" ? (
+                  <iframe
+                    src={previewUrl}
+                    className="h-full w-full border-none"
+                    title={attachment.filename}
+                  />
+                ) : attachment.filename.endsWith(".txt") || attachment.contentType.startsWith("text/") ? (
                   <iframe
                     src={previewUrl}
                     className="h-full w-full border-none"

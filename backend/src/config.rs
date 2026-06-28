@@ -74,6 +74,12 @@ pub struct AppConfig {
     #[serde(default)]
     pub base_path: Option<String>,
 
+    /// Base URL for the rspamd HTTP API (e.g. "http://127.0.0.1:11334").
+    /// When unset, spam/ham reporting is disabled and messages are still moved
+    /// to Junk/Inbox but rspamd is not trained.
+    #[serde(default)]
+    pub rspamd_url: Option<String>,
+
     /// Allow users to configure their own mail servers.
     /// If false, IMAP_HOST must be configured and users cannot override mail server settings.
     /// SMTP_HOST is optional and falls back to IMAP_HOST when not set.

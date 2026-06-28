@@ -11,6 +11,9 @@ interface EmailRendererProps {
   emailTheme?: 'light' | 'dark' | 'transparent' | 'adaptive';
 }
 
+// We want to
+const MAX_SAFE_CHARACTERS = 150000;
+
 /**
  * Strip remote resource URLs from HTML, keeping data: and cid: URIs intact.
  * Returns the cleaned HTML and whether any remote resources were found.
@@ -39,12 +42,31 @@ function stripRemoteResources(html: string): { cleaned: string; hasRemote: boole
     },
   );
 
-  // Strip remote background images in inline styles
+  // Strip remote background images and any url() references in inline styles or <style> blocks.
   cleaned = cleaned.replace(
     /url\(\s*(["']?)(https?:\/\/[^)]*?)\1\s*\)/gi,
     (_match, quote, url) => {
       hasRemote = true;
       return `url(${quote}${quote}) /* blocked: ${url} */`;
+    },
+  );
+
+  // Strip CSS @import with string syntax: @import "https://..." or @import 'https://...'
+  // The url() form is already caught by the url() regex above.
+  cleaned = cleaned.replace(
+    /@import\s+["'](https?:\/\/[^"']+)["'][^;]*;/gi,
+    (_match, url) => {
+      hasRemote = true;
+      return `/* blocked @import: ${url} */`;
+    },
+  );
+
+  // Strip <link> tags with remote href (stylesheet imports, prefetch, etc.)
+  cleaned = cleaned.replace(
+    /<link\b[^>]*\bhref\s*=\s*(["'])(https?:\/\/[^"']+)\1[^>]*>/gi,
+    (_match, _quote, url) => {
+      hasRemote = true;
+      return `<!-- blocked link: ${url} -->`;
     },
   );
 
@@ -54,9 +76,16 @@ function stripRemoteResources(html: string): { cleaned: string; hasRemote: boole
 /** Check if HTML contains any remote resource URLs (http/https). */
 export function hasRemoteResources(html: string | null): boolean {
   if (!html) return false;
-  // Check for remote src, srcset, or background-image URLs
-  return /(?:src|srcset)\s*=\s*["']https?:\/\//i.test(html) ||
-    /url\(\s*["']?https?:\/\//i.test(html);
+  return (
+    // Remote src or srcset on any element
+    /(?:src|srcset)\s*=\s*["']https?:\/\//i.test(html) ||
+    // url() references in styles
+    /url\(\s*["']?https?:\/\//i.test(html) ||
+    // @import with string syntax (url() form is caught above)
+    /@import\s+["']https?:\/\//i.test(html) ||
+    // <link href="https://...">
+    /<link\b[^>]*\bhref\s*=\s*["']https?:\/\//i.test(html)
+  );
 }
 
 export function EmailRenderer({
@@ -115,6 +144,13 @@ export function EmailRenderer({
       const doc = iframe.contentDocument;
       const body = doc?.body;
       if (body) {
+        // Force all links to open safely and protect window.opener
+        const links = body.querySelectorAll("a");
+        links.forEach((link) => {
+          link.setAttribute("target", "_blank");
+          link.setAttribute("rel", "noopener noreferrer");
+        });
+
         // Use the container height as a minimum so email bg fills the pane
         const containerHeight = iframe.parentElement?.clientHeight ?? 0;
         let lastHeight = 0;
@@ -162,12 +198,25 @@ export function EmailRenderer({
   const wrappedHtml = useMemo(() => {
     if (!html) return null;
 
-    const processedHtml = blockRemoteResources ? stripRemoteResources(html) : { cleaned: html, hasRemote: false };
+    // We ensure that nothing is more than the cap to avoid performance issues with extremely large emails.
+    let clipped = html;
+    if (html.length > MAX_SAFE_CHARACTERS) {
+      let roughSlice = html.slice(0, MAX_SAFE_CHARACTERS - 1000);
+
+      const lastCleanBreak = Math.max(roughSlice.lastIndexOf('\n'), roughSlice.lastIndexOf('>'));
+      if (lastCleanBreak > 0) {
+        roughSlice = roughSlice.slice(0, lastCleanBreak + 1);
+      }
+
+      clipped = roughSlice + `<div style="padding: 16px; margin: 12px; text-align: center; background: #fff3cd; color: #856404; font-family: sans-serif; border-radius: 6px;"><strong>[Message clipped due to length]</strong></div>`;
+    }
+
+    const processedHtml = blockRemoteResources ? stripRemoteResources(clipped) : { cleaned: clipped, hasRemote: false };
     const displayHtml = processedHtml.cleaned;
 
     // Extract the email's own background color from body tag (for padding bg matching)
     let emailBgColor: string | null = null;
-    
+
     // Strip nested <html>, <head>, <body> tags from email but keep their content.
     // This prevents the browser from creating a second document root that could
     // bypass our inversion filter. We keep <style> tags from the email intact.
@@ -206,7 +255,9 @@ export function EmailRenderer({
         }
         return wrapperStyle ? `<div style="${wrapperStyle}">` : '<div>';
       })
-      .replace(/<\/body>/gi, '</div>');
+      .replace(/<\/body>/gi, '</div>')
+      // Finally, prevent base hijacking the frame
+      .replace(/<base\b[^>]*>/gi, '') ;
 
     // For adaptive emails, we can't rely on @media(prefers-color-scheme:dark)
     // because browsers evaluate it against OS preference, not the iframe's
@@ -216,7 +267,7 @@ export function EmailRenderer({
     let adaptiveDarkCSS = '';
     if (emailTheme === 'adaptive') {
       const darkMediaRe = /@media\s*\([^)]*prefers-color-scheme\s*:\s*dark[^)]*\)\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/gi;
-      
+
       if (isDark) {
         // Extract inner CSS rules and collect them for unconditional injection
         const extractedRules: string[] = [];
@@ -345,6 +396,7 @@ export function EmailRenderer({
 <html class="${shouldInvert ? 'invert' : ''}">
 <head>
   <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: ${blockRemoteResources ? '' : 'https: http:'}; media-src data:;" />
   <meta name="color-scheme" content="${iframeColorScheme}" />
   <style>
     html {

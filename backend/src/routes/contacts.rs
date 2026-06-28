@@ -106,8 +106,7 @@ pub struct AutocompleteResponse {
 
 /// `GET /api/contacts?q=&limit=50&offset=0`
 ///
-/// Lists contacts with optional search. If `q` is provided, uses
-/// `search_contacts`; otherwise uses `list_contacts`.
+/// Lists contacts with optional search and LIMIT/OFFSET pagination.
 pub async fn list_contacts_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
@@ -117,15 +116,13 @@ pub async fn list_contacts_handler(
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     let query = params.q.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+    let limit = params.limit.min(200);
 
-    let contacts = match query {
-        Some(q) => db::contacts::search_contacts(&conn, q, params.limit)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?,
-        None => db::contacts::list_contacts(&conn, None, params.limit, params.offset)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?,
-    };
+    let contacts = db::contacts::list_contacts(&conn, query, limit, params.offset)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
-    let total_count = contacts.len();
+    let total_count = db::contacts::count_contacts(&conn, query)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(ListContactsResponse {
         contacts,

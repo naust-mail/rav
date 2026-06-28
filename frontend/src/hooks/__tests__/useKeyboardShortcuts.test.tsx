@@ -28,6 +28,7 @@ vi.mock("@/stores/useUiStore", () => {
 });
 
 vi.mock("@/hooks/useMessages", () => ({
+  useMessage: vi.fn().mockReturnValue({ data: null }),
   useUpdateFlags: () => ({ mutate: vi.fn() }),
   useMoveMessage: () => ({ mutate: vi.fn() }),
   useDeleteMessage: () => ({ mutate: vi.fn() }),
@@ -36,6 +37,10 @@ vi.mock("@/hooks/useMessages", () => ({
 
 vi.mock("@/hooks/useSearch", () => ({
   useSearch: () => mockSearchData,
+}));
+
+vi.mock("@/hooks/useIdentities", () => ({
+  useIdentities: () => ({ data: [] }),
 }));
 
 import { useKeyboardShortcuts } from "../useKeyboardShortcuts";

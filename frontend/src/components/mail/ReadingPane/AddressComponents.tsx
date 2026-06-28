@@ -3,9 +3,10 @@
 import { useState, useCallback, useMemo, type ReactNode } from "react";
 import { Popover, Dialog } from "radix-ui";
 import { AnimatePresence } from "framer-motion";
-import { Send, Copy, Check, UserPlus, X, Search } from "lucide-react";
+import { Send, Copy, UserPlus, X, Search } from "lucide-react";
 import { useComposeStore } from "@/stores/useComposeStore";
 import { useCreateContact } from "@/hooks/useContacts";
+import { ContactDialog } from "@/components/contacts/ContactDialog";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { useUiStore } from "@/stores/useUiStore";
@@ -21,78 +22,87 @@ function AddressPopover({
   children: ReactNode;
 }) {
   const createContact = useCreateContact();
-  const [contactAdded, setContactAdded] = useState(false);
+  const [contactDialogOpen, setContactDialogOpen] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+
+  const handleAddToContacts = useCallback(
+    (data: { name: string; email: string; company?: string; notes?: string }) => {
+      createContact.mutate(data, {
+        onSuccess: () => setContactDialogOpen(false),
+      });
+    },
+    [createContact],
+  );
 
   return (
-    <Popover.Root
-      onOpenChange={(open) => {
-        if (!open) setContactAdded(false);
-      }}
-    >
-      <Popover.Trigger asChild>{children}</Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          className="z-50 w-56 rounded-lg border border-border bg-background p-1 shadow-lg"
-          sideOffset={4}
-          align="start"
-        >
-          <div className="border-b border-border px-3 py-2">
-            {name && (
-              <p className="text-sm font-medium truncate">{name}</p>
-            )}
-            <p className="text-xs text-muted-foreground truncate">
-              {address}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => {
-              useComposeStore.getState().openCompose();
-              useComposeStore.setState({ to: address });
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
+    <>
+      <Popover.Root
+        open={popoverOpen}
+        onOpenChange={setPopoverOpen}
+      >
+        <Popover.Trigger asChild>{children}</Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Content
+            className="z-50 w-56 rounded-lg border border-border bg-background p-1 shadow-lg duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2"
+            sideOffset={4}
+            align="start"
           >
-            <Send className="size-3.5 text-muted-foreground" />
-            Compose email to
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              navigator.clipboard.writeText(
-                name ? `${name} <${address}>` : address,
-              );
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
-          >
-            <Copy className="size-3.5 text-muted-foreground" />
-            Copy address
-          </button>
-          <button
-            type="button"
-            disabled={contactAdded || createContact.isPending}
-            onClick={() => {
-              createContact.mutate(
-                { email: address, name: name ?? "" },
-                { onSuccess: () => setContactAdded(true) },
-              );
-            }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
-          >
-            {contactAdded ? (
-              <>
-                <Check className="size-3.5 text-green-500" />
-                Contact added
-              </>
-            ) : (
-              <>
-                <UserPlus className="size-3.5 text-muted-foreground" />
-                Add to contacts
-              </>
-            )}
-          </button>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
+            <div className="border-b border-border px-3 py-2">
+              {name && (
+                <p className="text-sm font-medium truncate">{name}</p>
+              )}
+              <p className="text-xs text-muted-foreground truncate">
+                {address}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                useComposeStore.getState().openCompose();
+                useComposeStore.setState({ to: address });
+                setPopoverOpen(false);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
+            >
+              <Send className="size-3.5 text-muted-foreground" />
+              Compose email to
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText(
+                  name ? `${name} <${address}>` : address,
+                );
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
+            >
+              <Copy className="size-3.5 text-muted-foreground" />
+              Copy address
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPopoverOpen(false);
+                setContactDialogOpen(true);
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
+            >
+              <UserPlus className="size-3.5 text-muted-foreground" />
+              Add to contacts
+            </button>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+
+      <ContactDialog
+        open={contactDialogOpen}
+        onClose={() => setContactDialogOpen(false)}
+        onSubmit={handleAddToContacts}
+        isPending={createContact.isPending}
+        initialEmail={address}
+        initialName={name ?? ""}
+      />
+    </>
   );
 }
 
@@ -214,7 +224,7 @@ function RecipientModal({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
           {open ? (
             <>

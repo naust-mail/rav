@@ -10,9 +10,11 @@ use tokio::sync::{broadcast, mpsc};
 use crate::auth::session::{AccountSession, SessionStore};
 use crate::config::AppConfig;
 use crate::imap::client::{ImapClient, ImapCredentials};
+use crate::mail_transport::MailTransport;
 use crate::realtime::events::EventBus;
 use crate::realtime::idle::IdleManager;
 use crate::search::engine::SearchEngine;
+use crate::smtp::client::SmtpClient;
 
 fn extract_browser_id(cookie_header: &str) -> Option<String> {
     for segment in cookie_header.split(';') {
@@ -33,10 +35,11 @@ pub async fn ws_handler(
     headers: axum::http::HeaderMap,
     Extension(store): Extension<Arc<SessionStore>>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
+    Extension(transport): Extension<Arc<MailTransport>>,
     Extension(event_bus): Extension<Arc<EventBus>>,
     Extension(idle_manager): Extension<Arc<IdleManager>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(smtp_client): Extension<Arc<dyn SmtpClient>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
 ) -> Response {
     let browser_id = headers
@@ -72,6 +75,7 @@ pub async fn ws_handler(
             event_bus,
             idle_manager,
             imap_client,
+            smtp_client,
             search_engine,
         )
     })
@@ -82,10 +86,11 @@ async fn handle_socket_multi_account(
     socket: WebSocket,
     accounts: Vec<AccountSession>,
     config: Arc<AppConfig>,
-    transport: Arc<crate::mail_transport::MailTransport>,
+    transport: Arc<MailTransport>,
     event_bus: Arc<EventBus>,
     idle_manager: Arc<IdleManager>,
     imap_client: Arc<dyn ImapClient>,
+    smtp_client: Arc<dyn SmtpClient>,
     search_engine: Arc<SearchEngine>,
 ) {
     tracing::info!(account_count = accounts.len(), "WebSocket connected");
@@ -134,6 +139,8 @@ async fn handle_socket_multi_account(
                 event_bus.clone(),
                 config.clone(),
                 transport.clone(),
+                smtp_client.clone(),
+                imap_client.clone(),
             )
             .await;
 

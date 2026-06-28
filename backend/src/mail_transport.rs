@@ -104,3 +104,83 @@ impl MailTransport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use std::io::Write;
+
+    fn base_config() -> AppConfig {
+        AppConfig {
+            host: "127.0.0.1".to_string(),
+            port: 3001,
+            imap_host: Some("mail.example.com".to_string()),
+            imap_port: 993,
+            smtp_host: Some("mail.example.com".to_string()),
+            smtp_port: 587,
+            tls_enabled: true,
+            tls_ca_cert_path: None,
+            imap_connect_host: None,
+            smtp_connect_host: None,
+            data_dir: "/tmp".to_string(),
+            session_timeout_hours: 24,
+            static_dir: "/tmp".to_string(),
+            environment: "test".to_string(),
+            base_path: None,
+            allow_custom_mail_servers: false,
+            rspamd_url: None,
+        }
+    }
+
+    #[test]
+    fn connect_host_defaults_to_imap_host() {
+        let t = MailTransport::from_config(&base_config());
+        assert_eq!(t.imap_connect_host, "mail.example.com");
+        assert_eq!(t.smtp_connect_host, "mail.example.com");
+    }
+
+    #[test]
+    fn connect_host_override_takes_precedence() {
+        let mut config = base_config();
+        config.imap_connect_host = Some("127.0.0.1".to_string());
+        config.smtp_connect_host = Some("127.0.0.1".to_string());
+        let t = MailTransport::from_config(&config);
+        assert_eq!(t.imap_connect_host, "127.0.0.1");
+        assert_eq!(t.smtp_connect_host, "127.0.0.1");
+    }
+
+    #[test]
+    fn no_smtp_host_gives_none_tls_params() {
+        let mut config = base_config();
+        config.smtp_host = None;
+        let t = MailTransport::from_config(&config);
+        assert!(t.smtp_tls_params.is_none());
+    }
+
+    #[test]
+    fn smtp_host_set_gives_some_tls_params() {
+        let t = MailTransport::from_config(&base_config());
+        assert!(t.smtp_tls_params.is_some());
+    }
+
+    #[test]
+    fn missing_cert_path_does_not_panic() {
+        let mut config = base_config();
+        config.tls_ca_cert_path = Some("/nonexistent/cert.pem".to_string());
+        // Should not panic, falls back gracefully
+        let t = MailTransport::from_config(&config);
+        // SMTP params still built (without the extra cert)
+        assert!(t.smtp_tls_params.is_some());
+    }
+
+    #[test]
+    fn invalid_cert_content_does_not_panic() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "this is not a pem certificate").unwrap();
+        let mut config = base_config();
+        config.tls_ca_cert_path = Some(file.path().to_str().unwrap().to_string());
+        // Should not panic
+        let _ = MailTransport::from_config(&config);
+    }
+}

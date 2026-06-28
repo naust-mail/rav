@@ -24,6 +24,7 @@ import { useClickOutside } from "@/hooks/useClickOutside";
 import { useTags, useBulkAddTag } from "@/hooks/useTags";
 import { createFadeSlideVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
+import { ActionTooltip, ActionTooltipProvider } from "./ActionTooltip";
 
 export function BulkActionBar() {
   const selectedUids = useUiStore((s) => s.selectedMessageUids);
@@ -145,76 +146,86 @@ export function BulkActionBar() {
       )}
 
       {/* Mark read */}
-      <button
-        type="button"
-        title="Mark as read"
-        disabled={isBusy}
-        onClick={handleMarkRead}
-        className={cn(
-          "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          "disabled:pointer-events-none disabled:opacity-50",
-        )}
-      >
-        <Mail className="size-4" />
-      </button>
+      <ActionTooltip label="Mark as read">
+        <button
+          type="button"
+          aria-label="Mark as read"
+          disabled={isBusy}
+          onClick={handleMarkRead}
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground",
+            "disabled:pointer-events-none disabled:opacity-50",
+          )}
+        >
+          <Mail className="size-4" />
+        </button>
+      </ActionTooltip>
 
       {/* Mark unread */}
-      <button
-        type="button"
-        title="Mark as unread"
-        disabled={isBusy}
-        onClick={handleMarkUnread}
-        className={cn(
-          "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          "disabled:pointer-events-none disabled:opacity-50",
-        )}
-      >
-        <MailOpen className="size-4" />
-      </button>
+      <ActionTooltip label="Mark as unread">
+        <button
+          type="button"
+          aria-label="Mark as unread"
+          disabled={isBusy}
+          onClick={handleMarkUnread}
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground",
+            "disabled:pointer-events-none disabled:opacity-50",
+          )}
+        >
+          <MailOpen className="size-4" />
+        </button>
+      </ActionTooltip>
 
       {/* Star */}
-      <button
-        type="button"
-        title="Star"
-        disabled={isBusy}
-        onClick={handleStar}
-        className={cn(
-          "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          "disabled:pointer-events-none disabled:opacity-50",
-        )}
-      >
-        <Star className="size-4" />
-      </button>
+      <ActionTooltip label="Star">
+        <button
+          type="button"
+          aria-label="Star"
+          disabled={isBusy}
+          onClick={handleStar}
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground",
+            "disabled:pointer-events-none disabled:opacity-50",
+          )}
+        >
+          <Star className="size-4" />
+        </button>
+      </ActionTooltip>
 
       {/* Delete */}
-      <button
-        type="button"
-        title="Delete"
-        disabled={isBusy}
-        onClick={handleDelete}
-        className={cn(
-          "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive",
-          "disabled:pointer-events-none disabled:opacity-50",
-        )}
-      >
-        <Trash2 className="size-4" />
-      </button>
+      <ActionTooltip label="Delete">
+        <button
+          type="button"
+          aria-label="Delete"
+          disabled={isBusy}
+          onClick={handleDelete}
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-destructive",
+            "disabled:pointer-events-none disabled:opacity-50",
+          )}
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </ActionTooltip>
 
       {/* Move to folder */}
       <div className="relative" ref={moveMenuRef}>
+        <ActionTooltip label="Move to folder">
         <button
           type="button"
-          title="Move to folder"
+          aria-label="Move to folder"
           disabled={isBusy}
           onClick={() => setMoveMenuOpen((prev) => !prev)}
           className={cn(
-            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground",
             "disabled:pointer-events-none disabled:opacity-50",
             moveMenuOpen && "bg-accent text-foreground",
           )}
         >
           <FolderInput className="size-4" />
         </button>
+        </ActionTooltip>
 
         {moveMenuOpen && (
           <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
@@ -225,7 +236,7 @@ export function BulkActionBar() {
                   key={f.name}
                   type="button"
                   onClick={() => handleMoveTo(f.name)}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
                 >
                   {f.name}
                 </button>
@@ -241,19 +252,21 @@ export function BulkActionBar() {
 
       {/* Tag */}
       <div className="relative" ref={tagMenuRef}>
+        <ActionTooltip label="Add tag">
         <button
           type="button"
-          title="Add tag"
+          aria-label="Add tag"
           disabled={isBusy}
           onClick={() => setTagMenuOpen((prev) => !prev)}
           className={cn(
-            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+            "rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground",
             "disabled:pointer-events-none disabled:opacity-50",
             tagMenuOpen && "bg-accent text-foreground",
           )}
         >
           <Tag className="size-4" />
         </button>
+        </ActionTooltip>
 
         {tagMenuOpen && (
           <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
@@ -262,7 +275,7 @@ export function BulkActionBar() {
                 key={tag.id}
                 type="button"
                 onClick={() => handleBulkTag(tag.id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
               >
                 <span
                   className="size-2.5 shrink-0 rounded-full"
@@ -284,31 +297,35 @@ export function BulkActionBar() {
       <div className="flex-1" />
 
       {/* Clear selection */}
-      <button
-        type="button"
-        title="Clear selection"
-        onClick={clearBulkSelection}
-        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      >
-        <X className="size-4" />
-      </button>
+      <ActionTooltip label="Clear selection">
+        <button
+          type="button"
+          aria-label="Clear selection"
+          onClick={clearBulkSelection}
+          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground"
+        >
+          <X className="size-4" />
+        </button>
+      </ActionTooltip>
     </>
   );
 
   return (
     <AnimatePresence>
       {hasSelection ? (
-        <AnimatedDiv
-          key="bulk-action-bar"
-          data-testid="bulk-action-bar-transition"
-          variants={barMotionProps}
-          initial="initial"
-          animate="animate"
-          exit="exit"
-          className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/50 px-3 py-1.5"
-        >
-          {actionContent}
-        </AnimatedDiv>
+        <ActionTooltipProvider>
+          <AnimatedDiv
+            key="bulk-action-bar"
+            data-testid="bulk-action-bar-transition"
+            variants={barMotionProps}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/50 px-3 py-1.5"
+          >
+            {actionContent}
+          </AnimatedDiv>
+        </ActionTooltipProvider>
       ) : null}
     </AnimatePresence>
   );

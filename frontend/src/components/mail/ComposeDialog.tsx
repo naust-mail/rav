@@ -7,7 +7,6 @@ import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import {
   Send,
   X,
-  ChevronUp,
   AlertTriangle,
   Paperclip,
   Loader2,
@@ -34,6 +33,7 @@ import {
   useDeleteDraft,
 } from "@/hooks/useCompose";
 import { useIdentities } from "@/hooks/useIdentities";
+import { useDisplayPreferences } from "@/hooks/useDisplayPreferences";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -57,11 +57,14 @@ const RichTextEditor = dynamic(
 export function ComposeDialog() {
   const {
     isOpen,
+    mode,
     to,
     cc,
     bcc,
     subject,
     body,
+    quotedHtml,
+    quotedText,
     inReplyTo,
     references,
     draftId,
@@ -92,8 +95,10 @@ export function ComposeDialog() {
   const deleteMutation = useDeleteAttachment();
   const deleteDraftMutation = useDeleteDraft();
   const { data: identities } = useIdentities();
+  const { data: displayPrefs } = useDisplayPreferences();
   const [draftSaved, setDraftSaved] = useState(false);
   const [showDiscardAlert, setShowDiscardAlert] = useState(false);
+  const [quoteExpanded, setQuoteExpanded] = useState(false);
   const isMobile = useIsMobile();
   const [expanded, setExpanded] = useState(false);
   const [previewAttId, setPreviewAttId] = useState<string | null>(null);
@@ -102,6 +107,7 @@ export function ComposeDialog() {
   const toInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastSavedHashRef = useRef<string>("");
+  const [lastSavedHash, setLastSavedHash] = useState("");
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
   const shouldAnimate = effectiveAnimationMode !== "off";
   const overlayMotionProps = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
@@ -134,16 +140,24 @@ export function ComposeDialog() {
     }
   }, [isOpen, fromIdentityId, identities, setFromIdentityId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-focus the To field when dialog opens
+  // Auto-focus: body editor for replies/forwards (To is pre-filled), To field for new messages
   useEffect(() => {
     if (isOpen) {
-      const focusInput = () => toInputRef.current?.focus();
       const rafId = requestAnimationFrame(() => {
-        requestAnimationFrame(focusInput);
+        requestAnimationFrame(() => {
+          if (mode === "reply" || mode === "forward") {
+            const editor = document.querySelector<HTMLElement>(
+              "[data-compose-body] .ProseMirror, [data-compose-body] textarea"
+            );
+            editor?.focus();
+          } else {
+            toInputRef.current?.focus();
+          }
+        });
       });
       return () => cancelAnimationFrame(rafId);
     }
-  }, [isOpen]);
+  }, [isOpen, mode]);
 
   // Compute a simple hash of compose fields for dirty tracking
   const computeHash = useCallback(() => {
@@ -171,6 +185,10 @@ export function ComposeDialog() {
         setDraftId(currentDraftId);
       }
 
+      const draftHtmlBody = isHtml ? (quotedHtml ? body + quotedHtml : body) : null;
+      const draftTextBody = isHtml
+        ? stripHtml(body) + (quotedText ? "\n" + quotedText : "")
+        : body + (quotedText ? "\n" + quotedText : "");
       saveDraftMutation.mutate(
         {
           id: currentDraftId,
@@ -178,17 +196,17 @@ export function ComposeDialog() {
           cc,
           bcc,
           subject,
-          textBody: isHtml ? stripHtml(body) : body,
-          htmlBody: isHtml ? body : null,
+          textBody: draftTextBody,
+          htmlBody: draftHtmlBody,
           inReplyTo: inReplyTo,
           references: references,
         },
         {
           onSuccess: () => {
             lastSavedHashRef.current = hash;
+            setLastSavedHash(hash);
             setDraftSaved(true);
             setTimeout(() => setDraftSaved(false), 3000);
-            toast.success("Draft saved");
           },
         }
       );
@@ -200,6 +218,8 @@ export function ComposeDialog() {
       bcc,
       subject,
       body,
+      quotedHtml,
+      quotedText,
       isHtml,
       draftId,
       setDraftId,
@@ -209,19 +229,22 @@ export function ComposeDialog() {
     ]
   );
 
-  // Auto-save every 30s when dialog is open
+  // Auto-save every 15s when dialog is open
   useEffect(() => {
     if (!isOpen) return;
     const interval = setInterval(() => {
       saveDraft();
-    }, 30000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [isOpen, saveDraft]);
 
   // Reset saved hash when dialog opens
   useEffect(() => {
     if (isOpen) {
-      lastSavedHashRef.current = computeHash();
+      const h = computeHash();
+      lastSavedHashRef.current = h;
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLastSavedHash(h);
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -229,14 +252,15 @@ export function ComposeDialog() {
     let plainText: string;
     let sendHtml: string | null;
     if (isHtml) {
-      plainText = stripHtml(body);
+      const fullHtml = quotedHtml ? body + quotedHtml : body;
+      plainText = stripHtml(body) + (quotedText ? "\n" + quotedText : "");
       // Convert preview URLs back to cid: references for the email MIME body
-      sendHtml = body.replace(
+      sendHtml = fullHtml.replace(
         /\/api\/drafts\/[^/]+\/attachments\/([^/]+)\/content/g,
         (_match, attId) => `cid:${attId}`
       );
     } else {
-      plainText = body;
+      plainText = body + (quotedText ? "\n" + quotedText : "");
       sendHtml = null;
     }
     sendMutation.mutate(
@@ -268,6 +292,8 @@ export function ComposeDialog() {
     bcc,
     subject,
     body,
+    quotedHtml,
+    quotedText,
     isHtml,
     inReplyTo,
     references,
@@ -281,15 +307,21 @@ export function ComposeDialog() {
     if (!to.trim() && !cc.trim() && !bcc.trim()) return;
     closeCompose();
 
-    // 5-second undo window via sonner
+    const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
+
+    if (delay === 0) {
+      doSend();
+      return;
+    }
+
     const timer = setTimeout(() => {
       toast.dismiss("undo-send");
       doSend();
-    }, 5000);
+    }, delay);
 
     toast("Sending message...", {
       id: "undo-send",
-      duration: 5500,
+      duration: delay + 500,
       action: {
         label: "Undo",
         onClick: () => {
@@ -298,7 +330,7 @@ export function ComposeDialog() {
         },
       },
     });
-  }, [to, cc, bcc, closeCompose, doSend]);
+  }, [to, cc, bcc, closeCompose, doSend, displayPrefs?.undo_send_delay]);
 
   const handleDiscard = useCallback(() => {
     if (hasContent()) {
@@ -532,21 +564,24 @@ export function ComposeDialog() {
           }
         }}
       >
-        <Dialog.Portal>
+        <Dialog.Portal forceMount>
           <AnimatePresence>
             {isOpen ? (
               <Fragment key="compose-dialog-open">
-                <Dialog.Overlay forceMount asChild>
-                  <AnimatedDiv
-                    data-testid="compose-dialog-overlay-transition"
-                    variants={overlayMotionProps}
-                    initial="initial"
-                    animate="animate"
-                    exit="exit"
-                    className="fixed inset-0 z-40 bg-black/40"
-                  />
-                </Dialog.Overlay>
-                <Dialog.Content forceMount asChild>
+                {/* Only show scrim when expanded - collapsed bottom sheet has no overlay */}
+                {(!isMobile || expanded) && (
+                  <Dialog.Overlay forceMount asChild>
+                    <AnimatedDiv
+                      data-testid="compose-dialog-overlay-transition"
+                      variants={overlayMotionProps}
+                      initial="initial"
+                      animate="animate"
+                      exit="exit"
+                      className="fixed inset-0 z-40 bg-black/40"
+                    />
+                  </Dialog.Overlay>
+                )}
+                <Dialog.Content forceMount asChild onOpenAutoFocus={(e) => e.preventDefault()}>
                   <AnimatedDiv
                     data-testid="compose-dialog-content-transition"
                     variants={contentMotionProps}
@@ -560,8 +595,8 @@ export function ComposeDialog() {
                           ? "inset-0 rounded-none"
                           : "inset-x-0 bottom-0 rounded-t-xl max-h-[45dvh]"
                         : expanded
-                          ? "inset-4 rounded-xl sm:left-20"
-                          : "inset-x-4 bottom-4 top-auto rounded-xl mx-auto max-h-[80vh] w-full max-w-2xl sm:inset-x-auto sm:bottom-8 sm:ml-20"
+                          ? "inset-4 rounded-xl sm:left-14"
+                          : "inset-x-4 bottom-4 top-auto rounded-xl mx-auto max-h-[80vh] w-full max-w-2xl sm:inset-x-auto sm:bottom-8 sm:ml-14"
                     )}
                     style={isMobile ? { paddingBottom: "env(safe-area-inset-bottom)" } : undefined}
                     onKeyDown={handleKeyDown}
@@ -583,15 +618,27 @@ export function ComposeDialog() {
               </div>
             )}
 
+            {/* Mobile drag handle */}
+            {isMobile && !expanded && (
+              <div className="flex justify-center pb-1 pt-2">
+                <div className="h-1 w-8 rounded-full bg-border" />
+              </div>
+            )}
+
             {/* Header */}
             <div
               className="flex items-center justify-between border-b border-border px-4 py-3"
               onClick={isMobile && !expanded ? () => setExpanded(true) : undefined}
               style={isMobile && !expanded ? { cursor: "pointer" } : undefined}
             >
-              <Dialog.Title className="text-sm font-semibold">
-                New Message
-              </Dialog.Title>
+              <div className="flex items-center gap-2">
+                <Dialog.Title className="text-sm font-semibold">
+                  {mode === "reply" ? "Reply" : mode === "forward" ? "Forward" : "New Message"}
+                </Dialog.Title>
+                {hasContent() && computeHash() !== lastSavedHash && !draftSaved && (
+                  <span className="size-1.5 rounded-full bg-muted-foreground/50" title="Unsaved changes" />
+                )}
+              </div>
               <div className="flex items-center gap-1">
                 <button
                   onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
@@ -666,23 +713,24 @@ export function ComposeDialog() {
                   onChange={(v) => setField("to", v)}
                   placeholder="Recipients"
                 />
-                <button
-                  className="ml-2 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => {
-                    if (!showCc && !showBcc) {
-                      setShowCc(true);
-                    } else {
-                      setShowCc(!showCc);
-                      setShowBcc(!showBcc);
-                    }
-                  }}
-                >
-                  {showCc || showBcc ? (
-                    <ChevronUp className="size-3.5" />
-                  ) : (
-                    <span>Cc Bcc</span>
+                <div className="ml-2 flex items-center gap-1">
+                  {!showCc && (
+                    <button
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowCc(true)}
+                    >
+                      Cc
+                    </button>
                   )}
-                </button>
+                  {!showBcc && (
+                    <button
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={() => setShowBcc(true)}
+                    >
+                      Bcc
+                    </button>
+                  )}
+                </div>
               </div>
 
               {showCc && (
@@ -769,21 +817,50 @@ export function ComposeDialog() {
             )}
 
             {/* Body */}
-            {isHtml ? (
-              <RichTextEditor
-                content={body}
-                onChange={(html) => setField("body", html)}
-                onImageUpload={handleImageUpload}
-                placeholder="Write your message..."
-                className="flex-1 overflow-auto"
-              />
-            ) : (
-              <textarea
-                value={body}
-                onChange={(e) => setField("body", e.target.value)}
-                placeholder="Write your message..."
-                className="flex-1 resize-none overflow-auto bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground/50"
-              />
+            <div data-compose-body className="contents">
+              {isHtml ? (
+                <RichTextEditor
+                  content={body}
+                  onChange={(html) => setField("body", html)}
+                  onImageUpload={handleImageUpload}
+                  placeholder="Write your message..."
+                  className="flex-1 overflow-auto"
+                />
+              ) : (
+                <textarea
+                  value={body}
+                  onChange={(e) => setField("body", e.target.value)}
+                  placeholder="Write your message..."
+                  className="flex-1 resize-none overflow-auto bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground/50"
+                />
+              )}
+            </div>
+
+            {/* Collapsed quoted content for replies - sits inside the body area */}
+            {(quotedHtml || quotedText) && (
+              <div className="px-4 pb-2">
+                <button
+                  type="button"
+                  onClick={() => setQuoteExpanded((v) => !v)}
+                  className="rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  aria-expanded={quoteExpanded}
+                  aria-label={quoteExpanded ? "Hide quoted message" : "Show quoted message"}
+                >
+                  <span className="tracking-widest">···</span>
+                </button>
+                {quoteExpanded && (
+                  <div className="mt-2 border-l-2 border-border pl-3 text-sm text-muted-foreground">
+                    {isHtml && quotedHtml ? (
+                      <div
+                        className="prose prose-sm max-w-none dark:prose-invert"
+                        dangerouslySetInnerHTML={{ __html: quotedHtml }}
+                      />
+                    ) : (
+                      <pre className="whitespace-pre-wrap font-sans text-xs">{quotedText}</pre>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Footer */}

@@ -11,7 +11,8 @@ import { useUiStore } from "@/stores/useUiStore";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 
-interface ContactDialogProps {
+/** Props for the ContactDialog component. */
+type ContactDialogProps = {
   open: boolean;
   onClose: () => void;
   onSubmit: (data: {
@@ -21,32 +22,42 @@ interface ContactDialogProps {
     notes?: string;
   }) => void;
   isPending: boolean;
-}
+  mode?: "create" | "edit";
+  initialEmail?: string;
+  initialName?: string;
+  initialCompany?: string;
+  initialNotes?: string;
+};
 
 export function ContactDialog({
   open,
   onClose,
   onSubmit,
   isPending,
+  mode = "create",
+  initialEmail = "",
+  initialName = "",
+  initialCompany = "",
+  initialNotes = "",
 }: ContactDialogProps) {
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [company, setCompany] = useState("");
-  const [notes, setNotes] = useState("");
+  const [name, setName] = useState(initialName);
+  const [email, setEmail] = useState(initialEmail);
+  const [company, setCompany] = useState(initialCompany);
+  const [notes, setNotes] = useState(initialNotes);
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
   const overlayMotionProps = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
   const contentMotionProps = useMemo(() => createScaleFadeVariants(effectiveAnimationMode), [effectiveAnimationMode]);
 
-  // Reset form when dialog opens
+  // Reset form when dialog opens, seeding with any pre-filled values
   useEffect(() => {
     if (open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset on dialog open
-      setName("");
-      setEmail("");
-      setCompany("");
-      setNotes("");
+      setName(initialName);
+      setEmail(initialEmail);
+      setCompany(initialCompany);
+      setNotes(initialNotes);
     }
-  }, [open]);
+  }, [open, initialEmail, initialName, initialCompany, initialNotes]);
 
   // Close on Escape
   useEffect(() => {
@@ -100,7 +111,7 @@ export function ContactDialog({
           >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-foreground">
-            New Contact
+            {mode === "edit" ? "Edit Contact" : "New Contact"}
           </h2>
           <Button
             variant="ghost"
@@ -169,7 +180,9 @@ export function ContactDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={isPending || !email.trim()}>
-              {isPending ? "Creating..." : "Create Contact"}
+              {isPending
+                ? mode === "edit" ? "Saving..." : "Creating..."
+                : mode === "edit" ? "Save Changes" : "Create Contact"}
             </Button>
           </div>
         </form>

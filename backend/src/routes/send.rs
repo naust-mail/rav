@@ -120,6 +120,7 @@ pub async fn send_message_handler(
         in_reply_to: req.in_reply_to,
         references: req.references,
         attachments,
+        auto_submitted: false,
     };
 
     // Send via SMTP.

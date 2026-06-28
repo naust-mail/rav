@@ -103,6 +103,13 @@ impl SmtpClient for RealSmtpClient {
             builder = builder.references(refs.clone());
         }
 
+        // RFC 3834: automated replies must identify themselves to prevent loops.
+        if message.auto_submitted {
+            use lettre::message::header::{HeaderName, HeaderValue};
+            let name = HeaderName::new_from_ascii_str("Auto-Submitted");
+            builder = builder.raw_header(HeaderValue::new(name, "auto-replied".to_string()));
+        }
+
         // Separate inline images (those with content_id referenced in HTML)
         // from regular file attachments.
         let html_body = message.html_body.as_deref().unwrap_or("");

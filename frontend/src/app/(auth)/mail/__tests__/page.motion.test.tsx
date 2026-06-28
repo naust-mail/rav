@@ -16,6 +16,10 @@ vi.mock("@/hooks/useKeyboardShortcuts", () => ({
   useKeyboardShortcuts: vi.fn(),
 }));
 
+vi.mock("@/hooks/useFolders", () => ({
+  useFolders: () => ({ data: { folders: [] }, status: "success" }),
+}));
+
 vi.mock("@/hooks/useWebSocket", () => ({
   useWebSocket: vi.fn(() => ({ status: "connected", failCount: 0 })),
 }));

@@ -1,18 +1,26 @@
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPostFormData, apiDelete } from "@/lib/api";
 import type { Contact, ContactsResponse } from "@/types/contact";
 
-export function useContacts(search?: string) {
-  const params = new URLSearchParams();
-  if (search) params.set("q", search);
-  params.set("limit", "50");
-  params.set("offset", "0");
+const PAGE_SIZE = 30;
 
-  return useQuery({
+export function useContacts(search?: string) {
+  return useInfiniteQuery({
     queryKey: ["contacts", search ?? ""],
-    queryFn: () => apiGet<ContactsResponse>(`/contacts?${params.toString()}`),
+    queryFn: ({ pageParam = 0 }) => {
+      const params = new URLSearchParams();
+      if (search) params.set("q", search);
+      params.set("limit", String(PAGE_SIZE));
+      params.set("offset", String(pageParam));
+      return apiGet<ContactsResponse>(`/contacts?${params.toString()}`);
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.contacts.length, 0);
+      return loaded < lastPage.total_count ? loaded : undefined;
+    },
   });
 }
 
@@ -25,6 +33,24 @@ export function useCreateContact() {
       company?: string;
       notes?: string;
       is_favorite?: boolean;
+    }) => apiPost<Contact>("/contacts", body as Record<string, unknown>),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+export function useUpdateContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      id: string;
+      email: string;
+      name: string;
+      company?: string;
+      notes?: string;
+      is_favorite?: boolean;
+      source?: string;
     }) => apiPost<Contact>("/contacts", body as Record<string, unknown>),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contacts"] });

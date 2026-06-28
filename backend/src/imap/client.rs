@@ -180,6 +180,22 @@ pub trait ImapClient: Send + Sync {
         creds: &ImapCredentials,
         folder: &str,
     ) -> Result<u64, ImapError>;
+
+    /// Mark every message in a folder as read via UID STORE 1:* +FLAGS (\Seen).
+    async fn mark_all_read(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+    ) -> Result<(), ImapError>;
+
+    /// Fetch the raw RFC 822 bytes of a single message by UID.
+    /// Used to submit the message to rspamd for spam/ham learning.
+    async fn fetch_raw_bytes(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Vec<u8>, ImapError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,5 +1106,61 @@ impl ImapClient for RealImapClient {
 
         self.cache.release(creds, session);
         Ok(total)
+    }
+
+    async fn mark_all_read(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+    ) -> Result<(), ImapError> {
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        let mailbox = session.select(folder).await.map_err(map_imap_error)?;
+        if mailbox.exists == 0 {
+            self.cache.release(creds, session);
+            return Ok(());
+        }
+        {
+            let mut store_stream = session
+                .uid_store("1:*", "+FLAGS.SILENT (\\Seen)")
+                .await
+                .map_err(map_imap_error)?;
+            while let Some(result) = store_stream.next().await {
+                result.map_err(map_imap_error)?;
+            }
+        }
+        self.cache.release(creds, session);
+        Ok(())
+    }
+
+    async fn fetch_raw_bytes(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uid: u32,
+    ) -> Result<Vec<u8>, ImapError> {
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        session.select(folder).await.map_err(map_imap_error)?;
+
+        let uid_str = uid.to_string();
+        let mut raw = Vec::new();
+        {
+            let mut fetch_stream = session
+                .uid_fetch(&uid_str, "BODY.PEEK[]")
+                .await
+                .map_err(map_imap_error)?;
+            while let Some(result) = fetch_stream.next().await {
+                let fetch = result.map_err(map_imap_error)?;
+                if let Some(body) = fetch.body() {
+                    raw = body.to_vec();
+                }
+            }
+        }
+
+        self.cache.release(creds, session);
+
+        if raw.is_empty() {
+            return Err(ImapError::MessageNotFound { uid, folder: folder.to_string() });
+        }
+        Ok(raw)
     }
 }

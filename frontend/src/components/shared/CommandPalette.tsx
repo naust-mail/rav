@@ -64,7 +64,7 @@ export function CommandPalette() {
 
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
           {open ? (
             <>
@@ -96,7 +96,7 @@ export function CommandPalette() {
                 className="flex-1 bg-transparent py-3 text-sm outline-none placeholder:text-muted-foreground/50"
               />
             </div>
-            <Command.List className="max-h-72 overflow-y-auto p-2">
+            <Command.List className="max-h-[min(480px,55vh)] overflow-y-auto p-2">
               <Command.Empty className="px-3 py-6 text-center text-sm text-muted-foreground">
                 No results found.
               </Command.Empty>

@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { AnimatePresence } from "framer-motion";
 import {
-  Paperclip,
   ChevronDown,
   ChevronUp,
   Code,
@@ -14,7 +13,14 @@ import {
   Moon,
   Monitor,
   Mail,
+  FileText,
+  FileImage,
+  FileVideo,
+  FileAudio,
+  FileArchive,
+  File,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useUiStore } from "@/stores/useUiStore";
 import { useAuthStore } from "@/stores/useAuthStore";
@@ -36,6 +42,23 @@ import {
 } from "./ReadingPane/index";
 
 type HeaderMode = "summary" | "details";
+
+function attachmentIcon(contentType: string): LucideIcon {
+  if (contentType.startsWith("image/")) return FileImage;
+  if (contentType.startsWith("video/")) return FileVideo;
+  if (contentType.startsWith("audio/")) return FileAudio;
+  if (contentType === "application/pdf") return FileText;
+  if (contentType.startsWith("text/")) return FileText;
+  if (
+    contentType === "application/zip" ||
+    contentType === "application/x-zip-compressed" ||
+    contentType === "application/x-tar" ||
+    contentType === "application/x-gzip" ||
+    contentType === "application/x-7z-compressed" ||
+    contentType === "application/x-rar-compressed"
+  ) return FileArchive;
+  return File;
+}
 
 export function ReadingPane() {
   const activeFolder = useUiStore((s) => s.activeFolder);
@@ -98,13 +121,12 @@ export function ReadingPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.uid]);
 
-  // Auto-mark unread messages as read when opened.
-  // On mobile, only mark as read when the reading pane is visible, with a 1.5s dwell timer.
+  // Auto-mark unread messages as read after a 1.5s dwell timer.
+  // On mobile, only start the timer when the reading pane is visible.
   useEffect(() => {
     if (isMobile && mobilePanelView !== "reading") return;
     if (!data || data.flags.includes("\\Seen")) return;
 
-    const delay = isMobile ? 1500 : 0;
     const timer = setTimeout(() => {
       updateFlags.mutate({
         folder: activeFolder,
@@ -112,7 +134,7 @@ export function ReadingPane() {
         flags: ["\\Seen"],
         add: true,
       });
-    }, delay);
+    }, 1500);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.uid, data?.folder, mobilePanelView, isMobile]);
@@ -163,7 +185,7 @@ export function ReadingPane() {
     >
       {/* Header area */}
       <div className="shrink-0 space-y-1 overflow-x-hidden border-b border-border p-4">
-        <h2 className="text-lg font-bold leading-tight">{data.subject}</h2>
+        <h2 className="text-lg font-bold leading-tight line-clamp-2 break-words [overflow-wrap:anywhere]">{data.subject}</h2>
 
         {headerMode === "summary" ? (
           <div className="text-sm text-foreground">
@@ -211,21 +233,25 @@ export function ReadingPane() {
             onClick={() =>
               setHeaderMode(headerMode === "details" ? "summary" : "details")
             }
-            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground"
           >
             {headerMode === "details" ? (
               <ChevronUp className="size-3" />
             ) : (
               <ChevronDown className="size-3" />
             )}
-            {headerMode === "details" ? "Summary" : "Details"}
+            {headerMode === "details" ? "Collapse" : "Expand"}
           </button>
 
           {/* Plain text / HTML toggle - hidden on mobile (accessible via ... menu) */}
           <button
             type="button"
             onClick={toggleBodyMode}
-            className="md:inline-flex hidden items-center gap-1 rounded px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className={`md:inline-flex hidden items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
+              bodyMode === "plain"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
+            }`}
           >
             {bodyMode === "html" ? (
               <Type className="size-3" />
@@ -242,7 +268,7 @@ export function ReadingPane() {
             className={`md:inline-flex hidden items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
               showHeaders
                 ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                : "text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
             }`}
           >
             <FileCode className="size-3" />
@@ -267,7 +293,7 @@ export function ReadingPane() {
             className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
               emailTheme !== "auto"
                 ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                : "text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
             }`}
           >
             {emailTheme === "auto" && <Monitor className="size-3" />}
@@ -281,22 +307,25 @@ export function ReadingPane() {
       {/* Attachment bar */}
       {data.attachments.length > 0 && (
         <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-border px-4 py-2">
-          {data.attachments.map((att, i) => (
-            <button
-              key={att.id}
-              type="button"
-              onClick={() => setPreviewIndex(i)}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted"
-            >
-              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="max-w-[200px] truncate">
-                {att.filename ?? "Attachment"}
-              </span>
-              <span className="text-muted-foreground">
-                ({formatFileSize(att.size)})
-              </span>
-            </button>
-          ))}
+          {data.attachments.map((att, i) => {
+            const Icon = attachmentIcon(att.content_type ?? "");
+            return (
+              <button
+                key={att.id}
+                type="button"
+                onClick={() => setPreviewIndex(i)}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-muted/50 px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-accent active:bg-accent/70"
+              >
+                <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="max-w-[200px] truncate">
+                  {att.filename ?? "Attachment"}
+                </span>
+                <span className="text-muted-foreground">
+                  ({formatFileSize(att.size)})
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
 

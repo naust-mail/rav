@@ -7,7 +7,12 @@ export interface ReplyParams {
   to: string;
   cc: string;
   subject: string;
+  /** The editable body - should be empty or just cursor position for a fresh reply. */
   body: string;
+  /** The quoted original message HTML, shown collapsed in the compose UI. */
+  quotedHtml?: string | null;
+  /** The quoted original message plain text, used when sending in plain text mode. */
+  quotedText?: string | null;
   inReplyTo: string | null;
   references: string | null;
   fromIdentityId?: number | null;
@@ -42,11 +47,17 @@ export interface ComposeAttachment {
 
 interface ComposeState {
   isOpen: boolean;
+  /** Tracks whether this is a new message, reply, or forward - used for dialog title. */
+  mode: "new" | "reply" | "forward";
   to: string;
   cc: string;
   bcc: string;
   subject: string;
   body: string;
+  /** Quoted original message HTML for replies, shown collapsed below the editor. Null for new messages and forwards. */
+  quotedHtml: string | null;
+  /** Quoted original message plain text for replies, appended when sending in plain text mode. */
+  quotedText: string | null;
   inReplyTo: string | null;
   references: string | null;
   draftId: string | null;
@@ -122,11 +133,14 @@ export function removeSignatureFromBody(body: string): string {
 
 const initialState = {
   isOpen: false,
+  mode: "new" as "new" | "reply" | "forward",
   to: "",
   cc: "",
   bcc: "",
   subject: "",
   body: "",
+  quotedHtml: null as string | null,
+  quotedText: null as string | null,
   inReplyTo: null as string | null,
   references: null as string | null,
   draftId: null as string | null,
@@ -145,6 +159,7 @@ export const useComposeStore = create<ComposeState>((set) => ({
   openCompose: () => set({
     ...initialState,
     isOpen: true,
+    mode: "new",
     isHtml: useUiStore.getState().composeFormat !== "text",
   }),
 
@@ -152,10 +167,13 @@ export const useComposeStore = create<ComposeState>((set) => ({
     set({
       ...initialState,
       isOpen: true,
+      mode: "reply",
       to: params.to,
       cc: params.cc,
       subject: params.subject,
       body: params.body,
+      quotedHtml: params.quotedHtml ?? null,
+      quotedText: params.quotedText ?? null,
       inReplyTo: params.inReplyTo,
       references: params.references,
       showCc: params.cc.length > 0,
@@ -167,6 +185,7 @@ export const useComposeStore = create<ComposeState>((set) => ({
     set({
       ...initialState,
       isOpen: true,
+      mode: "forward",
       subject: params.subject,
       body: params.body,
       isHtml: params.isHtml ?? true,

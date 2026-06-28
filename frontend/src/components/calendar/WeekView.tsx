@@ -1,25 +1,32 @@
 "use client";
 
-import { useMemo, useRef, useEffect } from "react";
+import { useMemo, useRef, useEffect, useState } from "react";
 import { useCalendarStore } from "@/stores/useCalendarStore";
 import { useCalendarEvents } from "@/hooks/useCalendar";
 import {
   getWeekDays,
   getWeekViewRange,
+  getThreeDays,
+  getThreeDayRange,
   getHours,
-  getEventPosition,
+  layoutEvents,
+  getOverflowGroups,
   isSameDay,
   isToday,
   formatTime,
   getEventColorClasses,
 } from "./calendarUtils";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { EventListPopover, type EventListPopoverState } from "./EventListPopover";
+import { EventChip } from "./EventChip";
+import { CalendarContextMenu, type CalendarContextMenuState } from "./CalendarContextMenu";
 import { cn } from "@/lib/utils";
 import type { CalendarEvent } from "@/types/calendar";
 
-interface WeekViewProps {
+type WeekViewProps = {
   weekStartsOn: number;
   timeFormat: string;
-}
+};
 
 export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
   const selectedDate = useCalendarStore((s) => s.selectedDate);
@@ -28,15 +35,17 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
   const openEventForm = useCalendarStore((s) => s.openEventForm);
   const setViewMode = useCalendarStore((s) => s.setViewMode);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const WEEK_COL_CAP = 3;
+  const isMobile = useIsMobile();
 
   const days = useMemo(
-    () => getWeekDays(selectedDate, weekStartsOn),
-    [selectedDate, weekStartsOn],
+    () => isMobile ? getThreeDays(selectedDate) : getWeekDays(selectedDate, weekStartsOn),
+    [selectedDate, weekStartsOn, isMobile],
   );
 
   const range = useMemo(
-    () => getWeekViewRange(selectedDate, weekStartsOn),
-    [selectedDate, weekStartsOn],
+    () => isMobile ? getThreeDayRange(selectedDate) : getWeekViewRange(selectedDate, weekStartsOn),
+    [selectedDate, weekStartsOn, isMobile],
   );
   const { data } = useCalendarEvents(range.start, range.end);
   const events = useMemo(() => data?.events ?? [], [data]);
@@ -50,12 +59,25 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
     }
   }, []);
 
+  // Live current-time indicator - updates every minute
+  const [currentMinutes, setCurrentMinutes] = useState(() => {
+    const now = new Date();
+    return now.getHours() * 60 + now.getMinutes();
+  });
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = new Date();
+      setCurrentMinutes(now.getHours() * 60 + now.getMinutes());
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Categorize events into all-day and timed
   const { allDayEvents, timedEventsByDay } = useMemo(() => {
     const allDay: CalendarEvent[] = [];
     const timed = new Map<number, CalendarEvent[]>();
 
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < days.length; i++) {
       timed.set(i, []);
     }
 
@@ -76,6 +98,13 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
     return { allDayEvents: allDay, timedEventsByDay: timed };
   }, [events, days]);
 
+  const [overflowPopover, setOverflowPopover] = useState<EventListPopoverState | null>(null);
+  const [contextMenu, setContextMenu] = useState<CalendarContextMenuState | null>(null);
+
+  const handleEventContextMenu = (x: number, y: number, ev: CalendarEvent) => {
+    setContextMenu({ x, y, type: "event", eventId: ev.id, eventTitle: ev.title });
+  };
+
   const handleTimeSlotClick = (day: Date, hour: number) => {
     const d = new Date(day);
     d.setHours(hour, 0, 0, 0);
@@ -88,14 +117,14 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
     selectEvent(eventId);
   };
 
-  // Current time indicator position
-  const now = new Date();
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Day headers */}
-      <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border">
+      <div
+        className="grid border-b border-border"
+        style={{ gridTemplateColumns: `60px repeat(${days.length}, 1fr)` }}
+      >
         <div className="border-r border-border" />
         {days.map((day, i) => (
           <button
@@ -127,7 +156,10 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
 
       {/* All-day events row */}
       {allDayEvents.length > 0 && (
-        <div className="grid grid-cols-[60px_repeat(7,1fr)] border-b border-border">
+        <div
+          className="grid border-b border-border"
+          style={{ gridTemplateColumns: `60px repeat(${days.length}, 1fr)` }}
+        >
           <div className="border-r border-border px-1 py-1 text-[10px] text-muted-foreground">
             All day
           </div>
@@ -135,7 +167,11 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
             const dayAllDay = allDayEvents.filter((ev) => {
               const start = new Date(ev.start_time);
               const end = new Date(ev.end_time);
-              return day >= start && day <= end;
+              start.setHours(0, 0, 0, 0);
+              end.setHours(23, 59, 59, 999);
+              const dayStart = new Date(day);
+              dayStart.setHours(0, 0, 0, 0);
+              return dayStart >= start && dayStart <= end;
             });
             return (
               <div key={i} className="border-r border-border p-0.5">
@@ -164,7 +200,7 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
 
       {/* Time grid */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="relative grid grid-cols-[60px_repeat(7,1fr)]">
+        <div className="relative grid" style={{ gridTemplateColumns: `60px repeat(${days.length}, 1fr)` }}>
           {/* Time labels */}
           <div className="border-r border-border">
             {hours.map((hour) => (
@@ -190,6 +226,7 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
                 <div
                   key={hour}
                   onClick={() => handleTimeSlotClick(day, hour)}
+                  onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "slot", date: day, hour }); }}
                   className="h-[60px] cursor-pointer border-b border-border transition-colors hover:bg-accent/30"
                 />
               ))}
@@ -205,40 +242,76 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
               )}
 
               {/* Timed events */}
-              {(timedEventsByDay.get(dayIdx) ?? []).map((event) => {
-                const pos = getEventPosition(
-                  event.start_time,
-                  event.end_time,
-                  day,
-                );
-                const colors = getEventColorClasses(event.color);
+              {(() => {
+                const laid = layoutEvents(timedEventsByDay.get(dayIdx) ?? [], day);
+                const overflowGroups = getOverflowGroups(laid, WEEK_COL_CAP);
                 return (
-                  <button
-                    key={event.id}
-                    type="button"
-                    onClick={(e) => handleEventClick(e, event.id)}
-                    className={cn(
-                      "absolute left-0.5 right-0.5 overflow-hidden rounded px-1 py-0.5 text-left text-[10px] leading-tight",
-                      colors.bg,
-                      colors.text,
-                    )}
-                    style={{
-                      top: `${pos.top}px`,
-                      height: `${pos.height}px`,
-                    }}
-                    title={event.title}
-                  >
-                    <div className="font-medium">{event.title}</div>
-                    <div className="opacity-80">
-                      {formatTime(event.start_time, timeFormat)}
-                    </div>
-                  </button>
+                  <>
+                    {laid.filter((ev) => ev.column < WEEK_COL_CAP).map((event) => {
+                      const colors = getEventColorClasses(event.color);
+                      const effectiveCols = Math.min(event.totalColumns, WEEK_COL_CAP);
+                      const colWidth = 100 / effectiveCols;
+                      return (
+                        <EventChip
+                          key={event.id}
+                          event={event}
+                          onClick={(e) => handleEventClick(e, event.id)}
+                          onContextMenu={handleEventContextMenu}
+                          className={cn(
+                            "absolute overflow-hidden rounded px-1 py-0.5 text-left text-[10px] leading-tight",
+                            colors.bg,
+                            colors.text,
+                          )}
+                          style={{
+                            top: `${event.top}px`,
+                            height: `${event.height}px`,
+                            left: `calc(${event.column * colWidth}% + 2px)`,
+                            right: `calc(${(effectiveCols - event.column - 1) * colWidth}% + 2px)`,
+                          }}
+                          title={event.title}
+                        >
+                          <div className="truncate font-medium">{event.title}</div>
+                          <div className="opacity-80">{formatTime(event.start_time, timeFormat)}</div>
+                        </EventChip>
+                      );
+                    })}
+                    {overflowGroups.map((group, i) => (
+                      <button
+                        key={`overflow-${i}`}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOverflowPopover({
+                            anchor: e.currentTarget.getBoundingClientRect(),
+                            events: group.all as unknown as CalendarEvent[],
+                            title: `${group.all.length} events`,
+                          });
+                        }}
+                        className="absolute right-0.5 z-10 rounded bg-muted px-1 py-0.5 text-[9px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                        style={{ top: `${group.top}px` }}
+                      >
+                        +{group.hidden.length}
+                      </button>
+                    ))}
+                  </>
                 );
-              })}
+              })()}
             </div>
           ))}
         </div>
       </div>
+
+      <EventListPopover
+        state={overflowPopover}
+        onClose={() => setOverflowPopover(null)}
+        timeFormat={timeFormat}
+        onEventContextMenu={handleEventContextMenu}
+      />
+      <CalendarContextMenu
+        state={contextMenu}
+        onClose={() => setContextMenu(null)}
+        timeFormat={timeFormat}
+      />
     </div>
   );
 }

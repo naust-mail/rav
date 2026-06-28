@@ -23,11 +23,14 @@ import { NotificationBanner } from "@/components/shared/NotificationBanner";
 import { KeyboardShortcuts } from "@/components/shared/KeyboardShortcuts";
 import { CommandPalette } from "@/components/shared/CommandPalette";
 import { PreferencesLoader } from "@/components/PreferencesLoader";
+import { ErrorBoundary } from "@/components/shared/ErrorBoundary";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 export default function MailPage() {
   const viewMode = useUiStore((s: UiState) => s.viewMode);
   const effectiveAnimationMode = useUiStore((s: UiState) => s.effectiveAnimationMode);
   useKeyboardShortcuts();
+  useDocumentTitle();
   useMobileNav();
   const { showBanner, requestPermission, dismissBanner, handleEvent } = useNotifications();
   const { status: wsStatus, failCount: wsFailCount } = useWebSocket(handleEvent);
@@ -94,7 +97,7 @@ export default function MailPage() {
       <div className="flex h-dvh w-full overflow-hidden">
         <NavRail />
         <div className="relative min-w-0 flex-1">
-          {content}
+          <ErrorBoundary>{content}</ErrorBoundary>
         </div>
         <BottomTabBar />
         <ComposeFab />

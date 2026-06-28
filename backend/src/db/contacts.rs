@@ -171,6 +171,27 @@ pub fn list_contacts(
     }
 }
 
+/// Count contacts with optional search filter (same WHERE clause as list_contacts).
+pub fn count_contacts(conn: &Connection, search: Option<&str>) -> Result<usize, String> {
+    match search {
+        Some(q) if !q.is_empty() => {
+            let escaped = escape_like(q);
+            let pattern = format!("%{escaped}%");
+            conn.query_row(
+                "SELECT COUNT(*) FROM contacts WHERE name LIKE ?1 ESCAPE '\\' OR email LIKE ?1 ESCAPE '\\'",
+                params![pattern],
+                |row| row.get::<_, usize>(0),
+            )
+            .map_err(|e| format!("Failed to count contacts: {e}"))
+        }
+        _ => conn
+            .query_row("SELECT COUNT(*) FROM contacts", [], |row| {
+                row.get::<_, usize>(0)
+            })
+            .map_err(|e| format!("Failed to count contacts: {e}")),
+    }
+}
+
 /// Delete a contact by id. Returns `true` if a row was deleted.
 pub fn delete_contact(conn: &Connection, id: &str) -> Result<bool, String> {
     let deleted = conn
@@ -608,5 +629,30 @@ mod tests {
         let results = search_known_addresses(&conn, "sender@test.com", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].email, "sender@test.com");
+    }
+
+    #[test]
+    fn test_count_contacts_no_search() {
+        let conn = open_test_db();
+        assert_eq!(count_contacts(&conn, None).unwrap(), 0);
+
+        upsert_contact(&conn, &sample_contact("c1", "alice@example.com", "Alice")).unwrap();
+        upsert_contact(&conn, &sample_contact("c2", "bob@example.com", "Bob")).unwrap();
+
+        assert_eq!(count_contacts(&conn, None).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_count_contacts_with_search() {
+        let conn = open_test_db();
+        upsert_contact(&conn, &sample_contact("c1", "alice@example.com", "Alice Smith")).unwrap();
+        upsert_contact(&conn, &sample_contact("c2", "bob@example.com", "Bob Jones")).unwrap();
+
+        // Matches by name.
+        assert_eq!(count_contacts(&conn, Some("Alice")).unwrap(), 1);
+        // Matches by email domain.
+        assert_eq!(count_contacts(&conn, Some("example.com")).unwrap(), 2);
+        // No match.
+        assert_eq!(count_contacts(&conn, Some("nobody")).unwrap(), 0);
     }
 }

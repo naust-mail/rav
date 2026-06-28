@@ -73,11 +73,10 @@ export function useAddGroupMember() {
       apiPost(`/contact-groups/${groupId}/members`, {
         contact_id: contactId,
       }),
-    onSuccess: (_, { groupId }) => {
-      queryClient.invalidateQueries({
-        queryKey: ["contact-group-members", groupId],
-      });
+    onSuccess: (_, { groupId, contactId }) => {
+      queryClient.invalidateQueries({ queryKey: ["contact-group-members", groupId] });
       queryClient.invalidateQueries({ queryKey: ["contact-groups"] });
+      queryClient.invalidateQueries({ queryKey: ["contact-groups-for", contactId] });
     },
   });
 }
@@ -92,11 +91,10 @@ export function useRemoveGroupMember() {
       groupId: string;
       contactId: string;
     }) => apiDelete(`/contact-groups/${groupId}/members/${contactId}`),
-    onSuccess: (_, { groupId }) => {
-      queryClient.invalidateQueries({
-        queryKey: ["contact-group-members", groupId],
-      });
+    onSuccess: (_, { groupId, contactId }) => {
+      queryClient.invalidateQueries({ queryKey: ["contact-group-members", groupId] });
       queryClient.invalidateQueries({ queryKey: ["contact-groups"] });
+      queryClient.invalidateQueries({ queryKey: ["contact-groups-for", contactId] });
     },
   });
 }

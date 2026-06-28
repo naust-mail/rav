@@ -206,6 +206,142 @@ export function getHours(): number[] {
   return Array.from({ length: 24 }, (_, i) => i);
 }
 
+/** An event augmented with layout data from layoutEvents. */
+export type LaidOutEvent<T> = T & {
+  top: number;
+  height: number;
+  column: number;
+  totalColumns: number;
+};
+
+/** A group of overflow events (column >= cap) with all events in their time band. */
+export type OverflowGroup<T> = {
+  /** Events hidden due to column cap. */
+  hidden: LaidOutEvent<T>[];
+  /** All events (visible + hidden) overlapping this group's time band - shown in the popover. */
+  all: LaidOutEvent<T>[];
+  /** Pixel top of the earliest hidden event - where to place the chip. */
+  top: number;
+};
+
+/**
+ * Given laid-out events and a column cap, returns groups of hidden events
+ * (column >= cap) for rendering overflow "+N" chips.
+ */
+export function getOverflowGroups<T extends { start_time: string; end_time: string }>(
+  laidOut: LaidOutEvent<T>[],
+  cap: number,
+): OverflowGroup<T>[] {
+  const hidden = laidOut.filter((ev) => ev.column >= cap);
+  if (hidden.length === 0) return [];
+
+  // Connected components among hidden events (by pixel overlap)
+  const visited = new Set<number>();
+  const components: LaidOutEvent<T>[][] = [];
+
+  for (let i = 0; i < hidden.length; i++) {
+    if (visited.has(i)) continue;
+    const comp: LaidOutEvent<T>[] = [];
+    const stack = [i];
+    while (stack.length) {
+      const idx = stack.pop()!;
+      if (visited.has(idx)) continue;
+      visited.add(idx);
+      comp.push(hidden[idx]);
+      for (let j = 0; j < hidden.length; j++) {
+        if (!visited.has(j)) {
+          const a = hidden[idx], b = hidden[j];
+          if (a.top < b.top + b.height && b.top < a.top + a.height) stack.push(j);
+        }
+      }
+    }
+    components.push(comp);
+  }
+
+  return components.map((comp) => {
+    const minTop = Math.min(...comp.map((e) => e.top));
+    const maxBottom = Math.max(...comp.map((e) => e.top + e.height));
+    const all = laidOut.filter((ev) => ev.top < maxBottom && ev.top + ev.height > minTop);
+    return { hidden: comp, all, top: minTop };
+  });
+}
+
+/**
+ * Assigns non-overlapping columns to a set of timed events for a single day.
+ * Returns each event augmented with its pixel position, column index, and
+ * total number of columns in its overlap group - enough to render side-by-side.
+ */
+export function layoutEvents<T extends { start_time: string; end_time: string }>(
+  events: T[],
+  day: Date,
+): LaidOutEvent<T>[] {
+  if (events.length === 0) return [];
+
+  const positioned: LaidOutEvent<T>[] = events.map((ev) => ({
+    ...ev,
+    ...getEventPosition(ev.start_time, ev.end_time, day),
+    column: 0,
+    totalColumns: 1,
+  }));
+
+  // Sort by start time; longer events first when tied (more stable layout)
+  positioned.sort((a, b) => a.top - b.top || b.height - a.height);
+
+  // Greedy column assignment: columnEnds[i] = bottom pixel of last event in column i
+  const columnEnds: number[] = [];
+  for (const ev of positioned) {
+    const col = columnEnds.findIndex(end => end <= ev.top);
+    if (col === -1) {
+      ev.column = columnEnds.length;
+      columnEnds.push(ev.top + ev.height);
+    } else {
+      ev.column = col;
+      columnEnds[col] = ev.top + ev.height;
+    }
+  }
+
+  // totalColumns per event = highest column index among all events it overlaps + 1
+  for (const ev of positioned) {
+    let maxCol = ev.column;
+    for (const other of positioned) {
+      if (other !== ev && ev.top < other.top + other.height && other.top < ev.top + ev.height) {
+        maxCol = Math.max(maxCol, other.column);
+      }
+    }
+    ev.totalColumns = maxCol + 1;
+  }
+
+  return positioned;
+}
+
+/** Get 3 days starting from the given date (selected day + 2 forward). */
+export function getThreeDays(date: Date): Date[] {
+  return [0, 1, 2].map((i) => {
+    const d = new Date(date);
+    d.setDate(date.getDate() + i);
+    return d;
+  });
+}
+
+/** Get the visible range for a 3-day view. */
+export function getThreeDayRange(date: Date): { start: string; end: string } {
+  const days = getThreeDays(date);
+  return {
+    start: `${formatDateISO(days[0])}T00:00:00`,
+    end: `${formatDateISO(days[2])}T23:59:59`,
+  };
+}
+
+/** Format a 3-day range for the header (e.g. "Jun 28 - 30" or "Jun 28 - Jul 1"). */
+export function formatThreeDayRange(date: Date): string {
+  const days = getThreeDays(date);
+  const start = days[0].toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  if (days[0].getMonth() === days[2].getMonth()) {
+    return `${start} - ${days[2].getDate()}`;
+  }
+  return `${start} - ${days[2].toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+}
+
 /** Calculate top position and height for an event in a time grid. */
 export function getEventPosition(
   startTime: string,

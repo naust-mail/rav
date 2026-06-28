@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useAuthStore } from "@/stores/useAuthStore";
 import { useUiStore } from "@/stores/useUiStore";
 import { useNotificationPreferences } from "./useNotificationPreferences";
+import { useQuietHours, isQuietTime } from "./useQuietHours";
 import type { MailEvent } from "./useWebSocket";
 
 export function useNotifications() {
@@ -20,6 +21,7 @@ export function useNotifications() {
   });
 
   const { data: prefs } = useNotificationPreferences();
+  const { prefs: quietHours } = useQuietHours();
   const activeAccount = useAuthStore((s) => s.activeAccount());
   const setActiveFolder = useUiStore((s) => s.setActiveFolder);
 
@@ -74,8 +76,8 @@ export function useNotifications() {
       const body = bodyLines.join("\n");
 
       if (document.hidden || !document.hasFocus()) {
-        // Tab is hidden or window is unfocused — show OS notification.
-        if (permission === "granted") {
+        // Tab is hidden or window is unfocused — show OS notification unless in quiet hours.
+        if (permission === "granted" && !isQuietTime(quietHours)) {
           const notification = new Notification(title, {
             body,
             tag: `oxi-${folder}`,
@@ -105,7 +107,7 @@ export function useNotifications() {
         });
       }
     },
-    [permission, prefs, activeAccount, setActiveFolder],
+    [permission, prefs, quietHours, activeAccount, setActiveFolder],
   );
 
   return {

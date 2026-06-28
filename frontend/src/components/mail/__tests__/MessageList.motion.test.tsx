@@ -128,8 +128,6 @@ function buildMessage(uid: number) {
   return {
     uid,
     folder: "INBOX",
-    message_id: `<m-${uid}@example.com>`,
-    in_reply_to: null,
     subject: `Subject ${uid}`,
     from_address: "sender@example.com",
     from_name: `Sender ${uid}`,
@@ -142,6 +140,8 @@ function buildMessage(uid: number) {
     snippet: "Snippet",
     reaction: null,
     tags: [],
+    thread_count: 1,
+    unread_count: 0,
   };
 }
 

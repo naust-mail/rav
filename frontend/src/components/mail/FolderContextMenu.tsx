@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { Pencil, Trash2 } from "lucide-react";
-import { useDeleteFolder } from "@/hooks/useFolders";
+import { MailOpen, Pencil, Trash2 } from "lucide-react";
+import { useDeleteFolder, useMarkAllRead } from "@/hooks/useFolders";
 import { useLongPress } from "@/hooks/useLongPress";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,7 @@ export function FolderContextMenu({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const deleteFolder = useDeleteFolder();
+  const markAllRead = useMarkAllRead();
 
   const isSystem = isSystemFolder(folderName);
 
@@ -58,11 +59,10 @@ export function FolderContextMenu({
 
   const openFolderMenu = useCallback(
     (pos: { x: number; y: number }) => {
-      if (isSystem) return;
       setMenuPos(pos);
       setConfirmDelete(false);
     },
-    [isSystem],
+    [],
   );
 
   // Expose openFolderMenu to parent via callback ref pattern
@@ -79,11 +79,8 @@ export function FolderContextMenu({
     [openFolderMenu],
   );
 
-  const longPress = useLongPress({
-    onLongPress: (e) => {
-      const src = "touches" in e ? e.touches[0] : e;
-      openFolderMenu({ x: src.clientX, y: src.clientY });
-    },
+  const longPress = useLongPress((e) => {
+    openFolderMenu({ x: e.clientX, y: e.clientY });
   });
 
   // Close on click outside
@@ -133,7 +130,7 @@ export function FolderContextMenu({
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
-      {...longPress}
+      {...longPress.handlers}
       style={{ userSelect: "none", WebkitUserSelect: "none" }}
     >
       {children}
@@ -151,18 +148,33 @@ export function FolderContextMenu({
         >
           <button
             type="button"
+            onClick={() => {
+              markAllRead.mutate({ folder: folderName });
+              closeMenu();
+            }}
+            disabled={markAllRead.isPending}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
+          >
+            <MailOpen className="size-3.5" />
+            {markAllRead.isPending ? "Marking..." : "Mark all as read"}
+          </button>
+          {!isSystem && (
+          <button
+            type="button"
             onClick={handleRename}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
           >
             <Pencil className="size-3.5" />
             Rename
           </button>
+          )}
+          {!isSystem && (
           <button
             type="button"
             onClick={handleDelete}
             disabled={deleteFolder.isPending}
             className={cn(
-              "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+              "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70",
               confirmDelete
                 ? "text-destructive font-medium"
                 : "text-foreground",
@@ -175,6 +187,7 @@ export function FolderContextMenu({
                 ? "Confirm delete?"
                 : "Delete"}
           </button>
+          )}
         </div>
       )}
     </div>

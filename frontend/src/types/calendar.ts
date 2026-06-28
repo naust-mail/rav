@@ -1,4 +1,5 @@
-export interface CalendarEvent {
+/** A calendar event returned by the API. */
+export type CalendarEvent = {
   id: string;
   title: string;
   description: string;
@@ -17,9 +18,10 @@ export interface CalendarEvent {
   reminder_minutes: number | null;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface CreateEventRequest {
+/** Body for POST /events. */
+export type CreateEventRequest = {
   title: string;
   description?: string;
   location?: string;
@@ -30,9 +32,10 @@ export interface CreateEventRequest {
   color?: string;
   reminder_minutes?: number;
   attendees?: string;
-}
+};
 
-export interface UpdateEventRequest {
+/** Body for PATCH /events/:id. */
+export type UpdateEventRequest = {
   title?: string;
   description?: string;
   location?: string;
@@ -44,9 +47,10 @@ export interface UpdateEventRequest {
   reminder_minutes?: number;
   status?: string;
   attendees?: string;
-}
+};
 
-export interface CalendarSettings {
+/** User calendar preferences. */
+export type CalendarSettings = {
   default_view: string;
   week_starts_on: number;
   working_hours_start: string;
@@ -58,20 +62,23 @@ export interface CalendarSettings {
   caldav_url: string;
   caldav_username: string;
   caldav_enabled: boolean;
-}
+};
 
-export interface MeetingTemplate {
+/** A meeting link template. */
+export type MeetingTemplate = {
   id: number;
   name: string;
   url_template: string;
   icon: string;
   is_default: boolean;
-}
+};
 
-export interface CalendarEventsResponse {
+/** Response from GET /events. */
+export type CalendarEventsResponse = {
   events: CalendarEvent[];
-}
+};
 
-export interface MeetingTemplatesResponse {
+/** Response from GET /meeting-templates. */
+export type MeetingTemplatesResponse = {
   templates: MeetingTemplate[];
-}
+};

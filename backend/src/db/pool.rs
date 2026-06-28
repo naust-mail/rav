@@ -25,6 +25,10 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (18, include_str!("../../migrations/V018__animation_mode.sql")),
     (19, include_str!("../../migrations/V019__known_addresses.sql")),
     (20, include_str!("../../migrations/V020__mobile_nav_prefs.sql")),
+    (21, include_str!("../../migrations/V021__thread_id.sql")),
+    (22, include_str!("../../migrations/V022__undo_send_delay.sql")),
+    (23, include_str!("../../migrations/V023__vacation_responder.sql")),
+    (24, include_str!("../../migrations/V024__filter_rules.sql")),
 ];
 
 /// Run any pending migrations based on SQLite's `user_version` PRAGMA.

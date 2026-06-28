@@ -26,7 +26,7 @@ function isCalendarType(ct: string): boolean {
 }
 
 function isPdfType(ct: string): boolean {
-  return ct.toLowerCase() === "application/pdf";
+  return ct.toLowerCase() === "application/pdf" || ct.toLowerCase() === 'text/rfc822-headers' || ct.toLowerCase() === 'text/plain';
 }
 
 interface AttachmentPreviewerProps {
@@ -73,9 +73,9 @@ export function AttachmentPreviewer({
 
   return (
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
-          <Dialog.Overlay asChild>
+          <Dialog.Overlay key="overlay" asChild>
             <AnimatedDiv
               data-testid="reading-pane-attachment-overlay-transition"
               variants={overlayMotionProps}
@@ -85,7 +85,7 @@ export function AttachmentPreviewer({
               className="fixed inset-0 z-50 bg-black/70"
             />
           </Dialog.Overlay>
-          <Dialog.Content asChild>
+          <Dialog.Content key="content" asChild>
             <AnimatedDiv
               data-testid="reading-pane-attachment-content-transition"
               variants={contentMotionProps}
@@ -158,7 +158,7 @@ export function AttachmentPreviewer({
                 const isActive = i === index;
                 return (
                   <button
-                    key={thumb.id}
+                    key={`${thumb.id}-${i}`}
                     onClick={() => setIndex(i)}
                     className={cn(
                       "flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-md border-2 transition-colors",

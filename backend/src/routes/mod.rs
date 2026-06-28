@@ -5,6 +5,7 @@ pub mod contact_groups;
 pub mod contacts;
 pub mod display_preferences;
 pub mod drafts;
+pub mod filters;
 pub mod folder_mgmt;
 pub mod folders;
 pub mod health;
@@ -14,7 +15,9 @@ pub mod notification_preferences;
 pub mod quota;
 pub mod search;
 pub mod send;
+pub mod spam;
 pub mod tags;
+pub mod vacation;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -95,6 +98,7 @@ pub fn create_router(
     store: Arc<SessionStore>,
     imap_client: Arc<dyn ImapClient>,
     smtp_client: Arc<dyn SmtpClient>,
+    http_client: Arc<reqwest::Client>,
     search_engine: Arc<crate::search::engine::SearchEngine>,
     event_bus: Arc<EventBus>,
     idle_manager: Arc<IdleManager>,
@@ -146,6 +150,9 @@ pub fn create_router(
             patch(folder_mgmt::subscribe_folder),
         )
         .route("/folders/{folder}/messages", get(messages::list_messages))
+        .route("/folders/{folder}/mark-all-read", post(messages::mark_all_read))
+        .route("/messages/{folder}/{uid}/report-spam", post(spam::report_spam_handler))
+        .route("/messages/{folder}/{uid}/report-ham", post(spam::report_ham_handler))
         .route("/messages/{folder}/{uid}", get(messages::get_message))
         .route(
             "/messages/{folder}/{uid}/flags",
@@ -288,6 +295,9 @@ pub fn create_router(
             "/calendar/meeting-templates/{id}",
             delete(calendar::delete_meeting_template),
         )
+        .route("/filters", get(filters::list_filters_handler).post(filters::create_filter_handler))
+        .route("/filters/{id}", put(filters::update_filter_handler).delete(filters::delete_filter_handler))
+        .route("/settings/vacation", get(vacation::get_vacation_handler).put(vacation::update_vacation_handler))
         .route("/quota", get(quota::get_quota))
         .layer(middleware::from_fn(auth_guard))
         .layer(middleware::from_fn(csrf_protection));
@@ -320,6 +330,7 @@ pub fn create_router(
         .layer(Extension(idle_manager))
         .layer(Extension(event_bus))
         .layer(Extension(smtp_client))
+        .layer(Extension(http_client))
         .layer(Extension(search_engine))
         .layer(Extension(imap_client))
         .layer(Extension(store))

@@ -198,9 +198,44 @@ export function DisplaySettings() {
           onChange={handleAnimationModeChange}
         />
 
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Composing</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Options for writing and sending messages.
+          </p>
+        </div>
+        <SegmentedControl
+          label="Undo send delay"
+          description="Window to cancel a send after clicking Send"
+          value={String(prefs.undo_send_delay ?? 5) as "0" | "5" | "10" | "30"}
+          options={[
+            { value: "0", label: "None" },
+            { value: "5", label: "5s" },
+            { value: "10", label: "10s" },
+            { value: "30", label: "30s" },
+          ]}
+          onChange={(v) =>
+            updatePrefs.mutate(
+              { undo_send_delay: Number(v) },
+              { onError: (e) => toast.error(`Failed to update: ${e.message}`) },
+            )
+          }
+        />
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold">Search</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Controls how messages are indexed for search.
+          </p>
+        </div>
         <SegmentedControl
           label="Search indexing"
-          description="Index message bodies for full-text search (uses more bandwidth)"
+          description="Full text downloads message bodies for search (uses more bandwidth)"
           value={prefs.deep_index ? "on" : "off"}
           options={[
             { value: "off", label: "Headers only", icon: <Search className="size-3.5" /> },
@@ -213,21 +248,6 @@ export function DisplaySettings() {
             )
           }
         />
-
-        <div className="flex items-center justify-between rounded-lg border border-border p-4">
-          <div>
-            <div className="text-sm font-medium">Language</div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Interface language
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">English</span>
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-              More coming soon
-            </span>
-          </div>
-        </div>
       </div>
 
       <MobileNavSection prefs={prefs} updatePrefs={updatePrefs} />
@@ -293,62 +313,55 @@ function MobileNavSection({
         </p>
       </div>
 
-      <div className="rounded-lg border border-border p-4 space-y-3">
-          <div>
-            <div className="text-sm font-medium">Tab items</div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Mail is always first. Choose up to 3 additional tabs.
-            </p>
-          </div>
-          <div className="space-y-2">
-            {OPTIONAL_TABS.map((tab) => {
-              const isCompose = tab === "compose";
-              const checked = isCompose ? composeMode === "tab" : enabledTabs.includes(tab);
-              const disabled = !checked && atMax;
-
-              return (
-                <label
-                  key={tab}
-                  className={cn(
-                    "flex items-start gap-3 cursor-pointer",
-                    disabled && "opacity-40 cursor-not-allowed",
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    disabled={disabled}
-                    onChange={() => handleTabToggle(tab)}
-                    className="mt-0.5 size-4 rounded border-border accent-primary"
-                  />
-                  <div>
-                    <span className="text-sm font-medium capitalize">{tab}</span>
-                    {isCompose && (
-                      <p className="text-xs text-muted-foreground">
-                        Adds Compose to the tab bar and removes the floating button.
-                      </p>
-                    )}
-                  </div>
-                </label>
-              );
-            })}
-          </div>
+      <div className="rounded-lg border border-border p-4">
+        <div className="mb-3">
+          <div className="text-sm font-medium">Tab items</div>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Mail is always first. Choose up to 3 additional tabs.
+          </p>
         </div>
+        <div className="divide-y divide-border">
+          {OPTIONAL_TABS.map((tab) => {
+            const isCompose = tab === "compose";
+            const checked = isCompose ? composeMode === "tab" : enabledTabs.includes(tab);
+            const disabled = !checked && atMax;
 
-      {composeMode !== "tab" && (
-        <SegmentedControl
-          label="Compose button"
-          description="Where to place the compose action when it is not in the tab bar"
-          value={composeMode}
-          options={[{ value: "fab", label: "Floating button (FAB)" }]}
-          onChange={(v) =>
-            updatePrefs.mutate(
-              { mobile_compose: v },
-              { onError: (e) => toast.error(`Failed to update: ${e.message}`) },
-            )
-          }
-        />
-      )}
+            return (
+              <button
+                key={tab}
+                type="button"
+                role="checkbox"
+                aria-checked={checked}
+                disabled={disabled}
+                onClick={() => handleTabToggle(tab)}
+                className={cn(
+                  "flex w-full items-center gap-3 py-2 text-left transition-colors",
+                  disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer",
+                )}
+              >
+                <span className={cn(
+                  "flex size-4 shrink-0 items-center justify-center rounded border transition-colors",
+                  checked
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-muted-foreground/40 bg-transparent",
+                  !disabled && !checked && "hover:border-primary",
+                )}>
+                  {checked && (
+                    <svg className="size-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2.5 6l2.5 2.5 4.5-5" />
+                    </svg>
+                  )}
+                </span>
+                <span className="text-sm capitalize">{tab}</span>
+                {isCompose && (
+                  <span className="ml-auto text-xs text-muted-foreground">removes floating button</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
     </div>
   );
 }

@@ -41,7 +41,8 @@ pub(crate) struct ListMessagesResponse {
     pub(crate) syncing: bool,
 }
 
-/// A message summary in the list response.
+/// A message summary in the list response. Represents the latest message in a
+/// thread, with per-thread aggregate counts for UI grouping.
 #[derive(Serialize, Clone)]
 pub struct MessageSummary {
     pub uid: u32,
@@ -57,6 +58,10 @@ pub struct MessageSummary {
     pub snippet: String,
     pub reaction: Option<String>,
     pub tags: Vec<crate::db::tags::MessageTag>,
+    /// Total number of messages in this thread within the folder.
+    pub thread_count: u32,
+    /// Number of unread messages in this thread.
+    pub unread_count: u32,
 }
 
 /// An email address entry for the detail response.

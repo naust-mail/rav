@@ -57,6 +57,27 @@ const MSG_SELECT_COLS: &str =
      subject, from_address, from_name, to_addresses, cc_addresses,
      date, flags, has_attachments, size, snippet, reaction";
 
+/// Compute the canonical thread_id for a message.
+///
+/// Uses the first message-id in the References chain (oldest ancestor per RFC 2822),
+/// falling back to In-Reply-To, then the message's own Message-ID.
+pub fn compute_thread_id(
+    message_id: Option<&str>,
+    in_reply_to: Option<&str>,
+    references_header: Option<&str>,
+) -> Option<String> {
+    if let Some(refs) = references_header
+        && let Some(first) = refs.split_whitespace().next()
+        && !first.is_empty()
+    {
+        return Some(first.to_string());
+    }
+    if let Some(irt) = in_reply_to.filter(|s| !s.is_empty()) {
+        return Some(irt.to_string());
+    }
+    message_id.filter(|s| !s.is_empty()).map(|s| s.to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -83,12 +104,13 @@ pub fn upsert_message(
     reaction: Option<&str>,
 ) -> Result<(), String> {
     let date_epoch = parse_date_to_epoch(date);
+    let thread_id = compute_thread_id(message_id, in_reply_to, references_header);
     conn.execute(
         "INSERT OR REPLACE INTO messages
             (uid, folder, message_id, in_reply_to, references_header,
              subject, from_address, from_name, to_addresses, cc_addresses,
-             date, flags, size, has_attachments, snippet, date_epoch, reaction)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             date, flags, size, has_attachments, snippet, date_epoch, reaction, thread_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             uid,
             folder,
@@ -107,6 +129,7 @@ pub fn upsert_message(
             snippet,
             date_epoch,
             reaction,
+            thread_id,
         ],
     )
     .map_err(|e| format!("Failed to upsert message: {e}"))?;
@@ -225,6 +248,7 @@ fn parse_iso8601_to_epoch(s: &str) -> Result<i64, ()> {
 
 /// Return a page of messages for a folder, ordered by date descending.
 /// `page` is 0-indexed.
+#[allow(dead_code)]
 pub fn get_messages(
     conn: &Connection,
     folder: &str,
@@ -265,6 +289,86 @@ pub fn count_messages(conn: &Connection, folder: &str) -> Result<u32, String> {
         |row| row.get(0),
     )
     .map_err(|e| format!("Failed to count messages: {e}"))
+}
+
+/// A row returned by the threaded list query: the latest message in each thread
+/// plus per-thread aggregates.
+#[derive(Debug, Clone)]
+pub struct ThreadedMessage {
+    pub msg: CachedMessage,
+    /// Total number of messages in this thread (within the folder).
+    pub thread_count: u32,
+    /// Number of unread messages in this thread.
+    pub unread_count: u32,
+}
+
+/// Return one row per thread for a folder, ordered by the thread's most-recent
+/// message date descending. Each row contains the latest message's fields plus
+/// thread_count and unread_count aggregates.
+///
+/// Uses SQLite window functions (available since 3.25, Sep 2018).
+pub fn get_threaded_messages(
+    conn: &Connection,
+    folder: &str,
+    page: u32,
+    per_page: u32,
+) -> Result<Vec<ThreadedMessage>, String> {
+    let offset = page * per_page;
+    // COALESCE(thread_id, CAST(uid AS TEXT)) ensures messages without a thread_id
+    // each form their own single-message thread.
+    let sql = format!(
+        "SELECT uid, folder, message_id, in_reply_to, references_header,
+                subject, from_address, from_name, to_addresses, cc_addresses,
+                date, flags, has_attachments, size, snippet, reaction,
+                thread_count, unread_count
+         FROM (
+           SELECT {MSG_SELECT_COLS},
+                  date_epoch,
+                  COUNT(*) OVER (PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))) AS thread_count,
+                  SUM(CASE WHEN flags NOT LIKE '%\\Seen%' THEN 1 ELSE 0 END)
+                    OVER (PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))) AS unread_count,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))
+                    ORDER BY date_epoch DESC, uid DESC
+                  ) AS rn,
+                  MAX(date_epoch) OVER (PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))) AS thread_latest_epoch
+           FROM messages
+           WHERE folder = ?1
+         )
+         WHERE rn = 1
+         ORDER BY thread_latest_epoch DESC
+         LIMIT ?2 OFFSET ?3"
+    );
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to prepare get_threaded_messages: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![folder, per_page, offset], |row| {
+            let msg = row_to_cached_message(row)?;
+            let thread_count: u32 = row.get(16)?;
+            let unread_count: u32 = row.get(17)?;
+            Ok(ThreadedMessage { msg, thread_count, unread_count })
+        })
+        .map_err(|e| format!("Failed to query threaded messages: {e}"))?;
+
+    let mut messages = Vec::new();
+    for row in rows {
+        messages.push(row.map_err(|e| format!("Failed to read threaded message row: {e}"))?);
+    }
+    Ok(messages)
+}
+
+/// Return the number of distinct threads in a folder (for pagination).
+pub fn count_threads(conn: &Connection, folder: &str) -> Result<u32, String> {
+    conn.query_row(
+        "SELECT COUNT(DISTINCT COALESCE(thread_id, CAST(uid AS TEXT)))
+         FROM messages WHERE folder = ?1",
+        params![folder],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to count threads: {e}"))
 }
 
 /// Update only the flags column for a specific message.
@@ -419,6 +523,27 @@ pub fn get_unindexed_messages(conn: &Connection, limit: u32) -> Result<Vec<(Stri
 }
 
 /// Return all (uid, flags_csv) pairs for a folder, for reconciliation.
+/// Fetch all cached messages with uid > min_uid in a folder.
+/// Used by the IDLE pipeline to find newly arrived messages for processing.
+pub fn get_messages_after_uid(
+    conn: &Connection,
+    folder: &str,
+    min_uid: u32,
+) -> Result<Vec<CachedMessage>, String> {
+    let sql = format!(
+        "SELECT {MSG_SELECT_COLS} FROM messages WHERE folder = ?1 AND uid > ?2 ORDER BY uid ASC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare error: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![folder, min_uid], row_to_cached_message)
+        .map_err(|e| format!("query error: {e}"))?;
+    let mut msgs = Vec::new();
+    for row in rows {
+        msgs.push(row.map_err(|e| format!("row error: {e}"))?);
+    }
+    Ok(msgs)
+}
+
 pub fn get_all_uids_and_flags(conn: &Connection, folder: &str) -> Result<Vec<(u32, String)>, String> {
     let mut stmt = conn
         .prepare("SELECT uid, flags FROM messages WHERE folder = ?1")

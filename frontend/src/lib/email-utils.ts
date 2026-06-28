@@ -35,6 +35,32 @@ export function buildForwardSubject(subject: string): string {
 }
 
 /**
+ * Build just the quoted text block for a reply (no leading newline).
+ * Used to populate the collapsed quote region in the compose UI.
+ */
+export function buildReplyQuoteText(
+  text: string | null,
+  from: string,
+  date: string,
+): string {
+  const formattedDate = formatQuoteDate(date);
+  return `On ${formattedDate}, ${from} wrote:\n${quoteText(text ?? "")}`;
+}
+
+/**
+ * Build just the quoted HTML block for a reply.
+ * Used to populate the collapsed quote region in the compose UI.
+ */
+export function buildReplyQuoteHtml(
+  html: string,
+  from: string,
+  date: string,
+): string {
+  const formattedDate = formatQuoteDate(date);
+  return `<p>On ${formattedDate}, ${from} wrote:</p><blockquote style="margin:0 0 0 0.8ex;border-left:1px solid #ccc;padding-left:1ex">${html}</blockquote>`;
+}
+
+/**
  * Build a quoted reply body from the original message text.
  */
 export function buildReplyBody(

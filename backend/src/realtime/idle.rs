@@ -5,11 +5,12 @@ use futures::StreamExt;
 use tokio::task::JoinHandle;
 
 use crate::config::AppConfig;
-use crate::imap::client::ImapCredentials;
+use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::imap::connection::ImapStream;
 use crate::imap::parse::{decode_rfc2047, flag_to_string, has_attachments, imap_address_to_email};
 use crate::mail_transport::MailTransport;
 use crate::realtime::events::{EventBus, MailEvent};
+use crate::smtp::client::{SmtpClient, SmtpCredentials, SendableMessage};
 use crate::{db, imap};
 
 /// Manages long-lived IMAP IDLE connections, one per (user, folder) pair.
@@ -30,6 +31,7 @@ impl IdleManager {
 
     /// Start an IDLE task for a specific user + folder.
     /// If one is already running, this is a no-op.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_idle(
         &self,
         user_hash: String,
@@ -38,6 +40,8 @@ impl IdleManager {
         event_bus: Arc<EventBus>,
         config: Arc<AppConfig>,
         transport: Arc<MailTransport>,
+        smtp_client: Arc<dyn SmtpClient>,
+        imap_client: Arc<dyn ImapClient>,
     ) {
         let key = (user_hash.clone(), folder.clone());
         if self.tasks.contains_key(&key) {
@@ -48,7 +52,10 @@ impl IdleManager {
         let task_folder = folder.clone();
 
         let handle = tokio::spawn(async move {
-            idle_loop(&task_user_hash, &task_folder, &creds, &event_bus, &config, &transport).await;
+            idle_loop(
+                &task_user_hash, &task_folder, &creds, &event_bus,
+                &config, &transport, smtp_client, imap_client,
+            ).await;
         });
 
         self.tasks.insert(key, handle);
@@ -92,19 +99,25 @@ impl Default for IdleManager {
 /// IDLE mode. When the server notifies of changes, it publishes an event
 /// to the EventBus and re-enters IDLE. If the connection drops, it
 /// reconnects with exponential backoff.
+#[allow(clippy::too_many_arguments)]
 async fn idle_loop(
     user_hash: &str,
     folder: &str,
     creds: &ImapCredentials,
     event_bus: &EventBus,
     config: &AppConfig,
-    transport: &MailTransport,
+    transport: &Arc<MailTransport>,
+    smtp_client: Arc<dyn SmtpClient>,
+    imap_client: Arc<dyn ImapClient>,
 ) {
     let mut backoff = std::time::Duration::from_secs(1);
     let max_backoff = std::time::Duration::from_secs(60);
 
     loop {
-        match run_idle_session(user_hash, folder, creds, event_bus, config, transport).await {
+        match run_idle_session(
+            user_hash, folder, creds, event_bus, config, transport,
+            smtp_client.clone(), imap_client.clone(),
+        ).await {
             Ok(()) => {
                 // Session ended normally (shouldn't happen in practice).
                 tracing::info!(user_hash = %user_hash, folder = %folder, "IDLE session ended normally");
@@ -130,13 +143,16 @@ async fn idle_loop(
 /// The async-imap IDLE API follows an ownership pattern:
 /// `Session` → `.idle()` consumes session → `Handle` → `.init()` sends IDLE
 /// → `.wait()` listens → `.done()` sends DONE and returns `Session`.
+#[allow(clippy::too_many_arguments)]
 async fn run_idle_session(
     user_hash: &str,
     folder: &str,
     creds: &ImapCredentials,
     event_bus: &EventBus,
     config: &AppConfig,
-    transport: &MailTransport,
+    transport: &Arc<MailTransport>,
+    smtp_client: Arc<dyn SmtpClient>,
+    imap_client: Arc<dyn ImapClient>,
 ) -> Result<(), String> {
     use imap::client::connect;
 
@@ -203,6 +219,29 @@ async fn run_idle_session(
 
                         // Publish the correct event based on what changed.
                         if result.new_count > 0 {
+                            // Spawn vacation + filter processing as a background
+                            // task so it doesn't delay re-entering IDLE.
+                            if folder == "INBOX" {
+                                let bkg_user_hash = user_hash.to_string();
+                                let bkg_config = config.clone();
+                                let bkg_creds = creds.clone();
+                                let bkg_smtp = smtp_client.clone();
+                                let bkg_imap = imap_client.clone();
+                                let bkg_transport = transport.clone();
+                                let bkg_max_uid = result.max_uid_before;
+                                tokio::spawn(async move {
+                                    process_new_messages(
+                                        &bkg_user_hash,
+                                        &bkg_config,
+                                        &bkg_creds,
+                                        &bkg_smtp,
+                                        &bkg_imap,
+                                        &bkg_transport,
+                                        bkg_max_uid,
+                                    ).await;
+                                });
+                            }
+
                             event_bus
                                 .publish(
                                     user_hash,
@@ -264,6 +303,8 @@ struct ReconcileResult {
     deleted_count: u32,
     latest_sender: Option<String>,
     latest_subject: Option<String>,
+    /// Highest UID that was in the DB before this sync - used to find new messages.
+    max_uid_before: u32,
 }
 
 impl ReconcileResult {
@@ -274,6 +315,7 @@ impl ReconcileResult {
             deleted_count: 0,
             latest_sender: None,
             latest_subject: None,
+            max_uid_before: 0,
         }
     }
 }
@@ -449,6 +491,7 @@ async fn fetch_new_after_idle(
                 deleted_count,
                 latest_sender,
                 latest_subject,
+                max_uid_before: max_cached_uid,
             });
         }
         // CHANGEDSINCE fetch failed — fall through to full scan below.
@@ -558,6 +601,7 @@ async fn fetch_new_after_idle(
         deleted_count,
         latest_sender,
         latest_subject,
+        max_uid_before: max_cached_uid,
     })
 }
 
@@ -833,4 +877,326 @@ async fn fetch_uids_and_remove_deleted(
     }
 
     deleted_count
+}
+
+/// Apply vacation responder and filter rules to messages with uid > max_uid_before in INBOX.
+/// Runs as a background task - any error is logged and silently dropped.
+async fn process_new_messages(
+    user_hash: &str,
+    config: &AppConfig,
+    creds: &ImapCredentials,
+    smtp_client: &Arc<dyn SmtpClient>,
+    imap_client: &Arc<dyn ImapClient>,
+    transport: &MailTransport,
+    max_uid_before: u32,
+) {
+    let conn = match db::pool::open_user_db(&config.data_dir, user_hash) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "process_new_messages: failed to open DB");
+            return;
+        }
+    };
+
+    // Fetch new messages from the DB cache.
+    let new_messages = match db::messages::get_messages_after_uid(&conn, "INBOX", max_uid_before) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "process_new_messages: failed to query new messages");
+            return;
+        }
+    };
+
+    if new_messages.is_empty() {
+        return;
+    }
+
+    // --- Vacation responder ---
+    let vacation = db::vacation::get_vacation(&conn).unwrap_or_else(|_| db::vacation::VacationResponder {
+        enabled: false,
+        subject: String::new(),
+        body: String::new(),
+        start_date: None,
+        end_date: None,
+        reply_interval_hours: 24,
+    });
+
+    if vacation.enabled {
+        let today = chrono_today();
+        let in_range = vacation_in_date_range(&vacation, &today);
+        if in_range {
+            let smtp_host = config.smtp_host.as_deref().unwrap_or_default();
+            if !smtp_host.is_empty() {
+                let smtp_creds = SmtpCredentials {
+                    host: smtp_host.to_string(),
+                    connect_host: transport.smtp_connect_host.clone(),
+                    port: config.smtp_port,
+                    tls: config.tls_enabled,
+                    email: creds.email.clone(),
+                    password: creds.password.clone(),
+                    tls_params: transport.smtp_tls_params.clone(),
+                };
+                for msg in &new_messages {
+                    // Don't reply to own address, empty sender, or automated mail.
+                    if msg.from_address.is_empty()
+                        || msg.from_address.eq_ignore_ascii_case(&creds.email)
+                        || is_automated_sender(&msg.from_address)
+                    {
+                        continue;
+                    }
+                    match db::vacation::should_reply_and_record(
+                        &conn, &msg.from_address, vacation.reply_interval_hours,
+                    ) {
+                        Ok(true) => {
+                            let reply = SendableMessage {
+                                from: creds.email.clone(),
+                                to: vec![msg.from_address.clone()],
+                                cc: vec![],
+                                bcc: vec![],
+                                subject: vacation.subject.clone(),
+                                text_body: vacation.body.clone(),
+                                html_body: None,
+                                in_reply_to: None,
+                                references: None,
+                                attachments: vec![],
+                                auto_submitted: true,
+                            };
+                            if let Err(e) = smtp_client.send_message(&smtp_creds, &reply).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    to = %msg.from_address,
+                                    "vacation: failed to send reply"
+                                );
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(e) => tracing::warn!(error = %e, "vacation: DB error"),
+                    }
+                }
+                let _ = db::vacation::purge_old_replies(&conn, vacation.reply_interval_hours);
+            }
+        }
+    }
+
+    // --- Filter rules ---
+    let rules = match db::filters::list_filters(&conn) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "filters: failed to list rules");
+            return;
+        }
+    };
+
+    if rules.is_empty() {
+        return;
+    }
+
+    for msg in &new_messages {
+        let matched = db::filters::matching_rules(
+            &conn,
+            &msg.from_address,
+            &msg.to_addresses,
+            &msg.subject,
+            msg.has_attachments,
+        );
+        let matched = match matched {
+            Ok(m) => m,
+            Err(e) => { tracing::warn!(error = %e, "filters: matching_rules error"); continue; }
+        };
+
+        if let Some(rule) = matched.into_iter().next() {
+            match rule.action.action_type.as_str() {
+                "mark_read" => {
+                    if let Err(e) = imap_client
+                        .add_flags(creds, "INBOX", msg.uid, &["\\Seen"])
+                        .await
+                    {
+                        tracing::warn!(error = %e, uid = msg.uid, "filter mark_read failed");
+                    } else {
+                        let _ = db::messages::update_message_flags(
+                            &conn, "INBOX", msg.uid, "\\Seen",
+                        );
+                    }
+                }
+                "move" => {
+                    if let Some(ref target) = rule.action.action_value {
+                        if let Err(e) = imap_client
+                            .move_message(creds, "INBOX", msg.uid, target)
+                            .await
+                        {
+                            tracing::warn!(error = %e, uid = msg.uid, target = %target, "filter move failed");
+                        } else {
+                            let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                        }
+                    }
+                }
+                "delete" => {
+                    if let Err(e) = imap_client
+                        .move_message(creds, "INBOX", msg.uid, "Trash")
+                        .await
+                    {
+                        tracing::warn!(error = %e, uid = msg.uid, "filter delete failed");
+                    } else {
+                        let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                    }
+                }
+                "tag" => {
+                    if let Some(ref tag_id) = rule.action.action_value {
+                        let _ = db::tags::add_tag_to_message(&conn, tag_id, msg.uid, "INBOX");
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn chrono_today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Returns true for senders that should never receive an auto-reply.
+/// Covers RFC 3834 automated-sender conventions and common bounce patterns.
+fn is_automated_sender(from: &str) -> bool {
+    let from = from.to_lowercase();
+    let local = from.split('@').next().unwrap_or("");
+    // Exact local-part matches.
+    matches!(local, "mailer-daemon" | "postmaster" | "noreply" | "no-reply"
+        | "donotreply" | "do-not-reply" | "auto-reply" | "auto_reply" | "autoreply")
+    // Prefix patterns common in bounce/bulk addresses.
+    || local.starts_with("bounce")
+    || local.starts_with("return")
+    || local.starts_with("prvs=")   // BATV bounce validation token
+    // Substring patterns in the full address.
+    || from.contains("noreply")
+    || from.contains("no-reply")
+    || from.contains("donotreply")
+    || from.contains("auto-reply")
+    || from.contains("bounces+")
+    || from.contains("+caf_=")      // Google forwarding bounce marker
+}
+
+fn vacation_in_date_range(vacation: &db::vacation::VacationResponder, today: &str) -> bool {
+    if let Some(ref start) = vacation.start_date
+        && today < start.as_str()
+    {
+        return false;
+    }
+    if let Some(ref end) = vacation.end_date
+        && today > end.as_str()
+    {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::vacation::VacationResponder;
+
+    // --- is_automated_sender ---
+
+    #[test]
+    fn automated_exact_local_parts() {
+        for addr in &[
+            "mailer-daemon@example.com",
+            "postmaster@example.com",
+            "noreply@example.com",
+            "no-reply@example.com",
+            "donotreply@example.com",
+            "do-not-reply@example.com",
+            "auto-reply@example.com",
+            "auto_reply@example.com",
+            "autoreply@example.com",
+        ] {
+            assert!(is_automated_sender(addr), "expected automated: {addr}");
+        }
+    }
+
+    #[test]
+    fn automated_prefix_patterns() {
+        assert!(is_automated_sender("bounce+abc@example.com"));
+        assert!(is_automated_sender("bounces+xyz@lists.example.com"));
+        assert!(is_automated_sender("return-1234@example.com"));
+        assert!(is_automated_sender("prvs=tag=addr@example.com"));
+    }
+
+    #[test]
+    fn automated_substring_in_address() {
+        assert!(is_automated_sender("notifications+noreply@github.com"));
+        assert!(is_automated_sender("support+no-reply@service.com"));
+        assert!(is_automated_sender("user+bounces+token@googlegroups.com"));
+        assert!(is_automated_sender("me+caf_=dest@example.com"));
+    }
+
+    #[test]
+    fn automated_case_insensitive() {
+        assert!(is_automated_sender("MAILER-DAEMON@EXAMPLE.COM"));
+        assert!(is_automated_sender("NoReply@Example.Com"));
+        assert!(is_automated_sender("Bounce+Token@example.com"));
+    }
+
+    #[test]
+    fn real_senders_not_automated() {
+        for addr in &[
+            "alice@example.com",
+            "bob.smith@company.org",
+            "support@helpdesk.com",
+            "newsletter@news.example.com",
+            "info@company.com",
+            // "reply" alone should not match
+            "reply@example.com",
+        ] {
+            assert!(!is_automated_sender(addr), "expected real sender: {addr}");
+        }
+    }
+
+    // --- vacation_in_date_range ---
+
+    fn base_vacation() -> VacationResponder {
+        VacationResponder {
+            enabled: true,
+            subject: "OOO".to_string(),
+            body: String::new(),
+            start_date: None,
+            end_date: None,
+            reply_interval_hours: 24,
+        }
+    }
+
+    #[test]
+    fn no_date_constraints_always_in_range() {
+        let v = base_vacation();
+        assert!(vacation_in_date_range(&v, "2026-01-01"));
+        assert!(vacation_in_date_range(&v, "2099-12-31"));
+    }
+
+    #[test]
+    fn start_date_gates_early_dates() {
+        let v = VacationResponder { start_date: Some("2026-07-01".to_string()), ..base_vacation() };
+        assert!(!vacation_in_date_range(&v, "2026-06-30"));
+        assert!(vacation_in_date_range(&v, "2026-07-01"));
+        assert!(vacation_in_date_range(&v, "2026-07-02"));
+    }
+
+    #[test]
+    fn end_date_gates_late_dates() {
+        let v = VacationResponder { end_date: Some("2026-07-31".to_string()), ..base_vacation() };
+        assert!(vacation_in_date_range(&v, "2026-07-31"));
+        assert!(!vacation_in_date_range(&v, "2026-08-01"));
+    }
+
+    #[test]
+    fn both_dates_form_closed_range() {
+        let v = VacationResponder {
+            start_date: Some("2026-07-01".to_string()),
+            end_date: Some("2026-07-14".to_string()),
+            ..base_vacation()
+        };
+        assert!(!vacation_in_date_range(&v, "2026-06-30"));
+        assert!(vacation_in_date_range(&v, "2026-07-01"));
+        assert!(vacation_in_date_range(&v, "2026-07-14"));
+        assert!(!vacation_in_date_range(&v, "2026-07-15"));
+    }
 }

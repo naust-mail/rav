@@ -227,46 +227,48 @@ pub async fn list_messages(
         }
     }
 
-    // Query paginated results from cache.
-    let messages = db::messages::get_messages(&conn, &folder, query.page, query.per_page)
+    // Query paginated threaded results from cache.
+    let threaded = db::messages::get_threaded_messages(&conn, &folder, query.page, query.per_page)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-    let total_count = db::messages::count_messages(&conn, &folder)
+    let total_count = db::messages::count_threads(&conn, &folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     tracing::info!(
         folder = %folder,
         total_count = total_count,
-        page_messages = messages.len(),
+        page_messages = threaded.len(),
         page = query.page,
         per_page = query.per_page,
         "list_messages: returning results"
     );
 
     // Batch-fetch tags for all messages in this page.
-    let message_refs: Vec<(u32, &str)> = messages.iter().map(|m| (m.uid, m.folder.as_str())).collect();
+    let message_refs: Vec<(u32, &str)> = threaded.iter().map(|t| (t.msg.uid, t.msg.folder.as_str())).collect();
     let tags_map = db::tags::get_tags_for_messages(&conn, &message_refs).unwrap_or_default();
 
-    let summaries: Vec<MessageSummary> = messages
+    let summaries: Vec<MessageSummary> = threaded
         .into_iter()
-        .map(|m| {
+        .map(|t| {
             let msg_tags = tags_map
-                .get(&(m.uid, m.folder.clone()))
+                .get(&(t.msg.uid, t.msg.folder.clone()))
                 .cloned()
                 .unwrap_or_default();
             MessageSummary {
-                uid: m.uid,
-                folder: m.folder,
-                subject: m.subject,
-                from_address: m.from_address,
-                from_name: m.from_name,
-                to_addresses: m.to_addresses,
-                date: m.date,
-                flags: m.flags,
-                size: m.size,
-                has_attachments: m.has_attachments,
-                snippet: m.snippet,
-                reaction: m.reaction,
+                uid: t.msg.uid,
+                folder: t.msg.folder,
+                subject: t.msg.subject,
+                from_address: t.msg.from_address,
+                from_name: t.msg.from_name,
+                to_addresses: t.msg.to_addresses,
+                date: t.msg.date,
+                flags: t.msg.flags,
+                size: t.msg.size,
+                has_attachments: t.msg.has_attachments,
+                snippet: t.msg.snippet,
+                reaction: t.msg.reaction,
                 tags: msg_tags,
+                thread_count: t.thread_count,
+                unread_count: t.unread_count,
             }
         })
         .collect();
@@ -942,6 +944,37 @@ pub async fn delete_message_handler(
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     // Refresh unread count for folder.
+    db::folders::refresh_unread_count(&conn, &folder)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+
+    Ok(Json(serde_json::json!({ "status": "ok" })).into_response())
+}
+
+/// `POST /api/folders/{folder}/mark-all-read`
+///
+/// Marks every message in the folder as read via IMAP UID STORE 1:* +FLAGS (\Seen),
+/// then updates the SQLite cache and refreshes the unread count.
+pub async fn mark_all_read(
+    Extension(session): Extension<SessionState>,
+    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Path(folder): Path<String>,
+) -> Result<Response, AppError> {
+    let creds = build_creds(&session, &config)?;
+
+    imap_client
+        .mark_all_read(&creds, &folder)
+        .await
+        .map_err(|e| AppError::ServiceUnavailable(format!("IMAP error: {e}")))?;
+
+    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+
+    conn.execute(
+        "UPDATE messages SET flags = CASE WHEN flags = '' THEN '\\Seen' ELSE flags || ',\\Seen' END WHERE folder = ?1 AND flags NOT LIKE '%\\Seen%'",
+        rusqlite::params![&folder],
+    ).map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+
     db::folders::refresh_unread_count(&conn, &folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 

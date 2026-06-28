@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { HelpCircle, Search, X } from "lucide-react";
+import { Chip } from "@/components/ui/Chip";
 import { useUiStore } from "@/stores/useUiStore";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import {
@@ -15,6 +16,7 @@ import {
 const SEARCH_TIPS = [
   { operator: "from:", example: "from:alice@example.com", desc: "Filter by sender" },
   { operator: "to:", example: "to:bob@example.com", desc: "Filter by recipient" },
+  { operator: "cc:", example: "cc:alice@example.com", desc: "Filter by CC recipient" },
   { operator: "subject:", example: 'subject:"meeting notes"', desc: "Search subject only" },
   { operator: "in: / folder:", example: "in:Sent", desc: "Filter by folder" },
   { operator: "date:", example: "date:2022  or  date:2022-06", desc: "Year, month, or exact date" },
@@ -22,6 +24,7 @@ const SEARCH_TIPS = [
   { operator: "before:", example: "before:2023  or  before:yesterday", desc: "Before a date or relative period" },
   { operator: "has:attachment", example: "has:attachment", desc: "Has attachments" },
   { operator: "is:", example: "is:unread  /  is:flagged  /  is:read", desc: "Filter by read/flag state" },
+  { operator: "-operator:", example: "-from:newsletter@", desc: "Exclude — negate any operator with -" },
 ];
 
 export function SearchBar() {
@@ -231,7 +234,7 @@ export function SearchBar() {
                 type="button"
                 onClick={handleClear}
                 aria-label="Clear search"
-                className="flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                className="touch-expand flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
               >
                 <X className="size-3.5" />
               </button>
@@ -253,7 +256,7 @@ export function SearchBar() {
               aria-expanded={showTips}
               aria-controls={tipsId}
               aria-label="Search tips"
-              className="flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+              className="touch-expand flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
             >
               <HelpCircle className="size-3.5" />
             </button>
@@ -277,7 +280,7 @@ export function SearchBar() {
                     key={tip.operator}
                     type="button"
                     onClick={() => handleTipClick(tip.operator)}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-muted"
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs transition-colors hover:bg-accent active:bg-accent/70"
                   >
                     <code className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-primary">
                       {tip.operator}
@@ -302,20 +305,14 @@ export function SearchBar() {
       {parsed.filters.length > 0 && inputValue && (
         <div className="flex flex-wrap gap-1 px-3 pb-1.5">
           {parsed.filters.map((filter, idx) => (
-            <span
+            <Chip
               key={`${filter.operator}-${idx}`}
-              className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
+              variant={filter.negated ? "destructive" : "default"}
+              onRemove={() => handleRemoveFilter(filter.raw)}
+              removeLabel={`Remove ${filter.operator} filter`}
             >
               {getFilterLabel(filter)}
-              <button
-                type="button"
-                onClick={() => handleRemoveFilter(filter.raw)}
-                aria-label={`Remove ${filter.operator} filter`}
-                className="flex size-3.5 items-center justify-center rounded-full transition-colors hover:bg-primary/20"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
+            </Chip>
           ))}
         </div>
       )}

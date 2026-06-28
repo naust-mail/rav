@@ -80,6 +80,7 @@ mod tests {
             environment: "development".to_string(),
             base_path: None,
             allow_custom_mail_servers: true,
+            rspamd_url: None,
         })
     }
 
@@ -119,6 +120,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             }),
         )
         .await;
@@ -162,6 +164,7 @@ mod tests {
                 mobile_nav_style: None,
                 mobile_nav_tabs: None,
                 mobile_compose: None,
+                undo_send_delay: None,
             }),
         )
         .await;

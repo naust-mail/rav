@@ -52,7 +52,7 @@ function ToolbarButton({
       disabled={disabled}
       title={title}
       className={cn(
-        "rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30",
+        "rounded p-1.5 text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground disabled:opacity-30",
         active && "bg-accent text-foreground",
       )}
     >

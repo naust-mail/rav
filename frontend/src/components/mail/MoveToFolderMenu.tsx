@@ -79,7 +79,7 @@ export function MoveToFolderMenu({
                     onMove(folder.name);
                     setOpen(false);
                   }}
-                  className="flex w-full items-center px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                  className="flex w-full items-center px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
                 >
                   {formatFolderName(folder.name)}
                 </button>

@@ -409,8 +409,8 @@ function FolderItem({
       className={cn(
         "flex items-center rounded-md transition-colors",
         isDragOver || isActive
-          ? "bg-primary/10"
-          : "hover:bg-sidebar-foreground/10",
+          ? "bg-primary/10 active:bg-primary/15"
+          : "hover:bg-sidebar-foreground/10 active:bg-sidebar-foreground/15",
       )}
       style={{ paddingLeft: `${indentPx}px` }}
     >

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import { AnimatePresence } from "framer-motion";
 import {
   Search,
@@ -13,9 +13,12 @@ import {
   Pencil,
   Trash2,
   ChevronLeft,
+  Star,
 } from "lucide-react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { Button } from "@/components/ui/button";
+import { Chip } from "@/components/ui/Chip";
+import { apiDownload } from "@/lib/api";
 import {
   useContacts,
   useCreateContact,
@@ -52,7 +55,7 @@ export function ContactsPanel() {
   const panelTransition = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
   const isMobile = useIsMobile();
 
-  const { data, isLoading, error } = useContacts(search || undefined);
+  const { data, isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage } = useContacts(search || undefined);
   const createContact = useCreateContact();
   const deleteContact = useDeleteContact();
   const importContacts = useImportContacts();
@@ -64,20 +67,40 @@ export function ContactsPanel() {
   const deleteGroup = useDeleteGroup();
   const { data: groupMembersData } = useGroupMembers(activeGroupId);
 
-  const allContacts = useMemo(() => data?.contacts ?? [], [data]);
+  const allContacts = useMemo(
+    () => data?.pages.flatMap((p) => p.contacts) ?? [],
+    [data],
+  );
+  const totalCount = data?.pages[0]?.total_count ?? 0;
+
+  // Sentinel ref for infinite scroll
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting && hasNextPage && !isFetchingNextPage) fetchNextPage(); },
+      { threshold: 0.1 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   // When a group is selected, show only its members; otherwise show all contacts
   const contacts = useMemo(() => {
     if (activeGroupId && groupMembersData) {
       const memberIds = new Set(groupMembersData.members.map((m) => m.id));
-      // If also searching, filter the members list
-      if (search) {
-        return allContacts.filter((c) => memberIds.has(c.id));
-      }
+      if (search) return allContacts.filter((c) => memberIds.has(c.id));
       return groupMembersData.members;
     }
     return allContacts;
   }, [activeGroupId, groupMembersData, allContacts, search]);
+
+  // Derive selected contact from live data so edits propagate without re-selecting
+  const liveSelectedContact = useMemo(
+    () => allContacts.find((c) => c.id === selectedContact?.id) ?? selectedContact,
+    [allContacts, selectedContact],
+  );
 
   const handleCreate = useCallback(
     (formData: {
@@ -149,7 +172,7 @@ export function ContactsPanel() {
   );
 
   const handleExport = useCallback(() => {
-    window.open((process.env.NEXT_PUBLIC_BASE_PATH || "") + "/api/contacts/export", "_blank");
+    apiDownload("/contacts/export", "contacts.vcf").catch(() => {});
   }, []);
 
   const showList = !isMobile || !selectedContact;
@@ -170,14 +193,7 @@ export function ContactsPanel() {
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2">
             <Users className="size-5 text-primary" />
-            <h1 className="text-base font-semibold text-foreground">
-              Contacts
-            </h1>
-            {data && (
-              <span className="text-xs text-muted-foreground">
-                ({data.total})
-              </span>
-            )}
+            <h1 className="text-base font-semibold text-foreground">Contacts</h1>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -237,33 +253,23 @@ export function ContactsPanel() {
         {/* Group filter tabs */}
         {groups.length > 0 && (
           <div className="flex flex-wrap gap-1 border-b border-border px-3 py-2">
-            <button
-              type="button"
+            <Chip
+              variant="muted"
               onClick={() => setActiveGroupId(null)}
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                activeGroupId === null
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground hover:bg-accent"
-              }`}
+              active={activeGroupId === null}
             >
-              All
-            </button>
+              All {totalCount > 0 && <span className="opacity-60">({totalCount})</span>}
+            </Chip>
             {groups.map((g) => (
               <div key={g.id} className="group relative flex items-center">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setActiveGroupId(activeGroupId === g.id ? null : g.id)
-                  }
-                  className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                    activeGroupId === g.id
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-accent"
-                  }`}
+                <Chip
+                  variant="muted"
+                  onClick={() => setActiveGroupId(activeGroupId === g.id ? null : g.id)}
+                  active={activeGroupId === g.id}
                 >
-                  {g.name}{" "}
-                  <span className="opacity-60">({g.member_count})</span>
-                </button>
+                  <span className="max-w-[120px] truncate">{g.name}</span>
+                  <span className="opacity-60 shrink-0">({g.member_count})</span>
+                </Chip>
                 <div className="ml-0.5 hidden items-center gap-0.5 group-hover:flex">
                   <button
                     type="button"
@@ -361,8 +367,13 @@ export function ContactsPanel() {
                 size="sm"
               />
               <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-foreground">
-                  {contact.name || contact.email}
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {contact.name || contact.email}
+                  </span>
+                  {contact.is_favorite && (
+                    <Star className="size-3 shrink-0 fill-amber-400 text-amber-400" />
+                  )}
                 </div>
                 {contact.name && (
                   <div className="truncate text-xs text-muted-foreground">
@@ -377,6 +388,14 @@ export function ContactsPanel() {
               </div>
             </button>
           ))}
+
+          {/* Infinite scroll sentinel */}
+          <div ref={sentinelRef} className="h-1" />
+          {isFetchingNextPage && (
+            <div className="flex justify-center py-3">
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
         </div>
       </div>}
 
@@ -409,7 +428,7 @@ export function ContactsPanel() {
                 className="w-full max-w-lg p-6"
               >
                 <ContactCard
-                  contact={selectedContact}
+                  contact={liveSelectedContact!}
                   onDelete={handleDelete}
                   isDeleting={deleteContact.isPending}
                   groups={groups}

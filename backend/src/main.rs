@@ -68,6 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let imap_client: Arc<dyn imap::client::ImapClient> = Arc::new(RealImapClient::new(Arc::clone(&transport)));
     let smtp_client: Arc<dyn smtp::client::SmtpClient> = Arc::new(RealSmtpClient);
 
+    // Shared HTTP client for rspamd and any other outbound HTTP calls.
+    let http_client = Arc::new(reqwest::Client::new());
+
     // Create the Tantivy search engine for full-text indexing.
     let search_engine = Arc::new(search::engine::SearchEngine::new(
         std::path::PathBuf::from(&config.data_dir),
@@ -84,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store,
         imap_client,
         smtp_client,
+        http_client,
         search_engine,
         event_bus,
         idle_manager,

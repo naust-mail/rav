@@ -1,4 +1,5 @@
-export interface Contact {
+/** A contact stored in the user's address book. */
+export type Contact = {
   id: string;
   email: string;
   name: string;
@@ -7,20 +8,23 @@ export interface Contact {
   is_favorite: boolean;
   last_contacted: string | null;
   contact_count: number;
+  /** How the contact was created: "manual", "import", or "email". */
   source: string;
   created_at: string;
   updated_at: string;
-}
+};
 
-export interface ContactsResponse {
+/** Response from GET /api/contacts. */
+export type ContactsResponse = {
   contacts: Contact[];
-  total: number;
-}
+  total_count: number;
+};
 
-export interface ContactGroup {
+/** A contact group (mailing list / label). */
+export type ContactGroup = {
   id: string;
   name: string;
   member_count: number;
   created_at: string;
   updated_at: string;
-}
+};

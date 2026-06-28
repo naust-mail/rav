@@ -4,12 +4,14 @@
  */
 
 export interface ParsedFilter {
-  /** The operator key, e.g. "from", "to", "subject", "in", "after", "before", "date", "has" */
+  /** The operator key, e.g. "from", "to", "cc", "subject", "in", "after", "before", "date", "has" */
   operator: string;
   /** The value, e.g. "alice@example.com" */
   value: string;
   /** The raw token from the query string (used for removal) */
   raw: string;
+  /** Whether this filter is negated (prefixed with `-`, e.g. `-from:newsletter@`) */
+  negated?: boolean;
 }
 
 export interface ParsedSearchQuery {
@@ -22,6 +24,7 @@ export interface ParsedSearchQuery {
 const KNOWN_OPERATORS = new Set([
   "from",
   "to",
+  "cc",
   "subject",
   "in",
   "folder",
@@ -102,12 +105,14 @@ export function parseSearchQuery(input: string): ParsedSearchQuery {
   const textParts: string[] = [];
 
   for (const { token, raw } of tokens) {
-    const colonIdx = token.indexOf(":");
+    const negated = token.startsWith("-");
+    const bare = negated ? token.slice(1) : token;
+    const colonIdx = bare.indexOf(":");
     if (colonIdx > 0) {
-      const op = token.slice(0, colonIdx).toLowerCase();
-      const val = token.slice(colonIdx + 1);
+      const op = bare.slice(0, colonIdx).toLowerCase();
+      const val = bare.slice(colonIdx + 1);
       if (KNOWN_OPERATORS.has(op) && val.length > 0) {
-        filters.push({ operator: op, value: val, raw });
+        filters.push({ operator: op, value: val, raw, negated });
         continue;
       }
     }
@@ -136,16 +141,19 @@ export function removeFilterFromQuery(
  * Get a human-readable label for a filter.
  */
 export function getFilterLabel(filter: ParsedFilter): string {
+  const prefix = filter.negated ? "not " : "";
   switch (filter.operator) {
     case "from":
-      return `from: ${filter.value}`;
+      return `${prefix}from: ${filter.value}`;
     case "to":
-      return `to: ${filter.value}`;
+      return `${prefix}to: ${filter.value}`;
+    case "cc":
+      return `${prefix}cc: ${filter.value}`;
     case "subject":
-      return `subject: ${filter.value}`;
+      return `${prefix}subject: ${filter.value}`;
     case "in":
     case "folder":
-      return `folder: ${filter.value}`;
+      return `${prefix}folder: ${filter.value}`;
     case "date":
       return `date: ${filter.value}`;
     case "after":
@@ -153,10 +161,10 @@ export function getFilterLabel(filter: ParsedFilter): string {
     case "before":
       return `before: ${filter.value}`;
     case "has":
-      return `has: ${filter.value}`;
+      return `${prefix}has: ${filter.value}`;
     case "is":
-      return filter.value;
+      return `${prefix}${filter.value}`;
     default:
-      return `${filter.operator}: ${filter.value}`;
+      return `${prefix}${filter.operator}: ${filter.value}`;
   }
 }

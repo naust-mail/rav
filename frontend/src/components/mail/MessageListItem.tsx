@@ -91,13 +91,6 @@ function formatDate(dateStr: string): string {
   return `${day} ${time}`;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  return `${mb.toFixed(1)} MB`;
-}
 
 export const MessageListItem = memo(function MessageListItem({
   message,
@@ -110,13 +103,12 @@ export const MessageListItem = memo(function MessageListItem({
   suppressHover,
   effectiveAnimationMode,
 }: MessageListItemProps) {
-  const isUnread = !message.flags.includes("\\Seen");
+  const isUnread = message.unread_count > 0;
   const isFlagged = message.flags.includes("\\Flagged");
+  const isThread = message.thread_count > 1;
   const sender = message.from_name || message.from_address;
   const formattedDate = formatDate(message.date);
-  const formattedSize = formatSize(message.size);
   const updateFlags = useUpdateFlags();
-  const [isHovered, setIsHovered] = useState(false);
 
   const toggleStar = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -181,13 +173,11 @@ export const MessageListItem = memo(function MessageListItem({
         draggable
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
         className={cn(
           "flex h-9 cursor-pointer items-center gap-2 border-b border-border px-3 text-sm outline-none transition-colors",
-          !suppressHover && "hover:bg-muted",
+          !suppressHover && "hover:bg-accent active:bg-accent/70",
           isUnread ? "bg-background font-semibold" : "bg-transparent font-normal",
-          isSelected && "bg-primary/10 hover:bg-primary/10",
+          isSelected && "bg-primary/10 hover:bg-primary/10 active:bg-primary/15",
           isDragging && "opacity-50",
         )}
       >
@@ -219,7 +209,7 @@ export const MessageListItem = memo(function MessageListItem({
           >
             <span
               className={cn(
-                "size-1.5 rounded-full",
+                "size-2 rounded-full",
                 isUnread ? "bg-primary" : "bg-border",
               )}
             />
@@ -243,11 +233,18 @@ export const MessageListItem = memo(function MessageListItem({
         {/* Sender */}
         <span className={cn("w-32 shrink-0 truncate font-normal", isFlagged ? "text-primary" : "text-muted-foreground")}>{sender}</span>
 
-        {/* Dash separator */}
-        <span className="shrink-0 text-muted-foreground">&mdash;</span>
+        {/* Separator */}
+        <span className="shrink-0 text-muted-foreground/50">&middot;</span>
 
         {/* Subject */}
         <span className={cn("min-w-0 flex-1 truncate", isFlagged && "text-primary")}>{message.subject || "(no subject)"}</span>
+
+        {/* Thread count badge */}
+        {isThread && (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {message.thread_count}
+          </span>
+        )}
 
         {/* Tag color dots */}
         <TagDots tags={message.tags} />
@@ -264,9 +261,9 @@ export const MessageListItem = memo(function MessageListItem({
           <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
         )}
 
-        {/* Date / Size on hover */}
+        {/* Date */}
         <span className={cn("shrink-0 text-xs", isFlagged ? "text-primary" : "text-muted-foreground")}>
-          {isHovered ? formattedSize : formattedDate}
+          {formattedDate}
         </span>
       </div>
     );
@@ -304,13 +301,11 @@ export const MessageListItem = memo(function MessageListItem({
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
       className={cn(
         "flex h-16 cursor-pointer flex-col justify-center border-b border-border px-3 py-1.5 outline-none transition-colors",
-        !suppressHover && "hover:bg-muted",
+        !suppressHover && "hover:bg-accent active:bg-accent/70",
         isUnread ? "bg-background" : "bg-transparent",
-        isSelected && "bg-primary/10 hover:bg-primary/10",
+        isSelected && "bg-primary/10 hover:bg-primary/10 active:bg-primary/15",
         isDragging && "opacity-50",
       )}
     >
@@ -319,9 +314,9 @@ export const MessageListItem = memo(function MessageListItem({
         {/* Sender name */}
         <span className={cn("min-w-0 flex-1 truncate text-xs font-normal", isFlagged ? "text-primary" : "text-muted-foreground")}>{sender}</span>
 
-        {/* Date / Size on hover */}
+        {/* Date */}
         <span className={cn("shrink-0 text-xs font-normal", isFlagged ? "text-primary" : "text-muted-foreground")}>
-          {isHovered ? formattedSize : formattedDate}
+          {formattedDate}
         </span>
 
         {/* Star */}
@@ -369,7 +364,7 @@ export const MessageListItem = memo(function MessageListItem({
           >
             <span
               className={cn(
-                "size-1.5 rounded-full",
+                "size-2 rounded-full",
                 isUnread ? "bg-primary" : "bg-border",
               )}
             />
@@ -387,6 +382,13 @@ export const MessageListItem = memo(function MessageListItem({
             </span>
           )}
         </span>
+
+        {/* Thread count badge */}
+        {isThread && (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+            {message.thread_count}
+          </span>
+        )}
 
         {/* Tag color dots */}
         <TagDots tags={message.tags} />

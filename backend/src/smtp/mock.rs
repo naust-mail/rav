@@ -105,6 +105,7 @@ mod tests {
             in_reply_to: None,
             references: None,
             attachments: vec![],
+            auto_submitted: false,
         }
     }
 
@@ -136,6 +137,7 @@ mod tests {
                 data: b"some content".to_vec(),
                 content_id: None,
             }],
+            auto_submitted: false,
         };
 
         let result = mock.send_message(&test_creds(), &msg).await;

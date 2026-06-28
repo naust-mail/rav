@@ -169,6 +169,29 @@ export async function apiPut<T>(
   return res.json();
 }
 
+/** Fetch a binary resource with auth headers and trigger a browser download. */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      ...getActiveAccountHeader(),
+    },
+    credentials: "same-origin",
+  });
+
+  if (!res.ok) {
+    throw await parseErrorResponse(res);
+  }
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "DELETE",

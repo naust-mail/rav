@@ -50,9 +50,9 @@ function NavButton({
           className={cn(
             "flex size-10 items-center justify-center rounded-lg transition-colors",
             disabled
-              ? "cursor-default text-sidebar-foreground/30"
-              : "text-sidebar-foreground/70 hover:bg-sidebar-foreground/10 hover:text-sidebar-foreground",
-            active && "bg-sidebar-accent text-sidebar-foreground",
+              ? "cursor-not-allowed text-sidebar-foreground/30"
+              : "text-sidebar-foreground/70 hover:bg-sidebar-foreground/10 active:bg-sidebar-foreground/15 hover:text-sidebar-foreground",
+            active && "bg-sidebar-accent text-sidebar-foreground active:bg-sidebar-accent/80",
           )}
         >
           {icon}
@@ -124,11 +124,28 @@ export function NavRail() {
 
         {/* Top actions */}
         <div className="flex flex-col items-center gap-1">
-          <NavButton
-            icon={<PenSquare className="size-5" />}
-            label="Compose"
-            onClick={() => useComposeStore.getState().openCompose()}
-          />
+          {/* Compose - primary action, visually distinct from nav destinations */}
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <button
+                type="button"
+                onClick={() => useComposeStore.getState().openCompose()}
+                aria-label="Compose new message"
+                className="group mb-1 flex size-10 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25 active:bg-primary/30"
+              >
+                <PenSquare className="size-5" />
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                side="right"
+                sideOffset={8}
+                className="rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md border border-border animate-in fade-in-0 zoom-in-95"
+              >
+                Compose new message (C)
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
           <NavButton
             icon={<Mail className="size-5" />}
             label="Mail"

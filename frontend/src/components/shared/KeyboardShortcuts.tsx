@@ -10,8 +10,12 @@ import { useUiStore } from "@/stores/useUiStore";
 const shortcuts = [
   { keys: ["⌘", "K"], description: "Search" },
   { keys: ["⌘", "P"], description: "Command palette" },
+  { keys: ["C"], description: "Compose new message" },
+  { keys: ["R"], description: "Reply to message" },
+  { keys: ["F"], description: "Forward message" },
   { keys: ["J", "/", "↓"], description: "Next message" },
   { keys: ["K", "/", "↑"], description: "Previous message" },
+  { keys: ["E"], description: "Archive message" },
   { keys: ["S"], description: "Toggle star" },
   { keys: ["U"], description: "Toggle read/unread" },
   { keys: ["Delete"], description: "Delete / move to trash" },
@@ -28,7 +32,7 @@ export function KeyboardShortcuts() {
 
   return (
     <Dialog.Root open={open} onOpenChange={setOpen}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
           {open ? (
             <>

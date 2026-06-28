@@ -76,7 +76,7 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
       const response = await apiPost<{
         account: { id: string; email: string; imapHost: string; smtpHost: string };
       }>("/auth/login", payload);
-      
+
       const accountsData = await fetchAccounts();
       setAccounts(accountsData.accounts);
       setActiveAccount(response.account.id);
@@ -93,7 +93,7 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
-      <Dialog.Portal>
+      <Dialog.Portal forceMount>
         <AnimatePresence>
           {open ? (
             <>

@@ -81,6 +81,7 @@ fn build_summary(
     m: db::messages::CachedMessage,
     tags: Vec<MessageTag>,
 ) -> MessageSummary {
+    let unread = if m.flags.contains("\\Seen") { 0 } else { 1 };
     MessageSummary {
         uid: m.uid,
         folder: m.folder,
@@ -95,6 +96,8 @@ fn build_summary(
         snippet: m.snippet,
         reaction: m.reaction,
         tags,
+        thread_count: 1,
+        unread_count: unread,
     }
 }
 

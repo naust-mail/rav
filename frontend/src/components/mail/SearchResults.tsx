@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { AnimatePresence } from "framer-motion";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
-import { ArrowDown, ArrowUp, Loader2, Paperclip, X, SearchX } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, Paperclip, SearchX } from "lucide-react";
+import { Chip } from "@/components/ui/Chip";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
 import { useSearch } from "@/hooks/useSearch";
@@ -83,9 +84,9 @@ function SearchResultRow({
       data-search-result-uid={result.uid}
       className={cn(
         "flex w-full cursor-pointer flex-col gap-0.5 border-b border-border px-3 py-2 text-left transition-colors",
-        "hover:bg-muted",
+        "hover:bg-accent active:bg-accent/70",
         isUnread ? "bg-background" : "bg-transparent",
-        isSelected && "bg-accent hover:bg-accent",
+        isSelected && "bg-accent hover:bg-accent active:bg-accent/70",
       )}
     >
       {/* Top row: unread dot, sender, folder badge, date */}
@@ -307,7 +308,7 @@ export function SearchResults() {
                 <button
                   type="button"
                   onClick={() => setSearchSortOrder(searchSortOrder === "date_desc" ? "date_asc" : "date_desc")}
-                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent active:bg-accent/70 hover:text-foreground"
                   title={searchSortOrder === "date_desc" ? "Newest first" : "Oldest first"}
                 >
                   {searchSortOrder === "date_desc" ? (
@@ -321,20 +322,13 @@ export function SearchResults() {
               {parsed.filters.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {parsed.filters.map((filter, idx) => (
-                    <span
+                    <Chip
                       key={`${filter.operator}-${idx}`}
-                      className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary"
+                      onRemove={() => handleRemoveFilter(filter.raw)}
+                      removeLabel={`Remove ${filter.operator} filter`}
                     >
                       {getFilterLabel(filter)}
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveFilter(filter.raw)}
-                        aria-label={`Remove ${filter.operator} filter`}
-                        className="flex size-3.5 items-center justify-center rounded-full transition-colors hover:bg-primary/20"
-                      >
-                        <X className="size-2.5" />
-                      </button>
-                    </span>
+                    </Chip>
                   ))}
                 </div>
               )}

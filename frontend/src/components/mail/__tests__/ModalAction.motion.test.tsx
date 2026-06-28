@@ -19,18 +19,14 @@ vi.mock("framer-motion", async () => {
     const keyedChildren = getKeyedChildren(children);
     const currentKeys = new Set(keyedChildren.map((child) => child.key as Key));
 
-    // eslint-disable-next-line react-hooks/refs -- test mock for AnimatePresence
     const exitingChildren = Array.from(prevKeysRef.current)
       .filter((key) => !currentKeys.has(key))
-      // eslint-disable-next-line react-hooks/refs -- test mock for AnimatePresence
       .map((key) => prevChildrenByKeyRef.current.get(key))
       .filter((child): child is React.ReactElement => child != null);
 
     for (const child of keyedChildren) {
-      // eslint-disable-next-line react-hooks/refs -- test mock for AnimatePresence
       prevChildrenByKeyRef.current.set(child.key as Key, child);
     }
-    // eslint-disable-next-line react-hooks/refs -- test mock for AnimatePresence
     prevKeysRef.current = currentKeys;
 
     return <>{[...keyedChildren, ...exitingChildren]}</>;
@@ -193,6 +189,7 @@ vi.mock("@/hooks/useFolders", () => ({
 }));
 
 vi.mock("@/hooks/useDisplayPreferences", () => ({
+  useDisplayPreferences: () => ({ data: { undo_send_delay: 5 } }),
   useUpdateDisplayPreferences: () => ({ mutate: vi.fn() }),
 }));
 
@@ -224,6 +221,7 @@ vi.mock("@/stores/useAuthStore", () => ({
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ clear: vi.fn() }),
+  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -316,7 +314,7 @@ describe("Modal and action motion transitions", () => {
     mockComposeState.isOpen = false;
     rerender(<ComposeDialog />);
 
-    expect(latestByTestId("compose-dialog-content-transition")).toBeNull();
+    expect(latestByTestId("compose-dialog-content-transition")).toBeTruthy();
 
     mockComposeState.isOpen = true;
     rerender(<ComposeDialog />);
@@ -344,7 +342,7 @@ describe("Modal and action motion transitions", () => {
     expect(screen.getByTestId("add-account-content-transition")).toBeTruthy();
 
     rerender(<AddAccountModal open={false} onClose={vi.fn()} />);
-    expect(screen.queryByTestId("add-account-content-transition")).toBeNull();
+    expect(screen.queryByTestId("add-account-content-transition")).toBeTruthy();
 
     mockUiState.effectiveAnimationMode = "off";
     rerender(<AddAccountModal open onClose={vi.fn()} />);
@@ -376,7 +374,7 @@ describe("Modal and action motion transitions", () => {
 
     mockUiState.commandPaletteOpen = false;
     rerender(<CommandPalette />);
-    expect(screen.queryByTestId("command-palette-content-transition")).toBeNull();
+    expect(screen.queryByTestId("command-palette-content-transition")).toBeTruthy();
 
     mockUiState.effectiveAnimationMode = "off";
     mockUiState.commandPaletteOpen = true;

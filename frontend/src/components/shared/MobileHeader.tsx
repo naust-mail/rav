@@ -10,8 +10,8 @@ import { formatFolderName } from "@/components/mail/FolderTree";
 import {
   extractHeader,
   buildReplySubject,
-  buildReplyBody,
-  buildReplyBodyHtml,
+  buildReplyQuoteHtml,
+  buildReplyQuoteText,
   buildReferences,
   buildForwardSubject,
   buildForwardBody,
@@ -34,7 +34,7 @@ function ListHeader() {
         type="button"
         aria-label="Open folders"
         onClick={goBack}
-        className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
       >
         <Menu className="size-5" />
       </button>
@@ -84,9 +84,9 @@ function ReadingHeader() {
       to: data.from_address,
       cc: "",
       subject: buildReplySubject(data.subject),
-      body: hasHtml
-        ? buildReplyBodyHtml(data.html!, data.from_address, data.date)
-        : buildReplyBody(data.text, data.from_address, data.date),
+      body: hasHtml ? "<p><br></p>" : "",
+      quotedHtml: hasHtml ? buildReplyQuoteHtml(data.html!, data.from_address, data.date) : null,
+      quotedText: buildReplyQuoteText(data.text, data.from_address, data.date),
       inReplyTo: messageId,
       references: buildReferences(refs, messageId),
       isHtml: hasHtml,
@@ -129,7 +129,7 @@ function ReadingHeader() {
         type="button"
         aria-label="Back"
         onClick={goBack}
-        className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
       >
         <ChevronLeft className="size-5" />
       </button>
@@ -141,7 +141,7 @@ function ReadingHeader() {
         aria-label="Reply"
         onClick={handleReply}
         className={cn(
-          "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
+          "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground",
           !data && "opacity-40 pointer-events-none",
         )}
       >
@@ -154,7 +154,7 @@ function ReadingHeader() {
           type="button"
           aria-label="More actions"
           onClick={() => setMenuOpen((o) => !o)}
-          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent active:bg-accent/70 hover:text-foreground"
         >
           <MoreHorizontal className="size-4" />
         </button>
@@ -165,7 +165,7 @@ function ReadingHeader() {
               type="button"
               onClick={handleArchive}
               disabled={!data || isTrash}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70 disabled:pointer-events-none disabled:opacity-40"
             >
               <Archive className="size-3.5" />
               Archive
@@ -174,7 +174,7 @@ function ReadingHeader() {
               type="button"
               onClick={handleForward}
               disabled={!data}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70 disabled:pointer-events-none disabled:opacity-40"
             >
               <Forward className="size-3.5" />
               Forward
@@ -184,7 +184,7 @@ function ReadingHeader() {
               type="button"
               onClick={() => { toggleBodyMode(); setMenuOpen(false); }}
               className={cn(
-                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70",
                 bodyMode === "plain" && "text-primary",
               )}
             >
@@ -195,7 +195,7 @@ function ReadingHeader() {
               type="button"
               onClick={() => { toggleShowHeaders(); setMenuOpen(false); }}
               className={cn(
-                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+                "flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70",
                 showHeaders && "text-primary",
               )}
             >
@@ -207,7 +207,7 @@ function ReadingHeader() {
               type="button"
               onClick={handleDelete}
               disabled={!data}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-40"
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-accent active:bg-accent/70 disabled:pointer-events-none disabled:opacity-40"
             >
               <Trash2 className="size-3.5" />
               {isTrash ? "Delete permanently" : "Move to Trash"}

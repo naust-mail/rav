@@ -70,7 +70,7 @@ export function TagPicker({ folder, uid }: TagPickerProps) {
                 key={tag.id}
                 type="button"
                 onClick={() => handleToggle(tag.id)}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent"
+                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent active:bg-accent/70"
               >
                 <span
                   className="size-2.5 shrink-0 rounded-full"
