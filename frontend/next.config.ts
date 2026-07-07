@@ -1,10 +1,14 @@
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV === "development";
+const stickersEnabled = process.env.NEXT_PUBLIC_FEATURE_STICKERS !== "false";
 
 const nextConfig: NextConfig = {
   output: isDev ? undefined : 'export',
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
+  env: {
+    NEXT_PUBLIC_FEATURE_STICKERS: stickersEnabled ? "true" : "false",
+  },
   experimental: {
     optimizePackageImports: ['lucide-react'],
   },

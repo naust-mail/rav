@@ -17,6 +17,9 @@ import {
   FileText,
   Code,
   PenLine,
+  Lock,
+  LockOpen,
+  ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -33,11 +36,16 @@ import {
   useDeleteDraft,
 } from "@/hooks/useCompose";
 import { useIdentities } from "@/hooks/useIdentities";
+import { usePgpKeys, useServerCapability } from "@/hooks/usePgp";
+import { signContent, encryptMessage } from "@/lib/pgp/client";
+import { lookupWkd } from "@/lib/pgp/wkd";
+import type { PgpKeyRecord, PgpSendRequest } from "@/types/pgp";
 import { useDisplayPreferences } from "@/hooks/useDisplayPreferences";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
+import { getMotionTokens } from "@/lib/motion/config";
 import {
   countRecipients,
   formatFileSize,
@@ -87,9 +95,17 @@ export function ComposeDialog() {
     addAttachments,
     removeAttachment,
     reset,
+    pgpMode,
+    setPgpMode,
   } = useComposeStore();
 
   const sendMutation = useSendMessage();
+  const pgpCapable = useServerCapability("pgp");
+  const { data: pgpKeys } = usePgpKeys();
+  const hasPgpKeys = pgpCapable && (pgpKeys?.length ?? 0) > 0;
+  const [pgpPassphrase, setPgpPassphrase] = useState("");
+  const [showPgpPassphraseModal, setShowPgpPassphraseModal] = useState(false);
+  const [pgpSending, setPgpSending] = useState(false);
   const saveDraftMutation = useSaveDraft();
   const uploadMutation = useUploadAttachment();
   const deleteMutation = useDeleteAttachment();
@@ -98,6 +114,12 @@ export function ComposeDialog() {
   const { data: displayPrefs } = useDisplayPreferences();
   const [draftSaved, setDraftSaved] = useState(false);
   const [showDiscardAlert, setShowDiscardAlert] = useState(false);
+  const [missingKeysPending, setMissingKeysPending] = useState<{
+    recipients: string[];
+    pubKeys: string[];
+    keyRecord: PgpKeyRecord;
+    passphrase: string;
+  } | null>(null);
   const [quoteExpanded, setQuoteExpanded] = useState(false);
   const isMobile = useIsMobile();
   const [expanded, setExpanded] = useState(false);
@@ -110,6 +132,7 @@ export function ComposeDialog() {
   const [lastSavedHash, setLastSavedHash] = useState("");
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
   const shouldAnimate = effectiveAnimationMode !== "off";
+  const motionTokens = useMemo(() => getMotionTokens(effectiveAnimationMode), [effectiveAnimationMode]);
   const overlayMotionProps = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
   const contentMotionProps = useMemo(() => createScaleFadeVariants(effectiveAnimationMode), [effectiveAnimationMode]);
   const sendFeedbackMotionProps = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
@@ -185,13 +208,13 @@ export function ComposeDialog() {
         setDraftId(currentDraftId);
       }
 
-      const draftHtmlBody = isHtml ? (quotedHtml ? body + quotedHtml : body) : null;
-      const draftTextBody = isHtml
-        ? stripHtml(body) + (quotedText ? "\n" + quotedText : "")
-        : body + (quotedText ? "\n" + quotedText : "");
+      // Store only the user's typed content - quoted content is reconstructed
+      // from the original message (via in_reply_to) when the draft is reopened.
+      const draftHtmlBody = isHtml ? body : null;
+      const draftTextBody = isHtml ? stripHtml(body) : body;
       saveDraftMutation.mutate(
         {
-          id: currentDraftId,
+          uuid: currentDraftId,
           to,
           cc,
           bcc,
@@ -248,7 +271,7 @@ export function ComposeDialog() {
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const doSend = useCallback(() => {
+  const doSend = useCallback((pgpParams?: PgpSendRequest | null) => {
     let plainText: string;
     let sendHtml: string | null;
     if (isHtml) {
@@ -275,6 +298,7 @@ export function ComposeDialog() {
         references,
         draftId,
         fromIdentityId,
+        pgp: pgpParams ?? undefined,
       },
       {
         onSuccess: () => {
@@ -303,8 +327,146 @@ export function ComposeDialog() {
     reset,
   ]);
 
+  // Handle PGP signing/encryption before the actual send.
+  const doEncryptAndSend = useCallback(async (
+    pubKeys: string[],
+    keyRecord: PgpKeyRecord,
+    passphrase: string,
+  ) => {
+    const textContent = stripHtml(body) + (quotedText ? "\n" + quotedText : "");
+    const { ciphertext } = await encryptMessage({
+      publicKeyArmoreds: pubKeys,
+      content: textContent,
+      privateKeyArmored: keyRecord.private_key_enc,
+      passphrase,
+    });
+    const pgpParams: PgpSendRequest = { mode: "encrypt", signature: null, ciphertext, micalg: "pgp-sha256" };
+    closeCompose();
+    const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
+    if (delay === 0) {
+      doSend(pgpParams);
+      return;
+    }
+    const timer = setTimeout(() => {
+      toast.dismiss("undo-send");
+      doSend(pgpParams);
+    }, delay);
+    toast("Sending encrypted message...", {
+      id: "undo-send",
+      duration: delay + 500,
+      action: {
+        label: "Undo",
+        onClick: () => {
+          clearTimeout(timer);
+          useComposeStore.setState({ isOpen: true });
+        },
+      },
+    });
+  }, [body, quotedText, closeCompose, displayPrefs, doSend]);
+
+  const handleMissingKeysConfirm = useCallback(async () => {
+    if (!missingKeysPending) return;
+    const { pubKeys, keyRecord, passphrase } = missingKeysPending;
+    setMissingKeysPending(null);
+    setPgpSending(true);
+    try {
+      await doEncryptAndSend(pubKeys, keyRecord, passphrase);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "PGP operation failed");
+    } finally {
+      setPgpSending(false);
+      setPgpPassphrase("");
+    }
+  }, [missingKeysPending, doEncryptAndSend]);
+
+  const handlePgpSend = useCallback(async (passphrase: string) => {
+    setShowPgpPassphraseModal(false);
+    if (!pgpKeys || pgpKeys.length === 0) return;
+
+    setPgpSending(true);
+    try {
+      const key = pgpKeys[0];
+      const keyRecord = await (await import("@/lib/api")).apiGet<PgpKeyRecord>(`/pgp/keys/${key.id}`);
+      let pgpParams: PgpSendRequest;
+
+      if (pgpMode === "sign") {
+        const textContent = stripHtml(body) + (quotedText ? "\n" + quotedText : "");
+        const { signature, micalg } = await signContent({
+          privateKeyArmored: keyRecord.private_key_enc,
+          passphrase,
+          content: textContent,
+        });
+        pgpParams = { mode: "sign", signature, ciphertext: null, micalg };
+
+        closeCompose();
+        const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
+        if (delay === 0) {
+          doSend(pgpParams);
+          return;
+        }
+        const timer = setTimeout(() => {
+          toast.dismiss("undo-send");
+          doSend(pgpParams);
+        }, delay);
+        toast("Sending signed message...", {
+          id: "undo-send",
+          duration: delay + 500,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              clearTimeout(timer);
+              useComposeStore.setState({ isOpen: true });
+            },
+          },
+        });
+      } else {
+        // Encrypt: look up recipient public keys via WKD.
+        const senderEmail = identities?.find((i) => i.id === fromIdentityId)?.email ?? "";
+        const recipients = [...new Set(
+          [...to.split(","), ...cc.split(","), ...bcc.split(",")]
+            .map((r) => r.trim())
+            .filter((r) => r && r !== senderEmail)
+        )];
+
+        const results = await Promise.all(
+          recipients.map((r) => lookupWkd(r).catch(() => null))
+        );
+
+        const pubKeys: string[] = [key.public_key];
+        const missingRecipients: string[] = [];
+        for (let i = 0; i < recipients.length; i++) {
+          if (results[i]) {
+            pubKeys.push(results[i]!);
+          } else {
+            missingRecipients.push(recipients[i]);
+          }
+        }
+
+        if (missingRecipients.length > 0) {
+          // Pause and show the missing-keys dialog; resume via handleMissingKeysConfirm.
+          setMissingKeysPending({ recipients: missingRecipients, pubKeys, keyRecord, passphrase });
+          return;
+        }
+
+        await doEncryptAndSend(pubKeys, keyRecord, passphrase);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "PGP operation failed");
+    } finally {
+      setPgpSending(false);
+      setPgpPassphrase("");
+    }
+  }, [pgpMode, pgpKeys, body, quotedText, to, cc, bcc, closeCompose, displayPrefs, doSend, doEncryptAndSend]);
+
   const handleSend = useCallback(() => {
     if (!to.trim() && !cc.trim() && !bcc.trim()) return;
+
+    // If PGP mode is active and we have keys, prompt for passphrase first.
+    if (pgpMode !== "off" && hasPgpKeys) {
+      setShowPgpPassphraseModal(true);
+      return;
+    }
+
     closeCompose();
 
     const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
@@ -330,7 +492,7 @@ export function ComposeDialog() {
         },
       },
     });
-  }, [to, cc, bcc, closeCompose, doSend, displayPrefs?.undo_send_delay]);
+  }, [to, cc, bcc, closeCompose, doSend, displayPrefs?.undo_send_delay, pgpMode, hasPgpKeys]);
 
   const handleDiscard = useCallback(() => {
     if (hasContent()) {
@@ -350,11 +512,13 @@ export function ComposeDialog() {
 
   // Save draft and close the dialog without discarding.
   const handleSaveAndClose = useCallback(() => {
-    if (hasContent()) {
+    // Only save if the user actually changed something - pre-filled reply fields
+    // (to/subject) count as content but not as a reason to save a draft.
+    if (hasContent() && computeHash() !== lastSavedHashRef.current) {
       saveDraft(true);
     }
     closeCompose();
-  }, [hasContent, saveDraft, closeCompose]);
+  }, [hasContent, saveDraft, closeCompose, computeHash]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -589,7 +753,7 @@ export function ComposeDialog() {
                     animate="animate"
                     exit="exit"
                     className={cn(
-                      "fixed z-50 flex flex-col border border-border bg-background shadow-2xl",
+                      "fixed z-50 flex flex-col overflow-hidden border border-border bg-background shadow-2xl",
                       isMobile
                         ? expanded
                           ? "inset-0 rounded-none"
@@ -615,6 +779,83 @@ export function ComposeDialog() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   Files will be uploaded as attachments
                 </p>
+              </div>
+            )}
+
+            {/* PGP passphrase — inline overlay, avoids framer-motion stacking-context issues with fixed positioning */}
+            {showPgpPassphraseModal && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/40 backdrop-blur-sm">
+                <div className="w-full max-w-sm mx-6 rounded-lg border border-border bg-background p-6 shadow-xl">
+                  <div className="flex items-center gap-2 mb-4">
+                    {pgpMode === "encrypt" ? <Lock className="size-4" /> : <ShieldCheck className="size-4" />}
+                    <h2 className="text-base font-semibold">
+                      {pgpMode === "encrypt" ? "Encrypt message" : "Sign message"}
+                    </h2>
+                  </div>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Enter your key passphrase to {pgpMode === "encrypt" ? "encrypt" : "sign"} this message.
+                  </p>
+                  <input
+                    type="password"
+                    placeholder="Key passphrase"
+                    value={pgpPassphrase}
+                    onChange={(e) => setPgpPassphrase(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && pgpPassphrase) handlePgpSend(pgpPassphrase); }}
+                    autoFocus
+                    className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary mb-4"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handlePgpSend(pgpPassphrase)}
+                      disabled={!pgpPassphrase || pgpSending}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+                    >
+                      {pgpSending && <Loader2 className="size-3.5 animate-spin" />}
+                      {pgpMode === "encrypt" ? "Encrypt & Send" : "Sign & Send"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setShowPgpPassphraseModal(false); setPgpPassphrase(""); }}
+                      className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Missing PGP keys confirmation — inline overlay so it renders above compose without portal/stacking-context issues */}
+            {missingKeysPending !== null && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl bg-black/40 backdrop-blur-sm">
+                <div className="w-full max-w-sm mx-6 rounded-xl border border-border bg-background p-6 shadow-2xl">
+                  <h2 className="text-base font-semibold">No key found for some recipients</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    The following recipients have no PGP key and will not be able to decrypt this message:
+                  </p>
+                  <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto">
+                    {missingKeysPending.recipients.map((r) => (
+                      <li key={r} className="text-sm font-medium">{r}</li>
+                    ))}
+                  </ul>
+                  <div className="mt-6 flex justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setMissingKeysPending(null)}
+                      className="rounded-lg px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleMissingKeysConfirm}
+                      className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                    >
+                      Send anyway
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -782,7 +1023,7 @@ export function ComposeDialog() {
 
             {/* Attachments */}
             {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-2 border-b border-border px-4 py-2">
+              <div className="flex max-h-24 flex-wrap gap-2 overflow-y-auto border-b border-border px-4 py-2">
                 {attachments.map((att) => (
                   <div
                     key={att.id}
@@ -817,7 +1058,7 @@ export function ComposeDialog() {
             )}
 
             {/* Body */}
-            <div data-compose-body className="contents">
+            <div data-compose-body className="flex flex-1 flex-col min-h-0">
               {isHtml ? (
                 <RichTextEditor
                   content={body}
@@ -848,8 +1089,15 @@ export function ComposeDialog() {
                 >
                   <span className="tracking-widest">···</span>
                 </button>
-                {quoteExpanded && (
-                  <div className="mt-2 border-l-2 border-border pl-3 text-sm text-muted-foreground">
+                <div
+                  className={cn(
+                    "overflow-hidden",
+                    shouldAnimate && "transition-[max-height]",
+                    quoteExpanded ? "max-h-48" : "max-h-0",
+                  )}
+                  style={shouldAnimate ? { transitionDuration: `${motionTokens.duration.normal * 1000}ms` } : undefined}
+                >
+                  <div className="mt-2 overflow-y-auto border-l-2 border-border pl-3 text-sm text-muted-foreground" style={{ maxHeight: "11rem" }}>
                     {isHtml && quotedHtml ? (
                       <div
                         className="prose prose-sm max-w-none dark:prose-invert"
@@ -859,7 +1107,7 @@ export function ComposeDialog() {
                       <pre className="whitespace-pre-wrap font-sans text-xs">{quotedText}</pre>
                     )}
                   </div>
-                )}
+                </div>
               </div>
             )}
 
@@ -975,6 +1223,25 @@ export function ComposeDialog() {
                 >
                   <PenLine className="size-4" />
                 </button>
+                {hasPgpKeys && (
+                  <button
+                    type="button"
+                    onClick={() => setPgpMode(pgpMode === "off" ? "sign" : pgpMode === "sign" ? "encrypt" : "off")}
+                    className={cn(
+                      "rounded-lg p-2 hover:bg-accent hover:text-foreground",
+                      pgpMode === "off" ? "text-muted-foreground" : "text-primary"
+                    )}
+                    title={pgpMode === "off" ? "Encryption off" : pgpMode === "sign" ? "Sign only" : "Encrypt & sign"}
+                  >
+                    {pgpMode === "encrypt" ? (
+                      <Lock className="size-4" />
+                    ) : pgpMode === "sign" ? (
+                      <ShieldCheck className="size-4" />
+                    ) : (
+                      <LockOpen className="size-4" />
+                    )}
+                  </button>
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -1011,6 +1278,7 @@ export function ComposeDialog() {
         onConfirm={confirmDiscard}
       />
 
+
       {/* Attachment preview dialog */}
       {previewAttachment && draftId && (
         <AttachmentPreviewDialog
@@ -1024,6 +1292,7 @@ export function ComposeDialog() {
           onClose={() => setPreviewAttId(null)}
         />
       )}
+
     </>
   );
 }

@@ -81,6 +81,13 @@ mod tests {
             base_path: None,
             allow_custom_mail_servers: true,
             rspamd_url: None,
+            link_proxy_enabled: false,
+            pgp_enabled: true,
+            webauthn_rp_id: None,
+            webauthn_rp_origin: None,
+            trusted_proxies: String::new(),
+            sieve_host: None,
+            sieve_port: 4190,
         })
     }
 
@@ -98,6 +105,7 @@ mod tests {
             smtp_tls: true,
             last_accessed: Instant::now(),
             timeout_override: None,
+            folder_key: [0u8; 32],
         }
     }
 
@@ -106,6 +114,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path().to_str().unwrap());
         let session = test_session();
+        crate::auth::user_data::provision_user_data(tmp.path().to_str().unwrap(), &session.user_hash)
+            .expect("failed to provision user db");
 
         let result = update_display_preferences(
             Extension(session),
@@ -150,6 +160,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(tmp.path().to_str().unwrap());
         let session = test_session();
+        crate::auth::user_data::provision_user_data(tmp.path().to_str().unwrap(), &session.user_hash)
+            .expect("failed to provision user db");
 
         let result = update_display_preferences(
             Extension(session),

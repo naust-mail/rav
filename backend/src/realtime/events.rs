@@ -17,8 +17,8 @@ pub enum MailEvent {
     },
     /// Flags changed on messages in a folder.
     FlagsChanged { folder: String },
-    /// Folder list or counts changed.
-    FolderUpdated,
+    /// Folder list or counts changed. `folder` is set when a specific folder was synced.
+    FolderUpdated { folder: Option<String> },
 }
 
 /// Fan-out event bus: per-user broadcast channels.
@@ -119,7 +119,7 @@ mod tests {
     async fn publish_to_nonexistent_user_is_noop() {
         let bus = EventBus::new();
         // Should not panic.
-        bus.publish("ghost", MailEvent::FolderUpdated).await;
+        bus.publish("ghost", MailEvent::FolderUpdated { folder: None }).await;
     }
 
     #[tokio::test]
@@ -128,12 +128,12 @@ mod tests {
         let mut rx1: tokio::sync::broadcast::Receiver<MailEvent> = bus.subscribe("user1").await;
         let mut rx2: tokio::sync::broadcast::Receiver<MailEvent> = bus.subscribe("user1").await;
 
-        bus.publish("user1", MailEvent::FolderUpdated).await;
+        bus.publish("user1", MailEvent::FolderUpdated { folder: None }).await;
 
         let e1: MailEvent = rx1.recv().await.unwrap();
-        assert!(matches!(e1, MailEvent::FolderUpdated));
+        assert!(matches!(e1, MailEvent::FolderUpdated { .. }));
         let e2: MailEvent = rx2.recv().await.unwrap();
-        assert!(matches!(e2, MailEvent::FolderUpdated));
+        assert!(matches!(e2, MailEvent::FolderUpdated { .. }));
     }
 
     #[tokio::test]

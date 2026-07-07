@@ -1,3 +1,4 @@
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -226,7 +227,132 @@ pub fn list_events(
     for row in rows {
         events.push(row.map_err(|e| format!("Failed to read event row: {e}"))?);
     }
-    Ok(events)
+    Ok(expand_recurring(events, start, end))
+}
+
+// ---------------------------------------------------------------------------
+// Recurring event expansion
+// ---------------------------------------------------------------------------
+
+/// Expand recurring events within [range_start, range_end].
+///
+/// Events without a recurrence_rule pass through unchanged. Events with one are
+/// replaced by their individual occurrences inside the window. On any parse or
+/// expansion error the master event is kept as-is.
+fn expand_recurring(
+    events: Vec<CalendarEvent>,
+    range_start: &str,
+    range_end: &str,
+) -> Vec<CalendarEvent> {
+    let mut out: Vec<CalendarEvent> = Vec::with_capacity(events.len());
+
+    for event in events {
+        match try_expand(&event, range_start, range_end) {
+            Ok(occurrences) => out.extend(occurrences),
+            Err(_) => out.push(event),
+        }
+    }
+
+    out.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+    out
+}
+
+fn try_expand(
+    event: &CalendarEvent,
+    range_start: &str,
+    range_end: &str,
+) -> Result<Vec<CalendarEvent>, Box<dyn std::error::Error>> {
+    let rule_str = match &event.recurrence_rule {
+        Some(r) => r,
+        None => return Ok(vec![event.clone()]),
+    };
+
+    let is_date_only = event.start_time.len() == 10 && !event.start_time.contains('T');
+
+    // Build the iCal string the rrule crate needs.
+    let dtstart = iso_to_ical_dtstart(&event.start_time);
+    let ical_str = format!("{dtstart}\nRRULE:{rule_str}");
+
+    let rrule_set: rrule::RRuleSet = ical_str.parse()?;
+
+    // Parse range bounds as UTC datetimes for comparison.
+    let window_start = parse_iso_as_utc(range_start)?;
+    let window_end = parse_iso_as_utc(range_end)?;
+
+    // Calculate duration so we can derive end_time per occurrence.
+    let duration = if is_date_only {
+        let s = NaiveDate::parse_from_str(&event.start_time, "%Y-%m-%d")?;
+        let e = NaiveDate::parse_from_str(&event.end_time, "%Y-%m-%d")?;
+        Duration::days((e - s).num_days())
+    } else {
+        let s = parse_iso_as_utc(&event.start_time)?;
+        let e = parse_iso_as_utc(&event.end_time)?;
+        e - s
+    };
+
+    let occurrences: Vec<CalendarEvent> = rrule_set
+        .into_iter()
+        .skip_while(|dt| dt.with_timezone(&Utc) < window_start)
+        .take_while(|dt| dt.with_timezone(&Utc) <= window_end)
+        .take(500)
+        .map(|dt| {
+            let utc = dt.with_timezone(&Utc);
+            let (occ_start, occ_end) = if is_date_only {
+                let d = utc.date_naive();
+                let end_d = d + duration;
+                (d.format("%Y-%m-%d").to_string(), end_d.format("%Y-%m-%d").to_string())
+            } else {
+                let end_utc = utc + duration;
+                (
+                    utc.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                    end_utc.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                )
+            };
+            let mut occ = event.clone();
+            occ.start_time = occ_start;
+            occ.end_time = occ_end;
+            occ
+        })
+        .collect();
+
+    // If expansion produced nothing (master start outside range), return master.
+    if occurrences.is_empty() {
+        return Ok(vec![event.clone()]);
+    }
+
+    Ok(occurrences)
+}
+
+/// Convert an ISO 8601 datetime/date string to an iCal DTSTART line.
+fn iso_to_ical_dtstart(iso: &str) -> String {
+    if iso.len() == 10 && !iso.contains('T') {
+        // Date-only: 2025-03-06 -> DTSTART;VALUE=DATE:20250306
+        let compact = iso.replace('-', "");
+        format!("DTSTART;VALUE=DATE:{compact}")
+    } else {
+        // Datetime: 2025-03-06T09:00:00Z -> DTSTART:20250306T090000Z
+        let compact = iso
+            .replace('-', "")
+            .replace(':', "")
+            .replacen('T', "T", 1); // keep the T separator intact
+        // The replace above turns colons in the time part to nothing; fix the T.
+        // e.g. "20250306T090000Z"
+        format!("DTSTART:{compact}")
+    }
+}
+
+/// Parse an ISO 8601 string (datetime or date-only) as a UTC DateTime.
+fn parse_iso_as_utc(iso: &str) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+    if iso.len() == 10 && !iso.contains('T') {
+        let d = NaiveDate::parse_from_str(iso, "%Y-%m-%d")?;
+        Ok(d.and_hms_opt(0, 0, 0).unwrap().and_utc())
+    } else if iso.ends_with('Z') {
+        Ok(iso.parse::<DateTime<Utc>>()?)
+    } else {
+        // Local datetime without timezone - treat as UTC.
+        let naive = chrono::NaiveDateTime::parse_from_str(iso, "%Y-%m-%dT%H:%M:%S")?;
+        Ok(naive.and_utc())
+    }
 }
 
 /// Get a single event by ID.
@@ -245,7 +371,7 @@ pub fn get_event(conn: &Connection, id: &str) -> Result<Option<CalendarEvent>, S
 pub fn create_event(conn: &Connection, data: &CreateEvent) -> Result<CalendarEvent, String> {
     let id = Uuid::new_v4().to_string();
     let now: String = conn
-        .query_row("SELECT datetime('now')", [], |row| row.get(0))
+        .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| row.get(0))
         .map_err(|e| format!("Failed to get current time: {e}"))?;
 
     conn.execute(
@@ -332,7 +458,7 @@ pub fn update_event(
         return get_event(conn, id);
     }
 
-    sets.push("updated_at = datetime('now')".to_string());
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
 
     let sql = format!(
         "UPDATE calendar_events SET {} WHERE id = ?{idx}",
@@ -454,7 +580,7 @@ pub fn update_calendar_settings(
     }
 
     if !sets.is_empty() {
-        sets.push("updated_at = datetime('now')".to_string());
+        sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
         let sql = format!(
             "UPDATE calendar_settings SET {} WHERE id = 1",
             sets.join(", ")

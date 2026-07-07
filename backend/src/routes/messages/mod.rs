@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use axum::extract::Path;
-use axum::extract::Query;
+use axum::extract::{Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
@@ -72,6 +71,10 @@ fn validate_flags(flags: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
+fn cipher_for(session: &SessionState) -> crate::folder_cipher::FolderCipher {
+    crate::folder_cipher::FolderCipher::new(&session.folder_key)
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -91,9 +94,10 @@ pub async fn list_messages(
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
     Extension(event_bus): Extension<Arc<EventBus>>,
-    Path(folder): Path<String>,
+    Path(folder_id): Path<String>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     let mut syncing = false;
 
     // Open the per-user database.
@@ -233,6 +237,14 @@ pub async fn list_messages(
     let total_count = db::messages::count_threads(&conn, &folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
+    // For Drafts, keep total_count in sync with thread count so the folder badge
+    // matches the list (raw IMAP EXISTS inflates it when phantom copies exist).
+    if let Ok(Some(f)) = db::folders::get_folder(&conn, &folder) {
+        if f.flags.contains("\\Drafts") {
+            let _ = db::folders::set_folder_total_count(&conn, &folder, total_count);
+        }
+    }
+
     tracing::info!(
         folder = %folder,
         total_count = total_count,
@@ -246,6 +258,7 @@ pub async fn list_messages(
     let message_refs: Vec<(u32, &str)> = threaded.iter().map(|t| (t.msg.uid, t.msg.folder.as_str())).collect();
     let tags_map = db::tags::get_tags_for_messages(&conn, &message_refs).unwrap_or_default();
 
+    let cipher = cipher_for(&session);
     let summaries: Vec<MessageSummary> = threaded
         .into_iter()
         .map(|t| {
@@ -255,7 +268,7 @@ pub async fn list_messages(
                 .unwrap_or_default();
             MessageSummary {
                 uid: t.msg.uid,
-                folder: t.msg.folder,
+                folder: cipher.encrypt(&t.msg.folder),
                 subject: t.msg.subject,
                 from_address: t.msg.from_address,
                 from_name: t.msg.from_name,
@@ -308,7 +321,7 @@ fn upsert_and_index_headers(
             conn, folder, header.uid,
             header.message_id.as_deref(), header.in_reply_to.as_deref(),
             header.references.as_deref(), subject, from_address, from_name,
-            &to_json, &cc_json, date, &flags_csv, header.size,
+            &to_json, &cc_json, date, header.date_epoch, &flags_csv, header.size,
             header.has_attachments, "", header.reaction.as_deref(),
         )
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
@@ -329,7 +342,6 @@ fn upsert_and_index_headers(
                 let from_address = h.from.first().map(|a| a.address.as_str()).unwrap_or("");
                 let from_name = h.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
                 let subject = h.subject.as_deref().unwrap_or("");
-                let date = h.date.as_deref().unwrap_or("");
                 let to_json = serde_json::to_string(&h.to).unwrap_or_else(|_| "[]".to_string());
                 IndexableMessage {
                     uid: h.uid,
@@ -339,7 +351,7 @@ fn upsert_and_index_headers(
                     from_name: from_name.to_string(),
                     to_addresses: to_json,
                     body_text: String::new(),
-                    date_epoch: crate::db::messages::parse_date_to_epoch_public(date),
+                    date_epoch: h.date_epoch,
                     has_attachments: h.has_attachments,
                 }
             })
@@ -402,7 +414,7 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
                 &conn, &folder, header.uid,
                 header.message_id.as_deref(), header.in_reply_to.as_deref(),
                 header.references.as_deref(), subject, from_address, from_name,
-                &to_json, &cc_json, date, &flags_csv, header.size,
+                &to_json, &cc_json, date, header.date_epoch, &flags_csv, header.size,
                 header.has_attachments, "", header.reaction.as_deref(),
             )
             .map_err(|e| format!("Database error: {e}"))?;
@@ -422,7 +434,6 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
                     let from_address = h.from.first().map(|a| a.address.as_str()).unwrap_or("");
                     let from_name = h.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
                     let subject = h.subject.as_deref().unwrap_or("");
-                    let date = h.date.as_deref().unwrap_or("");
                     let to_json = serde_json::to_string(&h.to).unwrap_or_else(|_| "[]".to_string());
                     IndexableMessage {
                         uid: h.uid,
@@ -432,7 +443,7 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
                         from_name: from_name.to_string(),
                         to_addresses: to_json,
                         body_text: String::new(),
-                        date_epoch: crate::db::messages::parse_date_to_epoch_public(date),
+                        date_epoch: h.date_epoch,
                         has_attachments: h.has_attachments,
                     }
                 })
@@ -453,12 +464,44 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
     match result {
         Ok(()) => {
             tracing::info!(folder = %folder, "Background sync: complete");
-            event_bus.publish(&user_hash, MailEvent::FolderUpdated).await;
+            event_bus.publish(&user_hash, MailEvent::FolderUpdated { folder: Some(folder.clone()) }).await;
         }
         Err(e) => {
             tracing::warn!(folder = %folder, error = %e, "Background sync: failed (will retry on next request)");
         }
     }
+}
+
+/// Request body for `POST /api/messages/by-message-id`.
+#[derive(serde::Deserialize)]
+pub(crate) struct ByMessageIdRequest {
+    pub(crate) message_id: String,
+}
+
+/// `POST /api/messages/by-message-id`
+///
+/// Looks up a message by its Message-ID header in the local cache, then fetches
+/// and returns the full message detail. Used to reconstruct reply quote context
+/// when reopening a draft that has `in_reply_to` set.
+/// The message_id is in the POST body to keep it out of server access logs.
+pub async fn get_message_by_message_id(
+    session: Extension<SessionState>,
+    config: Extension<Arc<AppConfig>>,
+    imap_client: Extension<Arc<dyn ImapClient>>,
+    search_engine: Extension<Arc<SearchEngine>>,
+    link_proxy: Option<Extension<Arc<crate::link_proxy::LinkProxySecret>>>,
+    Json(body): Json<ByMessageIdRequest>,
+) -> Result<Response, AppError> {
+    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+
+    let (folder, uid) = db::messages::find_by_message_id(&conn, &body.message_id)
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?
+        .ok_or_else(|| AppError::NotFound("Message not found".to_string()))?;
+
+    // Encrypt the folder so get_message can decrypt it cleanly through the normal path.
+    let encrypted_folder = cipher_for(&session).encrypt(&folder);
+    get_message(session, config, imap_client, search_engine, link_proxy, Path((encrypted_folder, uid))).await
 }
 
 /// `GET /api/messages/:folder/:uid`
@@ -470,8 +513,10 @@ pub async fn get_message(
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    link_proxy: Option<Extension<Arc<crate::link_proxy::LinkProxySecret>>>,
+    Path((folder_id, uid)): Path<(String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
 
     // Open the per-user database.
@@ -486,7 +531,7 @@ pub async fn get_message(
     // Re-fetch from IMAP so attachments and inline images are properly resolved.
     let usable_cache = cached_body.filter(|c| c.attachments_json.is_some());
 
-    let (body_html, body_text, attachments, raw_headers, email_theme) = if let Some(cached) = usable_cache {
+    let (body_html, body_text, attachments, raw_headers, email_theme, pgp_status) = if let Some(cached) = usable_cache {
         let attachments: Vec<AttachmentMeta> = cached
             .attachments_json
             .as_deref()
@@ -499,9 +544,9 @@ pub async fn get_message(
             if let Some(t) = detected {
                 let _ = db::messages::update_email_theme(&conn, &folder, uid, t);
             }
-            (cached.html, cached.text, attachments, cached.raw_headers.unwrap_or_default(), detected)
+            (cached.html, cached.text, attachments, cached.raw_headers.unwrap_or_default(), detected, None)
         } else {
-            (cached.html, cached.text, attachments, cached.raw_headers.unwrap_or_default(), theme)
+            (cached.html, cached.text, attachments, cached.raw_headers.unwrap_or_default(), theme, None)
         }
     } else {
         // Fetch from IMAP.
@@ -587,7 +632,7 @@ pub async fn get_message(
         )
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
-        (resolved_html, body.text_plain, attachment_meta, body.raw_headers, detected_theme)
+        (resolved_html, body.text_plain, attachment_meta, body.raw_headers, detected_theme, body.pgp_status)
     };
 
     // Get the message header from cache (use efficient single-message lookup).
@@ -637,6 +682,7 @@ pub async fn get_message(
                 from_name,
                 to_addresses: String::from("[]"),
                 cc_addresses: String::from("[]"),
+                date_epoch: crate::db::messages::parse_date_epoch(&date),
                 date,
                 flags: String::new(),
                 size: 0,
@@ -661,7 +707,7 @@ pub async fn get_message(
             from_name: msg.from_name.clone(),
             to_addresses: msg.to_addresses.clone(),
             body_text: text.clone(),
-            date_epoch: crate::db::messages::parse_date_to_epoch_public(&msg.date),
+            date_epoch: msg.date_epoch,
             has_attachments: msg.has_attachments,
         };
         let _ = user_index.index_message(&indexable);
@@ -675,11 +721,12 @@ pub async fn get_message(
         vec![]
     };
 
+    let resp_cipher = cipher_for(&session);
     let thread: Vec<ThreadMessage> = thread_messages
         .into_iter()
         .map(|m| ThreadMessage {
             uid: m.uid,
-            folder: m.folder,
+            folder: resp_cipher.encrypt(&m.folder),
             message_id: m.message_id,
             in_reply_to: m.in_reply_to,
             subject: m.subject,
@@ -695,9 +742,32 @@ pub async fn get_message(
         })
         .collect();
 
+    // If link proxy is enabled, rewrite all http(s) hrefs in the HTML body.
+    // We do this at response time (not cache time) so toggling the feature
+    // doesn't leave stale proxy or non-proxy links in the cache.
+    // Skip rewriting for PGP-encrypted messages: there is no HTML to rewrite,
+    // and the decrypted content must never pass through the proxy.
+    use crate::imap::types::PgpStatusKind;
+    let is_encrypted = pgp_status
+        .as_ref()
+        .is_some_and(|s| s.kind == PgpStatusKind::Encrypted);
+    const LINK_PROXY_MAX_CHARS: usize = 200_000;
+    let body_html = match (body_html, link_proxy) {
+        (Some(html), Some(Extension(secret))) if !is_encrypted => {
+            let base = config.base_path.as_deref().unwrap_or("");
+            let slice = if html.len() > LINK_PROXY_MAX_CHARS {
+                &html[..html.floor_char_boundary(LINK_PROXY_MAX_CHARS)]
+            } else {
+                &html
+            };
+            Some(crate::link_proxy::rewrite_html_links(slice, &secret.0, &session.user_hash, base))
+        }
+        (html, _) => html,
+    };
+
     Ok(Json(MessageDetailResponse {
         uid: msg.uid,
-        folder: msg.folder,
+        folder: resp_cipher.encrypt(&msg.folder),
         subject: msg.subject,
         from_address: msg.from_address,
         from_name: msg.from_name,
@@ -718,6 +788,7 @@ pub async fn get_message(
             3 => EmailTheme::Adaptive,
             _ => EmailTheme::Light,
         }),
+        pgp_status,
     })
     .into_response())
 }
@@ -729,9 +800,10 @@ pub async fn update_flags(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(String, u32)>,
     Json(body): Json<UpdateFlagsRequest>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     validate_flags(&body.flags)?;
 
     let creds = build_creds(&session, &config)?;
@@ -800,11 +872,14 @@ pub async fn move_message_handler(
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Json(body): Json<MoveMessageRequest>,
 ) -> Result<Response, AppError> {
+    let cipher = cipher_for(&session);
+    let from_folder = cipher.decrypt(&body.from_folder)?;
+    let to_folder = cipher.decrypt(&body.to_folder)?;
     let creds = build_creds(&session, &config)?;
 
     // Move on IMAP server.
     imap_client
-        .move_message(&creds, &body.from_folder, body.uid, &body.to_folder)
+        .move_message(&creds, &from_folder, body.uid, &to_folder)
         .await
         .map_err(|e| AppError::ServiceUnavailable(format!("IMAP error: {e}")))?;
 
@@ -813,7 +888,7 @@ pub async fn move_message_handler(
 
     // Check if the message was unread before removing it from the source cache,
     // so we can adjust the destination folder's unread count.
-    let was_unread = db::messages::get_single_message(&conn, &body.from_folder, body.uid)
+    let was_unread = db::messages::get_single_message(&conn, &from_folder, body.uid)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?
         .map(|m| !m.flags.contains("\\Seen"))
         .unwrap_or(false);
@@ -821,22 +896,22 @@ pub async fn move_message_handler(
     // Delete from source folder cache. We don't keep the row in the destination
     // because the UID changes after an IMAP MOVE, and a stale UID would cause
     // 404s when trying to fetch the message body.
-    db::messages::delete_message(&conn, &body.from_folder, body.uid)
+    db::messages::delete_message(&conn, &from_folder, body.uid)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     // Refresh source folder unread count (now accurate since the row is gone).
-    db::folders::refresh_unread_count(&conn, &body.from_folder)
+    db::folders::refresh_unread_count(&conn, &from_folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     // Bump destination folder unread count if the moved message was unread.
     if was_unread {
-        db::folders::adjust_unread_count(&conn, &body.to_folder, 1)
+        db::folders::adjust_unread_count(&conn, &to_folder, 1)
             .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
     }
 
     // Invalidate destination folder cache so the next list request forces an
     // IMAP resync and picks up the moved message with its new UID.
-    db::folders::invalidate_folder_freshness(&conn, &body.to_folder)
+    db::folders::invalidate_folder_freshness(&conn, &to_folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(serde_json::json!({ "status": "ok" })).into_response())
@@ -849,8 +924,9 @@ pub async fn download_attachment(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder, uid, attachment_id)): Path<(String, u32, String)>,
+    Path((folder_id, uid, attachment_id)): Path<(String, u32, String)>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
 
     // Parse the attachment index.
@@ -927,8 +1003,9 @@ pub async fn delete_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
 
     // Expunge on IMAP server.
@@ -958,8 +1035,9 @@ pub async fn mark_all_read(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(folder): Path<String>,
+    Path(folder_id): Path<String>,
 ) -> Result<Response, AppError> {
+    let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
 
     imap_client

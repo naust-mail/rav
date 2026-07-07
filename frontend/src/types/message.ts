@@ -1,4 +1,5 @@
 import type { MessageTag } from "@/types/tag";
+import type { PgpMessageStatus } from "@/types/pgp";
 
 /** A parsed email address from the API. */
 export type EmailAddress = {
@@ -48,6 +49,7 @@ export type MessageDetail = {
   raw_headers: string;
   attachments: Attachment[];
   thread: MessageHeader[];
+  pgp_status: PgpMessageStatus | null;
 };
 
 /** Email attachment metadata. */

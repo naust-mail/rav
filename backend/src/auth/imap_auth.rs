@@ -1,6 +1,9 @@
 use std::time::Duration;
 
 use async_imap::error::Error as ImapError;
+use tracing::warn;
+
+use crate::error::ConnectError;
 
 /// Result of validating credentials against an IMAP server.
 #[derive(Debug, PartialEq)]
@@ -10,7 +13,7 @@ pub enum AuthResult {
     /// The server rejected the credentials (wrong email or password).
     InvalidCredentials,
     /// Could not reach or communicate with the IMAP server.
-    ServerUnreachable(String),
+    ServerUnreachable(ConnectError),
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -41,7 +44,7 @@ pub async fn validate_imap_credentials(
 
     match tokio::time::timeout(CONNECT_TIMEOUT, inner).await {
         Ok(result) => result,
-        Err(_) => AuthResult::ServerUnreachable("IMAP connection timed out".into()),
+        Err(_) => AuthResult::ServerUnreachable(ConnectError::Timeout),
     }
 }
 
@@ -58,12 +61,18 @@ async fn validate_tls(
 
     let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
         Ok(s) => s,
-        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
+        Err(e) => {
+            warn!(error = %e, host, port, "IMAP TCP connect failed");
+            return AuthResult::ServerUnreachable(ConnectError::from_io(&e));
+        }
     };
 
     let tls_stream = match tls_connector.connect(host, tcp_stream).await {
         Ok(s) => s,
-        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
+        Err(e) => {
+            warn!(error = %e, host, port, "IMAP TLS handshake failed");
+            return AuthResult::ServerUnreachable(ConnectError::TlsHandshake);
+        }
     };
 
     let mut client = async_imap::Client::new(tls_stream);
@@ -71,8 +80,14 @@ async fn validate_tls(
     // Read the server greeting before attempting login.
     match client.read_response().await {
         Ok(Some(_)) => {}
-        Ok(None) => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
-        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
+        Ok(None) => {
+            warn!(host, port, "IMAP server closed connection before greeting");
+            return AuthResult::ServerUnreachable(ConnectError::Unreachable);
+        }
+        Err(e) => {
+            warn!(error = %e, host, port, "IMAP greeting read failed");
+            return AuthResult::ServerUnreachable(ConnectError::from_io(&e));
+        }
     }
 
     attempt_login(client, email, password).await
@@ -85,7 +100,10 @@ async fn validate_plain(host: &str, port: u16, email: &str, password: &str) -> A
 
     let tcp_stream = match tokio::net::TcpStream::connect(&addr).await {
         Ok(s) => s,
-        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
+        Err(e) => {
+            warn!(error = %e, host, port, "IMAP TCP connect failed");
+            return AuthResult::ServerUnreachable(ConnectError::from_io(&e));
+        }
     };
 
     let mut client = async_imap::Client::new(tcp_stream);
@@ -93,8 +111,14 @@ async fn validate_plain(host: &str, port: u16, email: &str, password: &str) -> A
     // Read the server greeting before attempting login.
     match client.read_response().await {
         Ok(Some(_)) => {}
-        Ok(None) => return AuthResult::ServerUnreachable("connection closed before greeting".into()),
-        Err(e) => return AuthResult::ServerUnreachable(e.to_string()),
+        Ok(None) => {
+            warn!(host, port, "IMAP server closed connection before greeting");
+            return AuthResult::ServerUnreachable(ConnectError::Unreachable);
+        }
+        Err(e) => {
+            warn!(error = %e, host, port, "IMAP greeting read failed");
+            return AuthResult::ServerUnreachable(ConnectError::from_io(&e));
+        }
     }
 
     attempt_login(client, email, password).await
@@ -123,7 +147,24 @@ where
 fn classify_login_error(err: ImapError) -> AuthResult {
     match err {
         ImapError::No(_) => AuthResult::InvalidCredentials,
-        other => AuthResult::ServerUnreachable(other.to_string()),
+        other => AuthResult::ServerUnreachable(classify_imap_error(other)),
+    }
+}
+
+fn classify_imap_error(err: ImapError) -> ConnectError {
+    match err {
+        ImapError::Io(e) => {
+            warn!(error = %e, "IMAP I/O error during login");
+            ConnectError::from_io(&e)
+        }
+        ImapError::ConnectionLost => {
+            warn!("IMAP connection lost during login");
+            ConnectError::Unreachable
+        }
+        other => {
+            warn!(error = %other, "Unexpected IMAP error during login");
+            ConnectError::BadServerResponse
+        }
     }
 }
 
@@ -185,28 +226,49 @@ mod tests {
         assert_eq!(classify_login_error(err), AuthResult::InvalidCredentials);
     }
 
-    /// Verify the error classifier maps I/O errors to `ServerUnreachable`.
+    /// Verify the error classifier maps I/O `ConnectionRefused` to the correct variant.
     #[test]
     fn classify_io_as_server_unreachable() {
         let err = ImapError::Io(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
             "refused",
         ));
-        let result = classify_login_error(err);
-        assert!(
-            matches!(result, AuthResult::ServerUnreachable(_)),
-            "expected ServerUnreachable, got {result:?}",
+        assert_eq!(
+            classify_login_error(err),
+            AuthResult::ServerUnreachable(ConnectError::ConnectionRefused),
         );
     }
 
-    /// Verify the error classifier maps `Bad` responses to `ServerUnreachable`.
+    /// Verify the error classifier maps I/O `TimedOut` to `Timeout`.
+    #[test]
+    fn classify_io_timeout_as_timeout_variant() {
+        let err = ImapError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out",
+        ));
+        assert_eq!(
+            classify_login_error(err),
+            AuthResult::ServerUnreachable(ConnectError::Timeout),
+        );
+    }
+
+    /// Verify the error classifier maps `Bad` responses to `BadServerResponse`.
     #[test]
     fn classify_bad_as_server_unreachable() {
         let err = ImapError::Bad("server error".into());
-        let result = classify_login_error(err);
-        assert!(
-            matches!(result, AuthResult::ServerUnreachable(_)),
-            "expected ServerUnreachable, got {result:?}",
+        assert_eq!(
+            classify_login_error(err),
+            AuthResult::ServerUnreachable(ConnectError::BadServerResponse),
+        );
+    }
+
+    /// Verify `ConnectionLost` maps to `Unreachable`.
+    #[test]
+    fn classify_connection_lost_as_unreachable() {
+        let err = ImapError::ConnectionLost;
+        assert_eq!(
+            classify_login_error(err),
+            AuthResult::ServerUnreachable(ConnectError::Unreachable),
         );
     }
 }

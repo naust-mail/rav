@@ -20,8 +20,7 @@ import { useIsFetching } from "@tanstack/react-query";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useFolders, useRenameFolder } from "@/hooks/useFolders";
 import { useQuota } from "@/hooks/useQuota";
-import { useMoveMessage, usePrefetchAllFolders } from "@/hooks/useMessages";
-import { useListDrafts } from "@/hooks/useCompose";
+import { useMoveMessage } from "@/hooks/useMessages";
 import { useUiStore } from "@/stores/useUiStore";
 import { Button } from "@/components/ui/button";
 import { FolderContextMenu } from "@/components/mail/FolderContextMenu";
@@ -316,6 +315,7 @@ function FolderItem({
   const openMenuRef = useRef<((pos: { x: number; y: number }) => void) | null>(null);
   const activeFolder = useUiStore((s) => s.activeFolder);
   const setActiveFolder = useUiStore((s) => s.setActiveFolder);
+  const shouldAnimate = useUiStore((s) => s.effectiveAnimationMode) !== "off";
   const isActive = activeFolder === folder.name;
   const isFetching = useIsFetching({ queryKey: ["messages", folder.name] });
   const moveMessage = useMoveMessage();
@@ -378,8 +378,7 @@ function FolderItem({
   );
 
   const isDrafts = isDraftsFolder(folder.name);
-  const { data: draftsData } = useListDrafts(isDrafts);
-  const badgeCount = isDrafts ? (draftsData?.drafts.length ?? 0) : folder.unread_count;
+  const badgeCount = isDrafts ? folder.total_count : folder.unread_count;
 
   // ----- Rename state -----
   if (isRenaming) {
@@ -425,7 +424,8 @@ function FolderItem({
         >
           <ChevronRight
             className={cn(
-              "size-3 transition-transform duration-150",
+              "size-3",
+              shouldAnimate && "transition-transform duration-150",
               !isCollapsed && "rotate-90",
             )}
           />
@@ -638,16 +638,6 @@ export function FolderTree() {
     () => (data ? buildFolderTree(data.folders) : []),
     [data],
   );
-
-  // Prefetch messages for all folders in the background after folder list loads.
-  // On mobile, only prefetch when the sidebar is visible to avoid wasting bandwidth.
-  const isMobile = useIsMobile();
-  const mobilePanelView = useUiStore((s) => s.mobilePanelView);
-  const folderNames =
-    !isMobile || mobilePanelView === "sidebar"
-      ? (data?.folders.map((f) => f.name) ?? [])
-      : [];
-  usePrefetchAllFolders(folderNames, activeFolder);
 
   return (
     <div className="flex h-full flex-col">

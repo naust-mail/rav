@@ -11,6 +11,8 @@ use crate::auth::session::{SessionState, SessionStore};
 use crate::auth::user_data;
 use crate::config::AppConfig;
 use crate::db;
+use crate::mfa::crypto::MfaCrypto;
+use crate::mfa::totp;
 
 pub const BROWSER_COOKIE: &str = "oxi_browser";
 
@@ -28,6 +30,8 @@ pub struct LoginRequest {
     pub smtp_port: Option<u16>,
     pub smtp_tls: Option<bool>,
     pub browser_id: Option<String>,
+    /// 6-digit TOTP code. Required when TOTP is enrolled for this account.
+    pub totp_code: Option<String>,
 }
 
 impl LoginRequest {
@@ -193,12 +197,18 @@ fn extract_session_cookies(headers: &axum::http::HeaderMap) -> Vec<(String, Stri
 /// `POST /api/auth/login`
 ///
 /// Validates the user's credentials against the configured IMAP server.
+/// When TOTP is enrolled for the account, the request must also include
+/// `totp_code`; otherwise returns `{"mfa_required": true}` without
+/// attempting IMAP authentication (so the response does not confirm
+/// whether the password is correct).
+///
 /// On success, creates a session, provisions the user's data directory,
 /// and returns session cookies.
 pub async fn login(
     Extension(store): Extension<Arc<SessionStore>>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
+    Extension(mfa_crypto): Extension<Arc<MfaCrypto>>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
     if body.email.trim().is_empty() || body.password.trim().is_empty() {
@@ -217,28 +227,116 @@ pub async fn login(
             .into_response();
     }
 
+    let user_hash = user_data::hash_email(&body.email);
+
+    // Only check MFA state for accounts whose data directory already exists.
+    // For a first-time user the directory is not present yet, so there can be
+    // no TOTP or passkey-only settings to enforce. This also prevents creating
+    // per-user storage (directory + SQLite + 26 migrations) before credentials
+    // are verified, which would be an unauthenticated disk-exhaustion vector.
+    let user_dir = std::path::Path::new(&config.data_dir).join(&user_hash);
+    if user_dir.exists() {
+        // Check TOTP enrollment before touching IMAP so that the
+        // "MFA required" response does not confirm password validity.
+        if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &user_hash) {
+        // Passkey-only accounts cannot log in with a password.
+        if db::mfa::get_mfa_settings(&conn)
+            .map(|s| s.passkey_only)
+            .unwrap_or(false)
+        {
+            return unauthorized_response();
+        }
+
+        if db::mfa::is_totp_enrolled(&conn).unwrap_or(false) {
+            match &body.totp_code {
+                None => {
+                    // Tell the client to show the TOTP field and re-submit.
+                    return (
+                        StatusCode::OK,
+                        [("content-type", "application/json")],
+                        serde_json::json!({ "mfa_required": true, "mfa_type": "totp" })
+                            .to_string(),
+                    )
+                        .into_response();
+                }
+                Some(code) => {
+                    // Lockout check first to prevent brute-force.
+                    if totp::is_locked_out(&conn).unwrap_or(false) {
+                        return unauthorized_response();
+                    }
+
+                    // Validate IMAP credentials.
+                    let server = match EffectiveServerConfig::build(&body, &config) {
+                        Ok(s) => s,
+                        Err((status, msg)) => return server_config_error(status, msg),
+                    };
+                    let imap_result = imap_auth::validate_imap_credentials(
+                        &server.imap_host,
+                        &transport.imap_connect_host,
+                        server.imap_port,
+                        server.imap_tls,
+                        &body.email,
+                        &body.password,
+                        &transport.imap_connector,
+                    )
+                    .await;
+
+                    if !matches!(imap_result, AuthResult::Success) {
+                        let _ = db::mfa::increment_lockout(&conn, 5, 900);
+                        return match imap_result {
+                            AuthResult::ServerUnreachable(e) => (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                [("content-type", "application/json")],
+                                serde_json::json!({
+                                    "error": {
+                                        "code": "SERVER_UNREACHABLE",
+                                        "message": e.to_string(),
+                                        "status": 503
+                                    }
+                                })
+                                .to_string(),
+                            )
+                                .into_response(),
+                            _ => unauthorized_response(),
+                        };
+                    }
+
+                    // IMAP succeeded - now verify TOTP.
+                    let secret = match load_totp_secret(&conn, &mfa_crypto) {
+                        Some(s) => s,
+                        None => {
+                            tracing::error!(email = %body.email, "TOTP enrolled but secret missing");
+                            return internal_error_response();
+                        }
+                    };
+
+                    match totp::verify_and_record(&conn, &secret, code) {
+                        Ok(true) => {
+                            // Both factors passed - fall through to session creation below.
+                            return create_login_session(
+                                body,
+                                server,
+                                user_hash,
+                                &store,
+                                &config,
+                            )
+                            .await;
+                        }
+                        Ok(false) => return unauthorized_response(),
+                        Err(e) => {
+                            tracing::error!(error = %e, "TOTP verification error");
+                            return internal_error_response();
+                        }
+                    }
+                }
+            }
+        }
+        } // end if let Ok(conn)
+    } // end if user_dir.exists()
+
     let server = match EffectiveServerConfig::build(&body, &config) {
         Ok(s) => s,
-        Err((status, msg)) => {
-            let code = match status {
-                StatusCode::FORBIDDEN => "FORBIDDEN",
-                StatusCode::SERVICE_UNAVAILABLE => "SERVICE_UNAVAILABLE",
-                _ => "ERROR",
-            };
-            return (
-                status,
-                [("content-type", "application/json")],
-                serde_json::json!({
-                    "error": {
-                        "code": code,
-                        "message": msg,
-                        "status": status.as_u16()
-                    }
-                })
-                .to_string(),
-            )
-                .into_response();
-        }
+        Err((status, msg)) => return server_config_error(status, msg),
     };
 
     let result = imap_auth::validate_imap_credentials(
@@ -254,155 +352,16 @@ pub async fn login(
 
     match result {
         AuthResult::Success => {
-            let provided_browser_id = body.browser_id.clone();
-            
-            if let Some(ref browser_id) = provided_browser_id {
-                let existing_accounts = store.get_browser_accounts(browser_id);
-                let duplicate = existing_accounts.iter().find(|a| {
-                    a.email == body.email && a.imap_host == server.imap_host
-                });
-                
-                if let Some(dup) = duplicate {
-                    tracing::debug!(
-                        email = %body.email,
-                        imap_host = %server.imap_host,
-                        existing_account_id = %dup.account_id,
-                        "login: duplicate account detected"
-                    );
-                    return (
-                        StatusCode::CONFLICT,
-                        [("content-type", "application/json")],
-                        serde_json::json!({
-                            "error": {
-                                "code": "DUPLICATE_ACCOUNT",
-                                "message": "This account is already logged in",
-                                "status": 409
-                            }
-                        })
-                        .to_string(),
-                    )
-                        .into_response();
-                }
-            }
-            
-            let user_hash = user_data::hash_email(&body.email);
-            if let Err(e) = user_data::provision_user_data(&config.data_dir, &user_hash) {
-                tracing::error!(error = %e, "failed to provision user data directory");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [("content-type", "application/json")],
-                    serde_json::json!({
-                        "error": {
-                            "code": "INTERNAL_ERROR",
-                            "message": "Failed to provision user data",
-                            "status": 500
-                        }
-                    })
-                    .to_string(),
-                )
-                    .into_response();
-            }
-
-            if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &user_hash) {
-                match db::identities::has_identities(&conn) {
-                    Ok(false) => {
-                        let default_identity = db::identities::CreateIdentity {
-                            email: body.email.clone(),
-                            display_name: String::new(),
-                            signature_html: String::new(),
-                            is_default: true,
-                        };
-                        if let Err(e) = db::identities::create_identity(&conn, &default_identity) {
-                            tracing::warn!(error = %e, "Failed to auto-create default identity");
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to check for existing identities");
-                    }
-                    _ => {}
-                }
-            }
-
-            const REMEMBER_ME_HOURS: u64 = 30 * 24;
-            let session_hours = if body.remember {
-                REMEMBER_ME_HOURS
-            } else {
-                config.session_timeout_hours
-            };
-
-            let provided_browser_id = body.browser_id.clone();
-            let browser_id = body.browser_id.unwrap_or_else(|| store.create_browser());
-            tracing::debug!(
-                email = %body.email,
-                provided_browser_id = ?provided_browser_id,
-                effective_browser_id = %browser_id,
-                "login: creating session"
-            );
-
-            let (token, account_id) = store.add_account_to_browser(
-                &browser_id,
-                body.email.clone(),
-                body.password,
-                user_hash,
-                server.imap_host.clone(),
-                server.imap_port,
-                server.imap_tls,
-                server.smtp_host.clone(),
-                server.smtp_port,
-                server.smtp_tls,
-            );
-
-            let max_age = session_hours * 3600;
-            let secure = config.environment != "development";
-            let browser_cookie_header = browser_cookie(&browser_id, max_age, secure);
-            let session_cookie_header = account_session_cookie(&account_id, &token, max_age, secure);
-
-            let response = (
-                StatusCode::CREATED,
-                [("content-type", "application/json")],
-                serde_json::json!({
-                    "account": {
-                        "id": account_id,
-                        "email": body.email,
-                        "imapHost": server.imap_host,
-                        "smtpHost": server.smtp_host
-                    }
-                })
-                .to_string(),
-            )
-                .into_response();
-
-            let mut response = response;
-            let headers = response.headers_mut();
-            if let Ok(header_value) = browser_cookie_header.parse() {
-                headers.append("set-cookie", header_value);
-            }
-            if let Ok(header_value) = session_cookie_header.parse() {
-                headers.append("set-cookie", header_value);
-            }
-
-            response
+            return create_login_session(body, server, user_hash, &store, &config).await;
         }
-        AuthResult::InvalidCredentials => (
-            StatusCode::UNAUTHORIZED,
-            [("content-type", "application/json")],
-            serde_json::json!({
-                "error": {
-                    "code": "UNAUTHORIZED",
-                    "message": "Invalid email or password",
-                    "status": 401
-                }
-            })
-            .to_string(),
-        )
-            .into_response(),
-        AuthResult::ServerUnreachable(msg) => (
+        AuthResult::InvalidCredentials => return unauthorized_response(),
+        AuthResult::ServerUnreachable(e) => return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("content-type", "application/json")],
             serde_json::json!({
                 "error": {
                     "code": "SERVER_UNREACHABLE",
-                    "message": msg,
+                    "message": e.to_string(),
                     "status": 503
                 }
             })
@@ -410,6 +369,199 @@ pub async fn login(
         )
             .into_response(),
     }
+
+    // Unreachable - all arms above return.
+    #[allow(unreachable_code)]
+    {
+        internal_error_response()
+    }
+}
+
+/// Decrypts and returns the plaintext TOTP secret for a user, or `None` if unavailable.
+fn load_totp_secret(conn: &rusqlite::Connection, mfa_crypto: &MfaCrypto) -> Option<String> {
+    let (enc, nonce) = db::mfa::get_totp_secret(conn).ok()??;
+    let plaintext = mfa_crypto.decrypt(&enc, &nonce).ok()?;
+    String::from_utf8(plaintext).ok()
+}
+
+fn unauthorized_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "Invalid credentials",
+                "status": 401
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+fn internal_error_response() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "An internal error occurred",
+                "status": 500
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+fn server_config_error(status: StatusCode, msg: String) -> Response {
+    let code = match status {
+        StatusCode::FORBIDDEN => "FORBIDDEN",
+        StatusCode::SERVICE_UNAVAILABLE => "SERVICE_UNAVAILABLE",
+        _ => "ERROR",
+    };
+    (
+        status,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": {
+                "code": code,
+                "message": msg,
+                "status": status.as_u16()
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+/// Creates a session and returns the login response with cookies.
+/// Called after all auth factors have been verified. Provisions the user data
+/// directory here (not before auth) to avoid pre-auth disk writes.
+async fn create_login_session(
+    body: LoginRequest,
+    server: EffectiveServerConfig,
+    user_hash: String,
+    store: &Arc<SessionStore>,
+    config: &Arc<AppConfig>,
+) -> Response {
+    if let Err(e) = user_data::provision_user_data(&config.data_dir, &user_hash) {
+        tracing::error!(error = %e, "failed to provision user data directory");
+        return internal_error_response();
+    }
+
+    if let Some(ref browser_id) = body.browser_id {
+        let existing_accounts = store.get_browser_accounts(browser_id);
+        let duplicate = existing_accounts
+            .iter()
+            .find(|a| a.email == body.email && a.imap_host == server.imap_host);
+
+        if let Some(dup) = duplicate {
+            tracing::debug!(
+                email = %body.email,
+                imap_host = %server.imap_host,
+                existing_account_id = %dup.account_id,
+                "login: duplicate account detected"
+            );
+            return (
+                StatusCode::CONFLICT,
+                [("content-type", "application/json")],
+                serde_json::json!({
+                    "error": {
+                        "code": "DUPLICATE_ACCOUNT",
+                        "message": "This account is already logged in",
+                        "status": 409
+                    }
+                })
+                .to_string(),
+            )
+                .into_response();
+        }
+    }
+
+    if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &user_hash) {
+        match db::identities::has_identities(&conn) {
+            Ok(false) => {
+                let default_identity = db::identities::CreateIdentity {
+                    email: body.email.clone(),
+                    display_name: String::new(),
+                    signature_html: String::new(),
+                    is_default: true,
+                };
+                if let Err(e) = db::identities::create_identity(&conn, &default_identity) {
+                    tracing::warn!(error = %e, "Failed to auto-create default identity");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to check for existing identities");
+            }
+            _ => {}
+        }
+    }
+
+    const REMEMBER_ME_HOURS: u64 = 30 * 24;
+    let session_hours = if body.remember {
+        REMEMBER_ME_HOURS
+    } else {
+        config.session_timeout_hours
+    };
+
+    let provided_browser_id = body.browser_id.clone();
+    let browser_id = body
+        .browser_id
+        .unwrap_or_else(|| store.create_browser());
+    tracing::debug!(
+        email = %body.email,
+        provided_browser_id = ?provided_browser_id,
+        effective_browser_id = %browser_id,
+        "login: creating session"
+    );
+
+    let (token, account_id) = store.add_account_to_browser(
+        &browser_id,
+        body.email.clone(),
+        body.password,
+        user_hash,
+        server.imap_host.clone(),
+        server.imap_port,
+        server.imap_tls,
+        server.smtp_host.clone(),
+        server.smtp_port,
+        server.smtp_tls,
+    );
+
+    let max_age = session_hours * 3600;
+    let secure = config.environment != "development";
+    let browser_cookie_header = browser_cookie(&browser_id, max_age, secure);
+    let session_cookie_header = account_session_cookie(&account_id, &token, max_age, secure);
+
+    let response = (
+        StatusCode::CREATED,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "account": {
+                "id": account_id,
+                "email": body.email,
+                "imapHost": server.imap_host,
+                "smtpHost": server.smtp_host
+            }
+        })
+        .to_string(),
+    )
+        .into_response();
+
+    let mut response = response;
+    let headers = response.headers_mut();
+    if let Ok(header_value) = browser_cookie_header.parse() {
+        headers.append("set-cookie", header_value);
+    }
+    if let Ok(header_value) = session_cookie_header.parse() {
+        headers.append("set-cookie", header_value);
+    }
+
+    response
 }
 
 /// `GET /api/auth/session`
@@ -707,6 +859,7 @@ mod tests {
             smtp_port: overrides.map(|(_, p, _)| p),
             smtp_tls: overrides.map(|(_, _, t)| t),
             browser_id: None,
+            totp_code: None,
         }
     }
 

@@ -1,9 +1,13 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
+import { AnimatePresence } from "framer-motion";
 import { Tag, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useClickOutside } from "@/hooks/useClickOutside";
+import { useUiStore } from "@/stores/useUiStore";
+import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
+import { createFadeSlideVariants } from "@/lib/motion/variants";
 import {
   useTags,
   useMessageTags,
@@ -19,6 +23,8 @@ interface TagPickerProps {
 export function TagPicker({ folder, uid }: TagPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
+  const menuVariants = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
 
   const { data: tagsData } = useTags();
   const { data: messageTagsData } = useMessageTags(folder, uid);
@@ -56,8 +62,15 @@ export function TagPicker({ folder, uid }: TagPickerProps) {
         <span className="hidden xl:inline">Tags</span>
       </button>
 
-      {isOpen && (
-        <div className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md">
+      <AnimatePresence>
+        {isOpen && (
+        <AnimatedDiv
+          variants={menuVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          className="absolute left-0 top-full z-50 mt-1 min-w-[180px] rounded-md border border-border bg-popover py-1 shadow-md"
+        >
           {allTags.length === 0 && (
             <span className="block px-3 py-1.5 text-sm text-muted-foreground">
               No tags yet
@@ -83,8 +96,9 @@ export function TagPicker({ folder, uid }: TagPickerProps) {
               </button>
             );
           })}
-        </div>
-      )}
+        </AnimatedDiv>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

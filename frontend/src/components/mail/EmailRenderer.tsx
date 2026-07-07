@@ -21,9 +21,12 @@ const MAX_SAFE_CHARACTERS = 150000;
 function stripRemoteResources(html: string): { cleaned: string; hasRemote: boolean } {
   let hasRemote = false;
 
+  // Remote URL pattern: matches both absolute (https?://) and protocol-relative (//host) URLs
+  const remoteUrl = /(?:https?:)?\/\/[^\s"')>]+/i;
+
   // Strip remote src attributes on img tags (keep data: and cid:)
   let cleaned = html.replace(
-    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])((?:https?:\/\/)[^"']*?)\2/gi,
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])((?:https?:)?\/\/[^"']*?)\2/gi,
     (_match, prefix, quote, _url) => {
       hasRemote = true;
       return `${prefix}${quote}${quote} data-blocked-src=${quote}${_url}${quote}`;
@@ -34,7 +37,7 @@ function stripRemoteResources(html: string): { cleaned: string; hasRemote: boole
   cleaned = cleaned.replace(
     /(<img\b[^>]*?\bsrcset\s*=\s*)(["'])([^"']*?)\2/gi,
     (match, prefix, quote, value) => {
-      if (/https?:\/\//i.test(value)) {
+      if (remoteUrl.test(value)) {
         hasRemote = true;
         return `${prefix}${quote}${quote} data-blocked-srcset=${quote}${value}${quote}`;
       }
@@ -44,47 +47,61 @@ function stripRemoteResources(html: string): { cleaned: string; hasRemote: boole
 
   // Strip remote background images and any url() references in inline styles or <style> blocks.
   cleaned = cleaned.replace(
-    /url\(\s*(["']?)(https?:\/\/[^)]*?)\1\s*\)/gi,
+    /url\(\s*(["']?)((?:https?:)?\/\/[^)]*?)\1\s*\)/gi,
     (_match, quote, url) => {
       hasRemote = true;
       return `url(${quote}${quote}) /* blocked: ${url} */`;
     },
   );
 
-  // Strip CSS @import with string syntax: @import "https://..." or @import 'https://...'
-  // The url() form is already caught by the url() regex above.
+  // Strip CSS @import with string syntax: @import "https://..." or @import '//...'
   cleaned = cleaned.replace(
-    /@import\s+["'](https?:\/\/[^"']+)["'][^;]*;/gi,
+    /@import\s+["']((?:https?:)?\/\/[^"']+)["'][^;]*;/gi,
     (_match, url) => {
       hasRemote = true;
       return `/* blocked @import: ${url} */`;
     },
   );
 
-  // Strip <link> tags with remote href (stylesheet imports, prefetch, etc.)
+  // Strip all <link> tags that could trigger network activity regardless of scheme:
+  // stylesheets, prefetch, preload, dns-prefetch, preconnect, prerender
   cleaned = cleaned.replace(
-    /<link\b[^>]*\bhref\s*=\s*(["'])(https?:\/\/[^"']+)\1[^>]*>/gi,
-    (_match, _quote, url) => {
-      hasRemote = true;
-      return `<!-- blocked link: ${url} -->`;
+    /<link\b[^>]*>/gi,
+    (match) => {
+      const relMatch = match.match(/\brel\s*=\s*["']?([^"'>\s]+)/i);
+      const rel = relMatch ? relMatch[1].toLowerCase() : '';
+      const networkRels = ['stylesheet', 'prefetch', 'preload', 'dns-prefetch', 'preconnect', 'prerender', 'modulepreload'];
+      if (networkRels.includes(rel)) {
+        hasRemote = true;
+        return `<!-- blocked link[rel=${rel}] -->`;
+      }
+      // Also strip any link with a remote href regardless of rel
+      const hrefMatch = match.match(/\bhref\s*=\s*(["'])((?:https?:)?\/\/[^"']+)\1/i);
+      if (hrefMatch) {
+        hasRemote = true;
+        return `<!-- blocked link: ${hrefMatch[2]} -->`;
+      }
+      return match;
     },
+  );
+
+  // Strip <meta http-equiv="refresh"> — browser-variance risk, not safe to leave
+  cleaned = cleaned.replace(
+    /<meta\b[^>]*\bhttp-equiv\s*=\s*["']?refresh["']?[^>]*>/gi,
+    '<!-- blocked meta refresh -->',
   );
 
   return { cleaned, hasRemote };
 }
 
-/** Check if HTML contains any remote resource URLs (http/https). */
+/** Check if HTML contains any remote resource URLs (http/https or protocol-relative). */
 export function hasRemoteResources(html: string | null): boolean {
   if (!html) return false;
   return (
-    // Remote src or srcset on any element
-    /(?:src|srcset)\s*=\s*["']https?:\/\//i.test(html) ||
-    // url() references in styles
-    /url\(\s*["']?https?:\/\//i.test(html) ||
-    // @import with string syntax (url() form is caught above)
-    /@import\s+["']https?:\/\//i.test(html) ||
-    // <link href="https://...">
-    /<link\b[^>]*\bhref\s*=\s*["']https?:\/\//i.test(html)
+    /(?:src|srcset)\s*=\s*["'](?:https?:)?\/\//i.test(html) ||
+    /url\(\s*["']?(?:https?:)?\/\//i.test(html) ||
+    /@import\s+["'](?:https?:)?\/\//i.test(html) ||
+    /<link\b[^>]*\bhref\s*=\s*["'](?:https?:)?\/\//i.test(html)
   );
 }
 
@@ -272,6 +289,8 @@ export function EmailRenderer({
         // Extract inner CSS rules and collect them for unconditional injection
         const extractedRules: string[] = [];
         cleanedHtml = cleanedHtml.replace(darkMediaRe, (_match, innerCSS: string) => {
+          // Reject any chunk that could break out of our <style> block
+          if (/<\/style/i.test(innerCSS)) return '/* dark mode CSS blocked (unsafe content) */';
           extractedRules.push(innerCSS.trim());
           return '/* dark mode CSS extracted and applied unconditionally */';
         });
@@ -304,6 +323,26 @@ export function EmailRenderer({
     if ((bodyBgIsWhite || !emailBgColor) && wrapperBgColor) {
       emailBgColor = wrapperBgColor;
     }
+
+    // Validate color value before interpolating into <style> to prevent </style> injection
+    const safeColorRe = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*[\d.]+\s*\)|[a-zA-Z]{2,32})$/;
+    if (emailBgColor && !safeColorRe.test(emailBgColor)) emailBgColor = null;
+
+    // Harden all <a> hrefs at string stage (before the iframe is built):
+    // - Strip dangerous schemes (javascript:, data:, vbscript:)
+    // - Force target=_blank and rel=noopener noreferrer on all external links
+    // This is a belt-and-suspenders fix alongside handleIframeLoad (which runs post-load).
+    cleanedHtml = cleanedHtml.replace(
+      /(<a\b[^>]*)\bhref\s*=\s*(["'])([^"']*)\2/gi,
+      (_match, before, quote, href) => {
+        const scheme = href.trim().match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase();
+        const dangerous = ['javascript', 'data', 'vbscript'];
+        if (scheme && dangerous.includes(scheme)) {
+          return `${before}href=${quote}#${quote}`;
+        }
+        return `${before}href=${quote}${href}${quote} target=${quote}_blank${quote} rel=${quote}noopener noreferrer${quote}`;
+      },
+    );
 
     // App theme colors (must match globals.css --background / --foreground)
     const appDarkBg = '#141110';   // hsl(20 10% 7%)

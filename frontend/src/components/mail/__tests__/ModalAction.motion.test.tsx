@@ -170,6 +170,12 @@ vi.mock("@/hooks/useCompose", () => ({
   useUploadAttachment: () => ({ isPending: false, mutate: vi.fn() }),
   useDeleteAttachment: () => ({ mutate: vi.fn() }),
   useDeleteDraft: () => ({ mutate: vi.fn() }),
+  useGetDraftAttachments: () => ({ data: null, isPending: false }),
+}));
+
+vi.mock("@/hooks/usePgp", () => ({
+  usePgpKeys: () => ({ data: null }),
+  useServerCapability: () => false,
 }));
 
 vi.mock("@/hooks/useIdentities", () => ({
@@ -180,8 +186,8 @@ vi.mock("@/hooks/useFolders", () => ({
   useFolders: () => ({
     data: {
       folders: [
-        { name: "INBOX" },
-        { name: "Archive" },
+        { name: "INBOX", recent_messages: [] },
+        { name: "Archive", recent_messages: [] },
       ],
     },
   }),

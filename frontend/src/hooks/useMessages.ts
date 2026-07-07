@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useRef } from "react";
 import {
   useQuery,
   useInfiniteQuery,
@@ -48,6 +47,19 @@ export function useMessage(folder: string, uid: number) {
       if (error instanceof Error && error.message.includes("not found")) return false;
       return failureCount < 2;
     },
+  });
+}
+
+/** Look up a message by its Message-ID header. Returns null if not in the local cache. */
+export function useMessageByMessageId(messageId: string | null) {
+  return useQuery({
+    queryKey: ["message-by-id", messageId],
+    queryFn: () =>
+      apiPost<MessageDetail>(`/messages/by-message-id`, { message_id: messageId! }).catch(
+        () => null,
+      ),
+    enabled: !!messageId,
+    retry: false,
   });
 }
 
@@ -242,33 +254,3 @@ export function useDeleteMessage() {
   });
 }
 
-/**
- * Prefetch the first page of messages for each folder in the background.
- * This triggers the backend to sync messages from IMAP lazily so folder
- * counts are populated and messages are ready when the user clicks a folder.
- */
-export function usePrefetchAllFolders(folderNames: string[], activeFolder: string) {
-  const queryClient = useQueryClient();
-  const prefetched = useRef(false);
-
-  useEffect(() => {
-    if (prefetched.current || folderNames.length === 0) return;
-    prefetched.current = true;
-
-    // Prefetch each folder except the active one (already loaded by MessageList).
-    for (const name of folderNames) {
-      if (name === activeFolder) continue;
-      queryClient.prefetchInfiniteQuery({
-        queryKey: ["messages", name],
-        queryFn: () =>
-          apiGet<MessagesResponse>(
-            `/folders/${encodeURIComponent(name)}/messages?page=0&per_page=${PER_PAGE}`,
-          ),
-        initialPageParam: 0,
-      });
-    }
-
-    // Folder counts are updated by WebSocket events and background sync —
-    // no need for a timer-based invalidation.
-  }, [folderNames, activeFolder, queryClient]);
-}

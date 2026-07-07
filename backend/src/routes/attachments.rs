@@ -24,14 +24,53 @@ struct UploadResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct AttachmentItem {
+    id: String,
+    filename: String,
+    content_type: String,
+    size: i64,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize)]
 struct DeleteResponse {
     status: String,
 }
 
-/// Handler for `POST /api/drafts/{draft_id}/attachments`.
+/// Handler for `GET /api/drafts/{draft_uuid}/attachments`.
+///
+/// Returns all staged attachments for the given draft UUID.
+pub async fn list_attachments(
+    Extension(session): Extension<SessionState>,
+    Extension(config): Extension<Arc<AppConfig>>,
+    AxumPath(draft_uuid): AxumPath<String>,
+) -> Result<Response, AppError> {
+    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
+        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
+
+    let rows = db::drafts::get_draft_attachments(&conn, &draft_uuid)
+        .map_err(AppError::InternalError)?;
+
+    let items: Vec<AttachmentItem> = rows
+        .into_iter()
+        .map(|a| AttachmentItem {
+            id: a.id,
+            filename: a.filename,
+            content_type: a.content_type,
+            size: a.size,
+            created_at: a.created_at,
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({ "attachments": items })).into_response())
+}
+
+/// Handler for `POST /api/drafts/{draft_uuid}/attachments`.
 ///
 /// Accepts a multipart upload containing one or more files. Each file is
 /// saved to disk and recorded in the `draft_attachments` table.
+/// `add_draft_attachment` auto-creates the staging row so there is no
+/// need to check for an existing draft record.
 pub async fn upload_attachment(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
@@ -40,14 +79,6 @@ pub async fn upload_attachment(
 ) -> Result<Response, AppError> {
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    // Ensure draft exists (create it if not — auto-creates on first attachment upload).
-    let existing = db::drafts::get_draft(&conn, &draft_id)
-        .map_err(AppError::InternalError)?;
-    if existing.is_none() {
-        db::drafts::upsert_draft(&conn, &draft_id, "", "", "", "", "", None, None, None)
-            .map_err(AppError::InternalError)?;
-    }
 
     // Build the attachment storage directory.
     let att_dir = Path::new(&config.data_dir)

@@ -1,7 +1,7 @@
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
-// mail_parser is used for RFC2822 date parsing in parse_date_to_epoch.
+// mail_parser is used for RFC2822 date parsing in parse_date_epoch.
 
 /// A cached email message header, mirroring the query-visible columns of the
 /// `messages` table.
@@ -23,6 +23,7 @@ pub struct CachedMessage {
     pub has_attachments: bool,
     pub snippet: String,
     pub reaction: Option<String>,
+    pub date_epoch: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -48,6 +49,7 @@ fn row_to_cached_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedMess
         has_attachments: has_attachments_int != 0,
         snippet: row.get(14)?,
         reaction: row.get(15)?,
+        date_epoch: row.get(16)?,
     })
 }
 
@@ -55,7 +57,7 @@ fn row_to_cached_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<CachedMess
 const MSG_SELECT_COLS: &str =
     "uid, folder, message_id, in_reply_to, references_header,
      subject, from_address, from_name, to_addresses, cc_addresses,
-     date, flags, has_attachments, size, snippet, reaction";
+     date, flags, has_attachments, size, snippet, reaction, date_epoch";
 
 /// Compute the canonical thread_id for a message.
 ///
@@ -97,13 +99,13 @@ pub fn upsert_message(
     to_json: &str,
     cc_json: &str,
     date: &str,
+    date_epoch: i64,
     flags_csv: &str,
     size: u32,
     has_attachments: bool,
     snippet: &str,
     reaction: Option<&str>,
 ) -> Result<(), String> {
-    let date_epoch = parse_date_to_epoch(date);
     let thread_id = compute_thread_id(message_id, in_reply_to, references_header);
     conn.execute(
         "INSERT OR REPLACE INTO messages
@@ -154,16 +156,9 @@ pub fn max_uid(conn: &Connection, folder: &str) -> Result<u32, String> {
     .map_err(|e| format!("Failed to get max uid: {e}"))
 }
 
-/// Public wrapper to parse a date string to a Unix epoch timestamp.
-/// Useful when other modules need to compute `date_epoch` from a raw date string.
-pub fn parse_date_to_epoch_public(date: &str) -> i64 {
-    parse_date_to_epoch(date)
-}
-
 /// Parse a date string to a Unix epoch timestamp (seconds).
-/// Tries RFC2822 first (IMAP dates), then ISO 8601.
-/// Returns 0 on parse failure.
-fn parse_date_to_epoch(date: &str) -> i64 {
+/// Tries ISO 8601 first, then RFC2822. Returns 0 on parse failure.
+pub(crate) fn parse_date_epoch(date: &str) -> i64 {
     if date.is_empty() {
         return 0;
     }
@@ -260,7 +255,7 @@ pub fn get_messages(
         "SELECT {MSG_SELECT_COLS}
          FROM messages
          WHERE folder = ?1
-         ORDER BY date_epoch DESC
+         ORDER BY date_epoch DESC, uid DESC
          LIMIT ?2 OFFSET ?3"
     );
 
@@ -319,11 +314,10 @@ pub fn get_threaded_messages(
     let sql = format!(
         "SELECT uid, folder, message_id, in_reply_to, references_header,
                 subject, from_address, from_name, to_addresses, cc_addresses,
-                date, flags, has_attachments, size, snippet, reaction,
+                date, flags, has_attachments, size, snippet, reaction, date_epoch,
                 thread_count, unread_count
          FROM (
            SELECT {MSG_SELECT_COLS},
-                  date_epoch,
                   COUNT(*) OVER (PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))) AS thread_count,
                   SUM(CASE WHEN flags NOT LIKE '%\\Seen%' THEN 1 ELSE 0 END)
                     OVER (PARTITION BY COALESCE(thread_id, CAST(uid AS TEXT))) AS unread_count,
@@ -336,7 +330,7 @@ pub fn get_threaded_messages(
            WHERE folder = ?1
          )
          WHERE rn = 1
-         ORDER BY thread_latest_epoch DESC
+         ORDER BY thread_latest_epoch DESC, uid DESC
          LIMIT ?2 OFFSET ?3"
     );
 
@@ -347,8 +341,8 @@ pub fn get_threaded_messages(
     let rows = stmt
         .query_map(params![folder, per_page, offset], |row| {
             let msg = row_to_cached_message(row)?;
-            let thread_count: u32 = row.get(16)?;
-            let unread_count: u32 = row.get(17)?;
+            let thread_count: u32 = row.get(17)?;
+            let unread_count: u32 = row.get(18)?;
             Ok(ThreadedMessage { msg, thread_count, unread_count })
         })
         .map_err(|e| format!("Failed to query threaded messages: {e}"))?;
@@ -486,6 +480,21 @@ pub fn get_single_message(conn: &Connection, folder: &str, uid: u32) -> Result<O
     }
 }
 
+/// Find the folder and UID for a message by its Message-ID header value.
+/// Returns `None` if not in the local cache.
+pub fn find_by_message_id(conn: &Connection, message_id: &str) -> Result<Option<(String, u32)>, String> {
+    let result = conn.query_row(
+        "SELECT folder, uid FROM messages WHERE message_id = ?1 LIMIT 1",
+        params![message_id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?)),
+    );
+    match result {
+        Ok(pair) => Ok(Some(pair)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to find message by id: {e}")),
+    }
+}
+
 /// Delete a single message by folder and UID.
 pub fn delete_message(conn: &Connection, folder: &str, uid: u32) -> Result<(), String> {
     conn.execute(
@@ -536,6 +545,21 @@ pub fn get_messages_after_uid(
     let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare error: {e}"))?;
     let rows = stmt
         .query_map(rusqlite::params![folder, min_uid], row_to_cached_message)
+        .map_err(|e| format!("query error: {e}"))?;
+    let mut msgs = Vec::new();
+    for row in rows {
+        msgs.push(row.map_err(|e| format!("row error: {e}"))?);
+    }
+    Ok(msgs)
+}
+
+pub fn list_messages_in_folder(conn: &Connection, folder: &str) -> Result<Vec<CachedMessage>, String> {
+    let sql = format!(
+        "SELECT {MSG_SELECT_COLS} FROM messages WHERE folder = ?1 ORDER BY uid ASC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare error: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![folder], row_to_cached_message)
         .map_err(|e| format!("query error: {e}"))?;
     let mut msgs = Vec::new();
     for row in rows {
@@ -674,7 +698,7 @@ pub fn get_full_thread(
     all_messages.retain(|msg| seen.insert((msg.folder.clone(), msg.uid)));
 
     // Step 6: Sort by date_epoch ascending.
-    all_messages.sort_by_key(|msg| parse_date_to_epoch(&msg.date));
+    all_messages.sort_by_key(|msg| msg.date_epoch);
 
     Ok(all_messages)
 }
@@ -832,6 +856,7 @@ mod tests {
             "[]",
             "[]",
             date,
+            parse_date_epoch(date),
             "\\Seen",
             1024,
             false,
@@ -842,21 +867,21 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_date_to_epoch() {
-        let e1 = parse_date_to_epoch("2024-01-01T10:00:00Z");
-        let e2 = parse_date_to_epoch("2024-01-02T10:00:00Z");
-        let e3 = parse_date_to_epoch("2024-01-03T10:00:00Z");
+    fn test_parse_date_epoch() {
+        let e1 = parse_date_epoch("2024-01-01T10:00:00Z");
+        let e2 = parse_date_epoch("2024-01-02T10:00:00Z");
+        let e3 = parse_date_epoch("2024-01-03T10:00:00Z");
         assert!(e1 > 0, "epoch for date 1 should be > 0, got {e1}");
         assert!(e2 > e1, "date 2 ({e2}) should be after date 1 ({e1})");
         assert!(e3 > e2, "date 3 ({e3}) should be after date 2 ({e2})");
 
         // RFC2822 format.
-        let e4 = parse_date_to_epoch("Mon, 1 Jan 2024 10:00:00 +0000");
+        let e4 = parse_date_epoch("Mon, 1 Jan 2024 10:00:00 +0000");
         assert!(e4 > 0, "epoch for rfc2822 date should be > 0, got {e4}");
         assert_eq!(e1, e4, "ISO and RFC2822 should produce same epoch");
 
         // Empty returns 0.
-        assert_eq!(parse_date_to_epoch(""), 0);
+        assert_eq!(parse_date_epoch(""), 0);
     }
 
     #[test]
@@ -875,6 +900,54 @@ mod tests {
         assert_eq!(msgs[0].uid, 3);
         assert_eq!(msgs[1].uid, 2);
         assert_eq!(msgs[2].uid, 1);
+
+        // date_epoch must be populated on the retrieved struct.
+        assert_eq!(msgs[2].date_epoch, parse_date_epoch("2024-01-01T10:00:00Z"));
+        assert_eq!(msgs[1].date_epoch, parse_date_epoch("2024-01-02T10:00:00Z"));
+        assert_eq!(msgs[0].date_epoch, parse_date_epoch("2024-01-03T10:00:00Z"));
+    }
+
+    #[test]
+    fn test_upsert_stores_caller_provided_date_epoch() {
+        // upsert_message must store the epoch it is given, not re-derive it from
+        // the date string. This is the contract that lets the IMAP layer inject an
+        // INTERNALDATE fallback without the DB layer overwriting it.
+        let conn = open_test_db();
+        ensure_folder(&conn, "INBOX");
+
+        let sentinel_epoch: i64 = 9_999_999_999;
+        upsert_message(
+            &conn, "INBOX", 1, Some("<x@ex>"), None, None,
+            "Test", "a@ex", "A", "[]", "[]",
+            "2024-01-01T10:00:00Z", sentinel_epoch, "", 100, false, "", None,
+        ).unwrap();
+
+        let msgs = get_messages(&conn, "INBOX", 0, 10).unwrap();
+        assert_eq!(msgs[0].date_epoch, sentinel_epoch);
+    }
+
+    #[test]
+    fn test_threaded_messages_same_epoch_uid_tiebreaker() {
+        // When two threads share the same thread_latest_epoch the outer ORDER BY
+        // must fall back to uid DESC so results are stable across fetches.
+        let conn = open_test_db();
+        ensure_folder(&conn, "INBOX");
+
+        let epoch: i64 = 1_700_000_000;
+        upsert_message(
+            &conn, "INBOX", 1, Some("<a@ex>"), None, None,
+            "First", "a@ex", "A", "[]", "[]", "", epoch, "", 100, false, "", None,
+        ).unwrap();
+        upsert_message(
+            &conn, "INBOX", 2, Some("<b@ex>"), None, None,
+            "Second", "b@ex", "B", "[]", "[]", "", epoch, "", 100, false, "", None,
+        ).unwrap();
+
+        let threads = get_threaded_messages(&conn, "INBOX", 0, 10).unwrap();
+        assert_eq!(threads.len(), 2);
+        // Higher uid (more recently delivered) must sort first.
+        assert_eq!(threads[0].msg.uid, 2);
+        assert_eq!(threads[1].msg.uid, 1);
     }
 
     #[test]
@@ -1016,7 +1089,7 @@ mod tests {
             &conn, "INBOX", 1,
             Some("<thread-1@example.com>"), None, None,
             "Hello", "alice@example.com", "Alice", "[]", "[]",
-            "2024-01-01T10:00:00Z", "", 100, false, "", None,
+            "2024-01-01T10:00:00Z", 0, "", 100, false, "", None,
         ).unwrap();
 
         // Reply referencing original via in_reply_to.
@@ -1026,7 +1099,7 @@ mod tests {
             Some("<thread-1@example.com>"),
             None,
             "Re: Hello", "bob@example.com", "Bob", "[]", "[]",
-            "2024-01-02T10:00:00Z", "", 200, false, "", None,
+            "2024-01-02T10:00:00Z", 0, "", 200, false, "", None,
         ).unwrap();
 
         let thread = get_thread_messages(&conn, "<thread-1@example.com>").unwrap();
@@ -1046,7 +1119,7 @@ mod tests {
             &conn, "INBOX", 1,
             Some("<orig@example.com>"), None, None,
             "Hello", "alice@example.com", "Alice", "[]", "[]",
-            "2024-01-01T10:00:00Z", "", 100, false, "", None,
+            "2024-01-01T10:00:00Z", 0, "", 100, false, "", None,
         ).unwrap();
 
         // A message that references the original only via references_header.
@@ -1056,7 +1129,7 @@ mod tests {
             Some("<mid@example.com>"),
             Some("<orig@example.com> <mid@example.com>"),
             "Re: Re: Hello", "carol@example.com", "Carol", "[]", "[]",
-            "2024-01-03T10:00:00Z", "", 300, false, "", None,
+            "2024-01-03T10:00:00Z", 0, "", 300, false, "", None,
         ).unwrap();
 
         let thread = get_thread_messages(&conn, "<orig@example.com>").unwrap();
@@ -1072,13 +1145,16 @@ mod tests {
 
         // Message 1: original
         upsert_message(&conn, "INBOX", 1, Some("<a@ex>"), None, None,
-            "Hello", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Hello", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z",
+            parse_date_epoch("2024-01-01T10:00:00Z"), "", 100, false, "", None).unwrap();
         // Message 2: reply to 1
         upsert_message(&conn, "INBOX", 2, Some("<b@ex>"), Some("<a@ex>"), Some("<a@ex>"),
-            "Re: Hello", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Re: Hello", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z",
+            parse_date_epoch("2024-01-02T10:00:00Z"), "", 100, false, "", None).unwrap();
         // Message 3: reply to 2, references both
         upsert_message(&conn, "INBOX", 3, Some("<c@ex>"), Some("<b@ex>"), Some("<a@ex> <b@ex>"),
-            "Re: Re: Hello", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Re: Re: Hello", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z",
+            parse_date_epoch("2024-01-03T10:00:00Z"), "", 100, false, "", None).unwrap();
 
         // Starting from message 2, should find the entire thread (1, 2, 3).
         let thread = get_full_thread(&conn, "<b@ex>", Some("<a@ex>")).unwrap();
@@ -1094,11 +1170,11 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         upsert_message(&conn, "INBOX", 1, Some("<root@ex>"), None, None,
-            "Start", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Start", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", 0, "", 100, false, "", None).unwrap();
         upsert_message(&conn, "INBOX", 2, Some("<mid@ex>"), Some("<root@ex>"), Some("<root@ex>"),
-            "Re: Start", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Re: Start", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z", 0, "", 100, false, "", None).unwrap();
         upsert_message(&conn, "INBOX", 3, Some("<leaf@ex>"), Some("<mid@ex>"), Some("<root@ex> <mid@ex>"),
-            "Re: Re: Start", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Re: Re: Start", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z", 0, "", 100, false, "", None).unwrap();
 
         // Starting from the leaf message, should still find entire thread.
         let thread = get_full_thread(&conn, "<leaf@ex>", Some("<root@ex> <mid@ex>")).unwrap();
@@ -1111,10 +1187,43 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         upsert_message(&conn, "INBOX", 1, Some("<solo@ex>"), None, None,
-            "Solo", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", "", 100, false, "", None).unwrap();
+            "Solo", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", 0, "", 100, false, "", None).unwrap();
 
         let thread = get_full_thread(&conn, "<solo@ex>", None).unwrap();
         assert_eq!(thread.len(), 1);
         assert_eq!(thread[0].uid, 1);
+    }
+
+    #[test]
+    fn test_get_messages_same_epoch_uid_tiebreaker() {
+        let conn = open_test_db();
+        ensure_folder(&conn, "INBOX");
+        let epoch: i64 = 1_700_000_000;
+        upsert_message(&conn, "INBOX", 1, Some("<a@ex>"), None, None,
+            "First", "a@ex", "A", "[]", "[]", "", epoch, "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 2, Some("<b@ex>"), None, None,
+            "Second", "b@ex", "B", "[]", "[]", "", epoch, "", 100, false, "", None).unwrap();
+        let msgs = get_messages(&conn, "INBOX", 0, 10).unwrap();
+        assert_eq!(msgs[0].uid, 2);
+        assert_eq!(msgs[1].uid, 1);
+    }
+
+    #[test]
+    fn test_get_full_thread_uses_stored_epoch_not_date_string() {
+        // Simulates a message whose Date header was unparseable but INTERNALDATE
+        // provided a valid epoch. The stored date_epoch must drive sort order.
+        let conn = open_test_db();
+        ensure_folder(&conn, "INBOX");
+        let good_epoch = parse_date_epoch("2024-06-01T00:00:00Z");
+        upsert_message(&conn, "INBOX", 1, Some("<root@ex>"), None, None,
+            "Root", "a@ex", "A", "[]", "[]", "INVALID DATE", good_epoch,
+            "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 2, Some("<reply@ex>"), Some("<root@ex>"), Some("<root@ex>"),
+            "Reply", "b@ex", "B", "[]", "[]", "INVALID DATE", good_epoch + 3600,
+            "", 100, false, "", None).unwrap();
+        let thread = get_full_thread(&conn, "<reply@ex>", Some("<root@ex>")).unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[0].uid, 1); // root first (lower epoch)
+        assert_eq!(thread[1].uid, 2); // reply second
     }
 }

@@ -3,7 +3,31 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-/// All migration scripts in order. Each entry is (version, sql).
+/// Opens the per-user SQLite database at `{data_dir}/{user_hash}/db.sqlite`.
+///
+/// Creates the directory tree if it doesn't exist, enables WAL journal mode
+/// and foreign key enforcement. Does NOT run migrations - call
+/// `auth::user_data::provision_user_data` first to ensure the schema is ready.
+pub fn open_user_db(data_dir: &str, user_hash: &str) -> Result<Connection, String> {
+    let dir = Path::new(data_dir).join(user_hash);
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create db dir: {e}"))?;
+
+    let db_path = dir.join("db.sqlite");
+    let conn =
+        Connection::open(&db_path).map_err(|e| format!("Failed to open SQLite: {e}"))?;
+
+    // Enable WAL mode for better concurrent read performance.
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
+
+    // Enable foreign key constraint enforcement.
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| format!("Failed to enable foreign keys: {e}"))?;
+
+    Ok(conn)
+}
+
+#[cfg(test)]
 const MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("../../migrations/V001__initial_schema.sql")),
     (2, include_str!("../../migrations/V002__folders_and_messages.sql")),
@@ -29,37 +53,19 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (22, include_str!("../../migrations/V022__undo_send_delay.sql")),
     (23, include_str!("../../migrations/V023__vacation_responder.sql")),
     (24, include_str!("../../migrations/V024__filter_rules.sql")),
+    (25, include_str!("../../migrations/V025__mfa.sql")),
+    (26, include_str!("../../migrations/V026__mfa_passkey.sql")),
+    (27, include_str!("../../migrations/V027__pgp_keys.sql")),
+    (28, include_str!("../../migrations/V028__calendar_stickers.sql")),
+    (29, include_str!("../../migrations/V029__filter_rules_v2.sql")),
+    (30, include_str!("../../migrations/V030__draft_staging.sql")),
 ];
 
-/// Run any pending migrations based on SQLite's `user_version` PRAGMA.
-///
-/// If refinery has previously run migrations (indicated by the presence of
-/// `refinery_schema_history`), we sync `user_version` to match the highest
-/// refinery version before checking for new migrations. This avoids re-running
-/// migrations that refinery already applied.
+#[cfg(test)]
 fn run_migrations(conn: &Connection) -> Result<(), String> {
-    let mut current: u32 = conn
+    let current: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(|e| format!("Failed to read user_version: {e}"))?;
-
-    // Sync with refinery's migration state so we never re-apply migrations
-    // that refinery already applied (refinery updates its own history table
-    // but doesn't touch the user_version pragma).
-    let refinery_max: Option<u32> = conn
-        .query_row(
-            "SELECT MAX(version) FROM refinery_schema_history",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(None);
-
-    if let Some(v) = refinery_max
-        && v > current
-    {
-        current = v;
-        conn.execute_batch(&format!("PRAGMA user_version = {current};"))
-            .map_err(|e| format!("Failed to sync user_version from refinery: {e}"))?;
-    }
 
     for &(version, sql) in MIGRATIONS {
         if version > current {
@@ -71,32 +77,6 @@ fn run_migrations(conn: &Connection) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-/// Opens the per-user SQLite database at `{data_dir}/{user_hash}/db.sqlite`.
-///
-/// Creates the directory tree if it doesn't exist, enables WAL journal mode
-/// and foreign key enforcement, then runs any pending migrations.
-pub fn open_user_db(data_dir: &str, user_hash: &str) -> Result<Connection, String> {
-    let dir = Path::new(data_dir).join(user_hash);
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create db dir: {e}"))?;
-
-    let db_path = dir.join("db.sqlite");
-    let conn =
-        Connection::open(&db_path).map_err(|e| format!("Failed to open SQLite: {e}"))?;
-
-    // Enable WAL mode for better concurrent read performance.
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
-
-    // Enable foreign key constraint enforcement.
-    conn.execute_batch("PRAGMA foreign_keys=ON;")
-        .map_err(|e| format!("Failed to enable foreign keys: {e}"))?;
-
-    // Run any pending schema migrations.
-    run_migrations(&conn)?;
-
-    Ok(conn)
 }
 
 /// Opens an in-memory SQLite database with all migration scripts applied.
@@ -134,7 +114,7 @@ mod tests {
         assert!(tables.contains(&"user_meta".to_string()));
         assert!(tables.contains(&"folders".to_string()));
         assert!(tables.contains(&"messages".to_string()));
-        assert!(tables.contains(&"drafts".to_string()));
+        assert!(tables.contains(&"draft_staging".to_string()));
         assert!(tables.contains(&"draft_attachments".to_string()));
     }
 

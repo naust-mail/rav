@@ -45,6 +45,7 @@ export function BulkActionBar() {
   const folders = foldersData?.folders ?? [];
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
   const barMotionProps = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
+  const menuVariants = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
   const { data: tagsData } = useTags();
   const allTags = tagsData?.tags ?? [];
   const bulkAddTag = useBulkAddTag();
@@ -227,8 +228,15 @@ export function BulkActionBar() {
         </button>
         </ActionTooltip>
 
-        {moveMenuOpen && (
-          <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+        <AnimatePresence>
+          {moveMenuOpen && (
+          <AnimatedDiv
+            variants={menuVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
             {folders
               .filter((f) => f.name !== activeFolder)
               .map((f) => (
@@ -246,8 +254,9 @@ export function BulkActionBar() {
                 No other folders
               </span>
             )}
-          </div>
-        )}
+          </AnimatedDiv>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Tag */}
@@ -268,8 +277,15 @@ export function BulkActionBar() {
         </button>
         </ActionTooltip>
 
-        {tagMenuOpen && (
-          <div className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md">
+        <AnimatePresence>
+          {tagMenuOpen && (
+          <AnimatedDiv
+            variants={menuVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className="absolute left-0 top-full z-50 mt-1 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
+          >
             {allTags.map((tag) => (
               <button
                 key={tag.id}
@@ -289,8 +305,9 @@ export function BulkActionBar() {
                 No tags
               </span>
             )}
-          </div>
-        )}
+          </AnimatedDiv>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Spacer */}

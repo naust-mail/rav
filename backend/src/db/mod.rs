@@ -1,4 +1,7 @@
 pub mod calendar;
+pub mod mfa;
+#[cfg(feature = "stickers")]
+pub mod stickers;
 pub mod contact_groups;
 pub mod contacts;
 pub mod display_preferences;
@@ -8,6 +11,7 @@ pub mod folders;
 pub mod identities;
 pub mod messages;
 pub mod notification_preferences;
+pub mod pgp;
 pub mod pool;
 pub mod tags;
 pub mod vacation;

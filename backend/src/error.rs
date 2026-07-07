@@ -1,6 +1,65 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use std::fmt;
+
+/// The kind of connection failure that occurred when trying to reach a mail server.
+///
+/// Used inside `AuthResult::ServerUnreachable`, `ImapError::ConnectionFailed`,
+/// and `SmtpError::ConnectionFailed` so that friendly messages are produced at
+/// the error origin rather than forwarding raw OS/TLS error strings to clients.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConnectError {
+    /// TCP connection was refused - wrong port or server not listening.
+    ConnectionRefused,
+    /// Connection attempt timed out.
+    Timeout,
+    /// TLS handshake failed - certificate may be invalid or untrusted.
+    TlsHandshake,
+    /// Server could not be reached - DNS failure, routing issue, or dropped connection.
+    Unreachable,
+    /// Server sent an unexpected or malformed response.
+    BadServerResponse,
+}
+
+impl ConnectError {
+    /// Classify a `std::io::Error` into the appropriate variant.
+    pub fn from_io(e: &std::io::Error) -> Self {
+        match e.kind() {
+            std::io::ErrorKind::ConnectionRefused => ConnectError::ConnectionRefused,
+            std::io::ErrorKind::TimedOut => ConnectError::Timeout,
+            _ => ConnectError::Unreachable,
+        }
+    }
+}
+
+impl fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConnectError::ConnectionRefused => {
+                write!(f, "Connection refused - check the server address and port")
+            }
+            ConnectError::Timeout => {
+                write!(f, "Connection timed out - the server did not respond")
+            }
+            ConnectError::TlsHandshake => {
+                write!(
+                    f,
+                    "Could not establish a secure connection - the server's TLS certificate may be invalid or untrusted"
+                )
+            }
+            ConnectError::Unreachable => {
+                write!(
+                    f,
+                    "Could not reach the server - check your network and server settings"
+                )
+            }
+            ConnectError::BadServerResponse => {
+                write!(f, "The server returned an unexpected response")
+            }
+        }
+    }
+}
 
 /// Structured JSON error envelope returned to clients.
 #[derive(Debug, Serialize)]
@@ -156,5 +215,41 @@ mod tests {
         assert_eq!(json["error"]["code"], "SERVICE_UNAVAILABLE");
         assert_eq!(json["error"]["message"], "IMAP down");
         assert_eq!(json["error"]["status"], 503);
+    }
+
+    #[test]
+    fn connect_error_from_io_connection_refused() {
+        let e = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(ConnectError::from_io(&e), ConnectError::ConnectionRefused);
+    }
+
+    #[test]
+    fn connect_error_from_io_timed_out() {
+        let e = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        assert_eq!(ConnectError::from_io(&e), ConnectError::Timeout);
+    }
+
+    #[test]
+    fn connect_error_from_io_other_is_unreachable() {
+        let e = std::io::Error::new(std::io::ErrorKind::Other, "dns failure");
+        assert_eq!(ConnectError::from_io(&e), ConnectError::Unreachable);
+    }
+
+    #[test]
+    fn connect_error_display_messages_are_user_friendly() {
+        let cases = [
+            (ConnectError::ConnectionRefused, "Connection refused"),
+            (ConnectError::Timeout, "Connection timed out"),
+            (ConnectError::TlsHandshake, "Could not establish a secure connection"),
+            (ConnectError::Unreachable, "Could not reach the server"),
+            (ConnectError::BadServerResponse, "The server returned an unexpected response"),
+        ];
+        for (variant, expected_prefix) in cases {
+            let msg = variant.to_string();
+            assert!(
+                msg.starts_with(expected_prefix),
+                "expected '{msg}' to start with '{expected_prefix}'"
+            );
+        }
     }
 }

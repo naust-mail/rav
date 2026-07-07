@@ -61,7 +61,7 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<ContactGroup>, String> {
 pub fn update_group(conn: &Connection, id: &str, name: &str) -> Result<bool, String> {
     let updated = conn
         .execute(
-            "UPDATE contact_groups SET name = ?1, updated_at = datetime('now') WHERE id = ?2",
+            "UPDATE contact_groups SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?2",
             params![name, id],
         )
         .map_err(|e| format!("Failed to update contact group: {e}"))?;

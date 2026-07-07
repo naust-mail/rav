@@ -30,6 +30,24 @@ pub struct AccountSession {
     pub smtp_tls: bool,
     pub last_accessed: Instant,
     pub timeout_override: Option<Duration>,
+    /// AES-256-GCM key derived from the session token via HMAC-SHA256.
+    /// Used to encrypt/decrypt IMAP folder names in API responses and requests.
+    pub folder_key: [u8; 32],
+}
+
+/// Derives a 32-byte folder cipher key from the session token using HMAC-SHA256.
+/// Domain separation via the `folder-ids` label prevents key confusion with
+/// other derived secrets.
+fn derive_folder_key(token: &str) -> [u8; 32] {
+    use hmac::{KeyInit, Mac, SimpleHmac};
+    use sha2::Sha256;
+    let mut mac = SimpleHmac::<Sha256>::new_from_slice(token.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(b"folder-ids");
+    let result = mac.finalize().into_bytes();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
 }
 
 /// Thread-safe, in-memory session store backed by `DashMap`.
@@ -107,6 +125,7 @@ impl SessionStore {
             smtp_tls,
             last_accessed: Instant::now(),
             timeout_override: None,
+            folder_key: derive_folder_key(&token),
         };
 
         self.sessions.insert(token.clone(), session);
@@ -225,6 +244,7 @@ impl SessionStore {
             smtp_tls: true,
             last_accessed: Instant::now(),
             timeout_override,
+            folder_key: derive_folder_key(&token),
         };
         self.sessions.insert(token.clone(), state);
         token
@@ -393,6 +413,7 @@ mod tests {
             smtp_tls: true,
             last_accessed: Instant::now(),
             timeout_override: None,
+            folder_key: [0u8; 32],
         }
     }
 

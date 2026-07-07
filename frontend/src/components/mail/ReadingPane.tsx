@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react";
 import { AnimatePresence } from "framer-motion";
 import {
   ChevronDown,
@@ -19,6 +19,10 @@ import {
   FileAudio,
   FileArchive,
   File,
+  Lock,
+  ShieldCheck,
+  ShieldOff,
+  Loader2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -31,6 +35,9 @@ import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { EmailRenderer, hasRemoteResources } from "./EmailRenderer";
 import { ThreadView } from "./ThreadView";
 import { Button } from "@/components/ui/button";
+import type { MessageDetail } from "@/types/message";
+import { usePgpKeys } from "@/hooks/usePgp";
+import { decryptMessage, verifySignature } from "@/lib/pgp/client";
 import {
   AddressChip,
   AddressList,
@@ -60,6 +67,207 @@ function attachmentIcon(contentType: string): LucideIcon {
   return File;
 }
 
+type PgpBodyViewProps = {
+  message: MessageDetail;
+  emailTheme: "light" | "dark" | "auto";
+  blockRemoteResources: boolean;
+};
+
+function PgpBodyView({ message, emailTheme, blockRemoteResources }: PgpBodyViewProps) {
+  const [pgpDecrypted, setPgpDecrypted] = useState<{ text: string; html: string | null; verified: import("@/types/pgp").DecryptResult["verified"] } | null>(null);
+  const [pgpDecryptPassphrase, setPgpDecryptPassphrase] = useState("");
+  const [pgpDecrypting, setPgpDecrypting] = useState(false);
+  const [pgpVerifyStatus, setPgpVerifyStatus] = useState<"idle" | "valid" | "invalid" | "no_key">("idle");
+  const { data: pgpKeys } = usePgpKeys();
+
+  useEffect(() => {
+    if (!message.pgp_status || message.pgp_status.kind !== "signed") return;
+    const { signature, signed_content } = message.pgp_status;
+    if (!signature || !signed_content) return;
+
+    // Look up the sender's public key via WKD using the From address.
+    // We verify against the sender's key, not the recipient's.
+    const senderEmail = message.from_address;
+
+    void (async () => {
+      if (!senderEmail) {
+        setPgpVerifyStatus("no_key");
+        return;
+      }
+      try {
+        const { apiGet } = await import("@/lib/api");
+        const { found, public_key } = await apiGet<{ found: boolean; public_key: string | null }>(
+          `/pgp/wkd?email=${encodeURIComponent(senderEmail)}`
+        );
+        if (!found || !public_key) {
+          setPgpVerifyStatus("no_key");
+          return;
+        }
+        const { verified } = await verifySignature({
+          publicKeyArmored: public_key,
+          contentB64: signed_content,
+          signature,
+        });
+        setPgpVerifyStatus(verified);
+      } catch {
+        setPgpVerifyStatus("no_key");
+      }
+    })();
+  }, [message.pgp_status, message.from_address]);
+
+  async function handleDecrypt() {
+    if (!message.pgp_status?.ciphertext || !pgpKeys?.length) return;
+    const key = pgpKeys[0];
+    let keyRecord: import("@/types/pgp").PgpKeyRecord;
+    try {
+      keyRecord = await (await import("@/lib/api")).apiGet<import("@/types/pgp").PgpKeyRecord>(`/pgp/keys/${key.id}`);
+    } catch {
+      return;
+    }
+    // For encrypted+signed messages, look up the sender's public key so the
+    // worker can verify the embedded signature against the correct key.
+    let senderPublicKeyArmored: string | undefined;
+    if (message.from_address) {
+      try {
+        const { apiGet } = await import("@/lib/api");
+        const wkd = await apiGet<{ found: boolean; public_key: string | null }>(
+          `/pgp/wkd?email=${encodeURIComponent(message.from_address)}`
+        );
+        if (wkd.found && wkd.public_key) {
+          senderPublicKeyArmored = wkd.public_key;
+        }
+      } catch {
+        // WKD lookup failure is non-fatal; decrypt will surface 'no_key' verified status.
+      }
+    }
+    setPgpDecrypting(true);
+    try {
+      const result = await decryptMessage({
+        privateKeyArmored: keyRecord.private_key_enc,
+        passphrase: pgpDecryptPassphrase,
+        ciphertext: message.pgp_status.ciphertext,
+        senderPublicKeyArmored,
+      });
+      setPgpDecrypted({ text: result.text, html: result.html, verified: result.verified });
+      setPgpDecryptPassphrase("");
+    } catch (e) {
+      console.error("Decrypt failed:", e);
+    } finally {
+      setPgpDecrypting(false);
+    }
+  }
+
+  return (
+    <>
+      {message.pgp_status?.kind === "encrypted" && !pgpDecrypted && (
+        <div className="m-4 rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950 p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <Lock className="size-4 text-blue-600 dark:text-blue-400" />
+            <span className="text-sm font-medium text-blue-800 dark:text-blue-200">
+              This message is PGP encrypted
+            </span>
+          </div>
+          {pgpKeys && pgpKeys.length > 0 ? (
+            <div className="flex items-center gap-2 mt-3">
+              <input
+                type="password"
+                placeholder="Key passphrase"
+                value={pgpDecryptPassphrase}
+                onChange={(e) => setPgpDecryptPassphrase(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleDecrypt(); }}
+                className="rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <button
+                type="button"
+                onClick={handleDecrypt}
+                disabled={!pgpDecryptPassphrase || pgpDecrypting}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {pgpDecrypting && <Loader2 className="size-3.5 animate-spin" />}
+                Decrypt
+              </button>
+            </div>
+          ) : (
+            <p className="text-xs text-blue-700 dark:text-blue-300 mt-1">
+              No PGP keys configured. Add a key in Settings to decrypt messages.
+            </p>
+          )}
+        </div>
+      )}
+
+      {message.pgp_status?.kind === "signed" && (
+        <div className={`mx-4 mt-4 rounded-lg border p-3 flex items-center gap-2 ${
+          pgpVerifyStatus === "valid"
+            ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
+            : pgpVerifyStatus === "invalid"
+            ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
+            : "border-border bg-muted"
+        }`}>
+          {pgpVerifyStatus === "valid" ? (
+            <ShieldCheck className="size-4 text-green-600 dark:text-green-400 shrink-0" />
+          ) : pgpVerifyStatus === "invalid" ? (
+            <ShieldOff className="size-4 text-red-600 dark:text-red-400 shrink-0" />
+          ) : (
+            <ShieldAlert className="size-4 text-muted-foreground shrink-0" />
+          )}
+          <span className="text-xs font-medium">
+            {pgpVerifyStatus === "valid"
+              ? `Signed by ${message.from_address ?? "unknown"}`
+              : pgpVerifyStatus === "invalid"
+              ? "Invalid signature"
+              : pgpVerifyStatus === "no_key"
+              ? "No key to verify signature"
+              : "PGP signed - verifying..."}
+          </span>
+        </div>
+      )}
+
+      {pgpDecrypted?.verified !== "unsigned" && pgpDecrypted && (
+        <div className={`mx-4 mt-4 rounded-lg border p-3 flex items-center gap-2 ${
+          pgpDecrypted.verified === "valid"
+            ? "border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950"
+            : pgpDecrypted.verified === "invalid"
+            ? "border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950"
+            : "border-border bg-muted"
+        }`}>
+          {pgpDecrypted.verified === "valid" ? (
+            <ShieldCheck className="size-4 text-green-600 dark:text-green-400 shrink-0" />
+          ) : pgpDecrypted.verified === "invalid" ? (
+            <ShieldOff className="size-4 text-red-600 dark:text-red-400 shrink-0" />
+          ) : (
+            <ShieldAlert className="size-4 text-muted-foreground shrink-0" />
+          )}
+          <span className="text-xs font-medium">
+            {pgpDecrypted.verified === "valid"
+              ? `Signed by ${message.from_address ?? "unknown"}`
+              : pgpDecrypted.verified === "invalid"
+              ? "Invalid signature"
+              : "No key to verify signature"}
+          </span>
+        </div>
+      )}
+
+      {pgpDecrypted ? (
+        <EmailRenderer
+          html={pgpDecrypted.html}
+          text={pgpDecrypted.text}
+          blockRemoteResources={true}
+          theme={emailTheme}
+          emailTheme={message.email_theme}
+        />
+      ) : message.pgp_status?.kind === "encrypted" ? null : (
+        <EmailRenderer
+          html={message.html}
+          text={message.text}
+          blockRemoteResources={blockRemoteResources}
+          theme={emailTheme}
+          emailTheme={message.email_theme}
+        />
+      )}
+    </>
+  );
+}
+
 export function ReadingPane() {
   const activeFolder = useUiStore((s) => s.activeFolder);
   const selectedMessageUid = useUiStore((s) => s.selectedMessageUid);
@@ -83,7 +291,6 @@ export function ReadingPane() {
     new Set()
   );
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
-
   const queryClient = useQueryClient();
   const selectMessage = useUiStore((s) => s.selectMessage);
 
@@ -93,6 +300,16 @@ export function ReadingPane() {
   );
 
   const updateFlags = useUpdateFlags();
+  // Refs so the mark-as-read timer callback always sees fresh values without
+  // making them deps that restart the timer on flag changes (e.g. starring).
+  const updateFlagsMutateRef = useRef(updateFlags.mutate);
+  const activeFolderRef = useRef(activeFolder);
+  const dataRef = useRef(data);
+  useLayoutEffect(() => {
+    updateFlagsMutateRef.current = updateFlags.mutate;
+    activeFolderRef.current = activeFolder;
+    dataRef.current = data;
+  });
 
   const paneVariants = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
   const emailTheme = emailThemeState.uid === data?.uid ? emailThemeState.theme : "auto";
@@ -113,30 +330,33 @@ export function ReadingPane() {
   // Auto-switch to plain text mode for plaintext-only emails
   useEffect(() => {
     const { setReadingBodyMode } = useUiStore.getState();
-    if (data && !data.html && data.text) {
+    const current = dataRef.current;
+    if (current && !current.html && current.text) {
       setReadingBodyMode("plain");
     } else {
       setReadingBodyMode("html");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.uid]);
+  }, [data?.uid, data?.html, data?.text]);
 
   // Auto-mark unread messages as read after a 1.5s dwell timer.
   // On mobile, only start the timer when the reading pane is visible.
+  // All mutable values (data, mutate fn, folder) are accessed via refs so that
+  // flag changes (e.g. starring) do not restart the timer.
   useEffect(() => {
     if (isMobile && mobilePanelView !== "reading") return;
-    if (!data || data.flags.includes("\\Seen")) return;
+    const current = dataRef.current;
+    if (!current || current.flags.includes("\\Seen")) return;
 
+    const uid = current.uid;
     const timer = setTimeout(() => {
-      updateFlags.mutate({
-        folder: activeFolder,
-        uid: data.uid,
+      updateFlagsMutateRef.current({
+        folder: activeFolderRef.current,
+        uid,
         flags: ["\\Seen"],
         add: true,
       });
     }, 1500);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.uid, data?.folder, mobilePanelView, isMobile]);
 
   // No message selected
@@ -152,7 +372,7 @@ export function ReadingPane() {
   // Loading
   if (isLoading) {
     return (
-      <div className="flex h-full flex-col overflow-y-auto">
+      <div className="flex h-full flex-col overflow-y-auto w-full">
         <HeaderSkeleton />
         <BodySkeleton />
       </div>
@@ -164,7 +384,7 @@ export function ReadingPane() {
     const errMsg = error?.message ?? "Unknown error";
     console.error(`[ReadingPane] Failed to load message uid=${selectedMessageUid} folder=${activeFolder}:`, errMsg);
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-4 py-8 text-center">
+      <div className="flex h-full flex-col items-center justify-center gap-3 px-4 py-8 text-center w-full">
         <p className="text-sm text-muted-foreground">Failed to load message</p>
         <p className="max-w-md text-xs text-muted-foreground/60">{errMsg}</p>
         <Button variant="outline" size="sm" onClick={() => refetch()}>
@@ -381,12 +601,11 @@ export function ReadingPane() {
             {data.text || "No plain text available"}
           </pre>
         ) : (
-          <EmailRenderer
-            html={data.html}
-            text={data.text}
+          <PgpBodyView
+            key={`${data.folder}-${data.uid}`}
+            message={data}
+            emailTheme={emailTheme}
             blockRemoteResources={!remoteAllowed}
-            theme={emailTheme}
-            emailTheme={data.email_theme}
           />
         )}
       </div>

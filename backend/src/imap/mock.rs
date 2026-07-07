@@ -1,6 +1,8 @@
 use super::*;
 use std::sync::Mutex;
 
+use crate::error::ConnectError;
+
 /// A mock IMAP client that returns pre-loaded data.
 ///
 /// Uses interior mutability (`Mutex`) so it can be shared behind `&self`.
@@ -14,6 +16,7 @@ pub struct MockImapClient {
     folder_status_ext: Mutex<Option<FolderStatusExtended>>,
     should_fail: Mutex<Option<ImapError>>,
     pub appended: Mutex<Vec<(String, Vec<u8>)>>,
+    next_uid: Mutex<u32>,
 }
 
 impl MockImapClient {
@@ -27,6 +30,7 @@ impl MockImapClient {
             folder_status_ext: Mutex::new(None),
             should_fail: Mutex::new(None),
             appended: Mutex::new(Vec::new()),
+            next_uid: Mutex::new(1),
         }
     }
 
@@ -226,7 +230,8 @@ impl ImapClient for MockImapClient {
         folder: &str,
         message_bytes: &[u8],
         _flags: &[&str],
-    ) -> Result<(), ImapError> {
+        message_id: Option<&str>,
+    ) -> Result<Option<u32>, ImapError> {
         if let Some(ref err) = *self.should_fail.lock().unwrap() {
             return Err(clone_error(err));
         }
@@ -234,7 +239,15 @@ impl ImapClient for MockImapClient {
             .lock()
             .unwrap()
             .push((folder.to_string(), message_bytes.to_vec()));
-        Ok(())
+        let uid = if message_id.is_some() {
+            let mut next = self.next_uid.lock().unwrap();
+            let uid = *next;
+            *next += 1;
+            Some(uid)
+        } else {
+            None
+        };
+        Ok(uid)
     }
 
     async fn create_folder(
@@ -439,6 +452,7 @@ mod tests {
                 address: "bob@example.com".to_string(),
             }],
             date: Some("Mon, 1 Jan 2024 00:00:00 +0000".to_string()),
+            date_epoch: 1704067200,
             flags: vec!["\\Seen".to_string()],
             has_attachments: false,
             size: 1024,
@@ -467,6 +481,7 @@ mod tests {
                 text_html: None,
                 attachments: vec![],
                 raw_headers: String::new(),
+                pgp_status: None,
             },
             ImapMessageBody {
                 uid: 2,
@@ -480,6 +495,7 @@ mod tests {
                     content_id: None,
                 }],
                 raw_headers: String::new(),
+                pgp_status: None,
             },
         ]);
 
@@ -498,6 +514,7 @@ mod tests {
             text_html: None,
             attachments: vec![],
             raw_headers: String::new(),
+            pgp_status: None,
         }]);
 
         let err = mock
@@ -598,8 +615,8 @@ mod tests {
     async fn imap_error_display_formats_correctly() {
         let cases: Vec<(ImapError, &str)> = vec![
             (
-                ImapError::ConnectionFailed("timeout".to_string()),
-                "Connection failed: timeout",
+                ImapError::ConnectionFailed(ConnectError::Timeout),
+                "Connection timed out - the server did not respond",
             ),
             (ImapError::AuthenticationFailed, "Authentication failed"),
             (
@@ -640,21 +657,37 @@ mod tests {
     async fn mock_append_message_succeeds() {
         let mock = MockImapClient::new();
         let result = mock
-            .append_message(&test_creds(), "Sent", b"From: test\r\n\r\nBody", &["\\Seen"])
+            .append_message(&test_creds(), "Sent", b"From: test\r\n\r\nBody", &["\\Seen"], None)
             .await;
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None);
     }
 
     #[tokio::test]
     async fn mock_append_captures_data() {
         let mock = MockImapClient::new();
-        mock.append_message(&test_creds(), "Sent", b"test message", &["\\Seen"])
+        mock.append_message(&test_creds(), "Sent", b"test message", &["\\Seen"], None)
             .await
             .unwrap();
         let appended = mock.appended.lock().unwrap();
         assert_eq!(appended.len(), 1);
         assert_eq!(appended[0].0, "Sent");
         assert_eq!(appended[0].1, b"test message");
+    }
+
+    #[tokio::test]
+    async fn mock_append_returns_uid_when_message_id_given() {
+        let mock = MockImapClient::new();
+        let uid = mock
+            .append_message(&test_creds(), "Drafts", b"From: test\r\n\r\nBody", &["\\Draft"], Some("<abc@draft>"))
+            .await
+            .unwrap();
+        assert_eq!(uid, Some(1));
+        let uid2 = mock
+            .append_message(&test_creds(), "Drafts", b"From: test\r\n\r\nBody", &["\\Draft"], Some("<abc@draft>"))
+            .await
+            .unwrap();
+        assert_eq!(uid2, Some(2));
     }
 
     #[tokio::test]

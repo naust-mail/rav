@@ -1,10 +1,12 @@
 use std::fmt;
 
+use crate::error::ConnectError;
+
 /// Errors that can occur during IMAP operations.
 #[derive(Debug)]
 pub enum ImapError {
     /// Could not connect to the IMAP server.
-    ConnectionFailed(String),
+    ConnectionFailed(ConnectError),
     /// The server rejected our credentials.
     AuthenticationFailed,
     /// The requested folder does not exist.
@@ -18,7 +20,7 @@ pub enum ImapError {
 impl fmt::Display for ImapError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ImapError::ConnectionFailed(msg) => write!(f, "Connection failed: {msg}"),
+            ImapError::ConnectionFailed(e) => write!(f, "{e}"),
             ImapError::AuthenticationFailed => write!(f, "Authentication failed"),
             ImapError::FolderNotFound(name) => write!(f, "Folder not found: {name}"),
             ImapError::MessageNotFound { uid, folder } => {

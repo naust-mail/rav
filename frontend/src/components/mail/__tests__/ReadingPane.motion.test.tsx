@@ -81,6 +81,11 @@ vi.mock("@/hooks/useMessages", () => ({
   useUpdateFlags: () => ({ mutate: vi.fn() }),
 }));
 
+vi.mock("@/hooks/usePgp", () => ({
+  usePgpKeys: () => ({ data: null }),
+  useServerCapability: () => false,
+}));
+
 vi.mock("../EmailRenderer", () => ({
   EmailRenderer: () => <div data-testid="email-renderer" />,
   hasRemoteResources: () => false,

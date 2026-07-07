@@ -2,7 +2,14 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
-import type { FilterRule, FiltersResponse, CreateFilterRule, UpdateFilterRule } from "@/types/filter";
+import type {
+  FilterRule,
+  FiltersResponse,
+  CreateFilterRule,
+  UpdateFilterRule,
+  ReorderFiltersBody,
+  ApplyFiltersResponse,
+} from "@/types/filter";
 
 export function useFilters() {
   return useQuery({
@@ -40,5 +47,22 @@ export function useDeleteFilter() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["filters"] });
     },
+  });
+}
+
+export function useReorderFilters() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ReorderFiltersBody) =>
+      apiPut<FiltersResponse>("/filters/reorder", body as Record<string, unknown>),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["filters"], data);
+    },
+  });
+}
+
+export function useApplyFilters() {
+  return useMutation({
+    mutationFn: () => apiPost<ApplyFiltersResponse>("/filters/apply", {}),
   });
 }

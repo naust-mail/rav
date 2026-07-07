@@ -36,6 +36,10 @@ export interface DraftResumeParams {
   references: string | null;
   attachments: ComposeAttachment[];
   isHtml?: boolean;
+  /** Reconstructed quoted HTML from the original message, if available. */
+  quotedHtml?: string | null;
+  /** Reconstructed quoted plain text from the original message, if available. */
+  quotedText?: string | null;
 }
 
 export interface ComposeAttachment {
@@ -68,6 +72,7 @@ interface ComposeState {
   isHtml: boolean;
   signatureHtml: string;
   signatureEnabled: boolean;
+  pgpMode: 'off' | 'sign' | 'encrypt';
 
   openCompose: () => void;
   openReply: (params: ReplyParams) => void;
@@ -82,6 +87,7 @@ interface ComposeState {
   setIsHtml: (v: boolean) => void;
   setSignatureHtml: (html: string) => void;
   setSignatureEnabled: (enabled: boolean) => void;
+  setPgpMode: (mode: 'off' | 'sign' | 'encrypt') => void;
   addAttachments: (atts: ComposeAttachment[]) => void;
   removeAttachment: (id: string) => void;
   reset: () => void;
@@ -151,6 +157,7 @@ const initialState = {
   isHtml: true,
   signatureHtml: "",
   signatureEnabled: true,
+  pgpMode: 'off' as 'off' | 'sign' | 'encrypt',
 };
 
 export const useComposeStore = create<ComposeState>((set) => ({
@@ -207,6 +214,9 @@ export const useComposeStore = create<ComposeState>((set) => ({
       showBcc: params.bcc.length > 0,
       attachments: params.attachments,
       isHtml: params.isHtml ?? true,
+      quotedHtml: params.quotedHtml ?? null,
+      quotedText: params.quotedText ?? null,
+      mode: params.inReplyTo ? "reply" : "new",
     }),
 
   closeCompose: () => set({ isOpen: false }),
@@ -225,6 +235,8 @@ export const useComposeStore = create<ComposeState>((set) => ({
   setSignatureHtml: (html) => set({ signatureHtml: html }),
 
   setSignatureEnabled: (enabled) => set({ signatureEnabled: enabled }),
+
+  setPgpMode: (mode) => set({ pgpMode: mode }),
 
   addAttachments: (atts) =>
     set((state) => ({ attachments: [...state.attachments, ...atts] })),

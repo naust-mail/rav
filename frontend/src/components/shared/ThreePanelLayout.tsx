@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { useUiStore } from "@/stores/useUiStore";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
+import { createFadeSlideVariants } from "@/lib/motion/variants";
+import { getMotionTokens } from "@/lib/motion/config";
 import { SearchBar } from "@/components/mail/SearchBar";
 import { SearchResults } from "@/components/mail/SearchResults";
 import { MessageActionBar } from "@/components/mail/MessageActionBar";
@@ -17,33 +19,6 @@ interface ThreePanelLayoutProps {
   readingPane: React.ReactNode;
 }
 
-const centerTransition = {
-  initial: { opacity: 0, x: 8 },
-  animate: {
-    opacity: 1,
-    x: 0,
-    transition: { duration: 0.22, ease: [0.2, 0, 0, 1] as const },
-  },
-  exit: {
-    opacity: 0,
-    x: -4,
-    transition: { duration: 0.14, ease: [0.2, 0, 0, 1] as const },
-  },
-};
-
-const readingPaneTransition = {
-  initial: { opacity: 0, x: 12 },
-  animate: {
-    opacity: 1,
-    x: 0,
-    transition: { duration: 0.22, ease: [0.2, 0, 0, 1] as const },
-  },
-  exit: {
-    opacity: 0,
-    x: 6,
-    transition: { duration: 0.14, ease: [0.2, 0, 0, 1] as const },
-  },
-};
 
 const MIN_SIDEBAR_WIDTH = 140;
 const MAX_SIDEBAR_WIDTH = 400;
@@ -118,6 +93,10 @@ export function ThreePanelLayout({
   const selectedMessageUid = useUiStore((s) => s.selectedMessageUid);
   const searchActive = useUiStore((s) => s.searchActive);
   const searchQuery = useUiStore((s) => s.searchQuery);
+  const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
+  const motionTokens = useMemo(() => getMotionTokens(effectiveAnimationMode), [effectiveAnimationMode]);
+  const centerTransition = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
+  const readingPaneTransition = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "x"), [effectiveAnimationMode]);
   const readingPaneVisible = useUiStore((s) => s.readingPaneVisible);
   const hasValidCommittedSearch = isValidCommittedSearch(searchQuery);
   const showSearchResults = searchActive && hasValidCommittedSearch;
@@ -187,7 +166,7 @@ export function ThreePanelLayout({
   // Track animation state to let consumers avoid expensive work during transitions
   useEffect(() => {
     isAnimating.current = true;
-    const t = setTimeout(() => { isAnimating.current = false; }, 240);
+    const t = setTimeout(() => { isAnimating.current = false; }, motionTokens.duration.normal * 1000 + 20);
     return () => clearTimeout(t);
   }, [mobilePanelView]);
 
@@ -203,7 +182,7 @@ export function ThreePanelLayout({
         position: "absolute",
         inset: 0,
         transform: `translateX(${offset}%)`,
-        transition: "transform 220ms cubic-bezier(0.2, 0, 0, 1)",
+        transition: `transform ${motionTokens.duration.normal * 1000}ms cubic-bezier(0.2, 0, 0, 1)`,
         willChange: "transform",
       };
     }
@@ -310,7 +289,7 @@ export function ThreePanelLayout({
                 <div className="flex min-h-0 flex-1">{readingPane}</div>
               ) : (
                 <div className="flex h-full w-full items-center justify-center">
-                  <span className="text-2xl font-bold tracking-tight text-muted-foreground/40">
+                  <span className="text-2xl font-bold tracking-tight text-muted-foreground/40 select-none">
                     oxi<span className="text-primary/40">.email</span>
                   </span>
                 </div>

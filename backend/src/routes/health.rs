@@ -1,32 +1,39 @@
-use axum::Json;
+use std::sync::Arc;
+
+use axum::{Extension, Json};
 use serde::Serialize;
+
+use crate::config::AppConfig;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
     pub status: String,
+    /// Enabled optional capabilities on this server instance.
+    pub capabilities: Vec<&'static str>,
 }
 
 /// Handler for `GET /api/health`.
 ///
-/// Returns `200 OK` with `{ "status": "ok" }`.
-pub async fn health_check() -> Json<HealthResponse> {
+/// Returns `200 OK` with server status and the set of enabled capabilities.
+pub async fn health_check(
+    Extension(config): Extension<Arc<AppConfig>>,
+) -> Json<HealthResponse> {
+    let mut capabilities: Vec<&'static str> = Vec::new();
+    if config.pgp_enabled {
+        capabilities.push("pgp");
+    }
     Json(HealthResponse {
         status: "ok".to_string(),
+        capabilities,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::Duration;
 
-    use crate::auth::session::SessionStore;
-    use crate::config::AppConfig;
-    use crate::imap::client::ImapClient;
-    use crate::imap::client::mock::MockImapClient;
-    use crate::smtp::client::SmtpClient;
-    use crate::smtp::client::mock::MockSmtpClient;
-    use crate::routes::create_router;
+    use crate::routes::{AppServices, create_router};
+    use crate::mfa::passkey::PasskeyService;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use http_body_util::BodyExt;
@@ -34,6 +41,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_check_returns_ok() {
+        use std::time::Duration;
+        use crate::auth::session::SessionStore;
+        use crate::config::AppConfig;
+
         let config = Arc::new(AppConfig {
             host: "127.0.0.1".to_string(),
             port: 3001,
@@ -52,6 +63,13 @@ mod tests {
             base_path: None,
             allow_custom_mail_servers: true,
             rspamd_url: None,
+            link_proxy_enabled: false,
+            webauthn_rp_id: None,
+            webauthn_rp_origin: None,
+            trusted_proxies: String::new(),
+            pgp_enabled: true,
+            sieve_host: None,
+            sieve_port: 4190,
         });
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
         let transport = Arc::new(crate::mail_transport::MailTransport {
@@ -60,15 +78,28 @@ mod tests {
             smtp_connect_host: "127.0.0.1".to_string(),
             smtp_tls_params: None,
         });
-        let imap_client: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
-        let smtp_client: Arc<dyn SmtpClient> = Arc::new(MockSmtpClient::new());
-        let search_engine = Arc::new(crate::search::engine::SearchEngine::new(
-            std::path::PathBuf::from("/tmp/oxi-test"),
-        ));
-        let event_bus = Arc::new(crate::realtime::events::EventBus::new());
-        let idle_manager = Arc::new(crate::realtime::idle::IdleManager::new());
-        let http_client = Arc::new(reqwest::Client::new());
-        let app = create_router(config, transport, store, imap_client, smtp_client, http_client, search_engine, event_bus, idle_manager);
+        let passkey_service = Arc::new(
+            PasskeyService::from_config(&config).expect("test passkey_service"),
+        );
+        let app = create_router(AppServices {
+            config,
+            transport,
+            store,
+            imap_client: Arc::new(crate::imap::client::mock::MockImapClient::new()),
+            smtp_client: Arc::new(crate::smtp::client::mock::MockSmtpClient::new()),
+            http_client: Arc::new(reqwest::Client::new()),
+            search_engine: Arc::new(crate::search::engine::SearchEngine::new(
+                std::path::PathBuf::from("/tmp/oxi-test"),
+            )),
+            event_bus: Arc::new(crate::realtime::events::EventBus::new()),
+            idle_manager: Arc::new(crate::realtime::idle::IdleManager::new()),
+            mfa_crypto: Arc::new(
+                crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/oxi-test-mfa")
+                    .expect("test mfa_crypto"),
+            ),
+            passkey_service,
+            link_proxy_secret: None,
+        });
 
         let response = app
             .oneshot(
@@ -92,5 +123,6 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_slice(&body).expect("body should be valid JSON");
         assert_eq!(json["status"], "ok");
+        assert_eq!(json["capabilities"], serde_json::json!(["pgp"]));
     }
 }

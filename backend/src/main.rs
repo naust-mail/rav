@@ -3,8 +3,12 @@ mod config;
 mod error;
 mod db;
 mod email_theme;
+mod folder_cipher;
 mod imap;
+mod link_proxy;
 mod mail_transport;
+mod mfa;
+mod sieve;
 mod smtp;
 mod auth;
 mod realtime;
@@ -20,6 +24,9 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 use crate::auth::session::SessionStore;
 use crate::imap::client::RealImapClient;
 use crate::mail_transport::MailTransport;
+use crate::mfa::crypto::MfaCrypto;
+use crate::mfa::passkey::PasskeyService;
+use crate::routes::AppServices;
 use crate::smtp::client::RealSmtpClient;
 
 #[tokio::main]
@@ -69,7 +76,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let smtp_client: Arc<dyn smtp::client::SmtpClient> = Arc::new(RealSmtpClient);
 
     // Shared HTTP client for rspamd and any other outbound HTTP calls.
-    let http_client = Arc::new(reqwest::Client::new());
+    let http_client = Arc::new(
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("HTTP client should build"),
+    );
 
     // Create the Tantivy search engine for full-text indexing.
     let search_engine = Arc::new(search::engine::SearchEngine::new(
@@ -80,9 +93,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_bus = Arc::new(realtime::events::EventBus::new());
     let idle_manager = Arc::new(realtime::idle::IdleManager::new());
 
+    // Load or generate the MFA encryption key from the data directory.
+    let mfa_crypto = Arc::new(MfaCrypto::from_data_dir(&config.data_dir)?);
+
+    // If link proxy is enabled, load or generate the signing secret.
+    let link_proxy_secret = if config.link_proxy_enabled {
+        let secret = link_proxy::load_or_create_secret(&config.data_dir)?;
+        Some(Arc::new(link_proxy::LinkProxySecret(secret)))
+    } else {
+        None
+    };
+
+    // Build the passkey service (disabled when RP_ID / RP_ORIGIN are not set).
+    let passkey_service = Arc::new(PasskeyService::from_config(&config)?);
+
+    // Spawn background task to purge stale pending ceremonies every 5 minutes.
+    {
+        let pk_svc = Arc::clone(&passkey_service);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                pk_svc.purge_stale();
+            }
+        });
+    }
+
     // Build the application router with auth, session, and static file serving.
-    let app = routes::create_router(
-        config.clone(),
+    let app = routes::create_router(AppServices {
+        config: config.clone(),
         transport,
         store,
         imap_client,
@@ -91,7 +130,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         search_engine,
         event_bus,
         idle_manager,
-    );
+        mfa_crypto,
+        passkey_service,
+        link_proxy_secret,
+    });
 
     // Bind to the configured host and port.
     let bind_addr = format!("{}:{}", config.host, config.port);

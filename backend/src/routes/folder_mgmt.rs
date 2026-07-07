@@ -122,14 +122,16 @@ pub async fn create_folder(
     Ok(Json(MessageResponse { status: "created" }).into_response())
 }
 
-/// `PATCH /api/folders/:name` -- rename an existing folder.
+/// `PATCH /api/folders/:folder_id` -- rename an existing folder.
 pub async fn rename_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(name): Path<String>,
+    Path(folder_id): Path<String>,
     Json(body): Json<RenameFolderRequest>,
 ) -> Result<Response, AppError> {
+    let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
+
     if is_system_folder(&name) {
         return Err(AppError::BadRequest(format!(
             "Cannot rename system folder '{name}'"
@@ -155,13 +157,15 @@ pub async fn rename_folder(
     Ok(Json(MessageResponse { status: "renamed" }).into_response())
 }
 
-/// `DELETE /api/folders/:name` -- delete a folder.
+/// `DELETE /api/folders/:folder_id` -- delete a folder.
 pub async fn delete_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(name): Path<String>,
+    Path(folder_id): Path<String>,
 ) -> Result<Response, AppError> {
+    let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
+
     if is_system_folder(&name) {
         return Err(AppError::BadRequest(format!(
             "Cannot delete system folder '{name}'"
@@ -185,14 +189,15 @@ pub async fn delete_folder(
     Ok(Json(MessageResponse { status: "deleted" }).into_response())
 }
 
-/// `PATCH /api/folders/:name/subscribe` -- toggle folder subscription.
+/// `PATCH /api/folders/:folder_id/subscribe` -- toggle folder subscription.
 pub async fn subscribe_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(name): Path<String>,
+    Path(folder_id): Path<String>,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<Response, AppError> {
+    let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
 
     imap_client

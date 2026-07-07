@@ -41,8 +41,10 @@ import {
   buildForwardBodyHtml,
   buildReferences,
 } from "@/lib/email-utils";
-import type { EmailAddress } from "@/types/message";
+import type { EmailAddress, MessageDetail } from "@/types/message";
 import { useIdentities } from "@/hooks/useIdentities";
+import { useReplyDraft } from "@/hooks/useCompose";
+import { apiGet } from "@/lib/api";
 import type { Identity } from "@/types/identity";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
@@ -80,6 +82,8 @@ export function MessageActionBar() {
 
   const { data } = useMessage(activeFolder, selectedMessageUid ?? 0);
   const { data: identities } = useIdentities();
+  const messageId = data ? extractHeader(data.raw_headers, "Message-ID") : null;
+  const { data: replyDraft } = useReplyDraft(messageId);
 
   const disabled = !data;
   const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
@@ -104,10 +108,53 @@ export function MessageActionBar() {
     return otherRecipients.length === 0;
   })();
 
-  const handleReply = () => {
+  // Open an existing reply draft, reusing the already-loaded original message for the quote.
+  // `replyDraft` is pre-fetched by useReplyDraft so this is synchronous in the common case.
+  const openExistingReplyDraft = async (
+    refs: string | null,
+    originalData: MessageDetail,
+  ) => {
+    const existing = replyDraft ?? null;
+    if (!existing || existing.imap_uid == null) return false;
+
+    const hasOrigHtml = !!(originalData.html && originalData.html.trim());
+    const [draftDetail, attachmentsRes] = await Promise.all([
+      apiGet<MessageDetail>(`/messages/${encodeURIComponent(existing.draft_folder)}/${existing.imap_uid}`),
+      apiGet<{ attachments: { id: string; filename: string; content_type: string; size: number }[] }>(
+        `/drafts/${existing.uuid}/attachments`,
+      ).catch(() => ({ attachments: [] })),
+    ]);
+
+    useComposeStore.getState().openDraft({
+      id: existing.uuid,
+      to: draftDetail.to_addresses.map((a) => a.address).join(", "),
+      cc: draftDetail.cc_addresses.map((a) => a.address).join(", "),
+      bcc: extractHeader(draftDetail.raw_headers, "Bcc") ?? "",
+      subject: draftDetail.subject,
+      body: draftDetail.html ?? draftDetail.text ?? "",
+      inReplyTo: messageId,
+      references: buildReferences(refs, messageId),
+      attachments: attachmentsRes.attachments.map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        contentType: a.content_type,
+        size: a.size,
+      })),
+      isHtml: !!draftDetail.html,
+      quotedHtml: hasOrigHtml
+        ? buildReplyQuoteHtml(originalData.html!, originalData.from_address, originalData.date)
+        : null,
+      quotedText: buildReplyQuoteText(originalData.text, originalData.from_address, originalData.date),
+    });
+    return true;
+  };
+
+  const handleReply = async () => {
     if (!data) return;
-    const messageId = extractHeader(data.raw_headers, "Message-ID");
     const refs = extractHeader(data.raw_headers, "References");
+
+    if (await openExistingReplyDraft(refs, data)) return;
+
     const matchedId = findMatchingIdentity(identities, data.to_addresses, data.cc_addresses);
     const hasHtml = !!(data.html && data.html.trim());
     useComposeStore.getState().openReply({
@@ -124,11 +171,13 @@ export function MessageActionBar() {
     });
   };
 
-  const handleReplyAll = () => {
+  const handleReplyAll = async () => {
     if (!data) return;
     const myEmail = useAuthStore.getState().activeAccount()?.email ?? "";
-    const messageId = extractHeader(data.raw_headers, "Message-ID");
     const refs = extractHeader(data.raw_headers, "References");
+
+    if (await openExistingReplyDraft(refs, data)) return;
+
     const replyTo = data.from_address;
     const allRecipients = [
       ...data.to_addresses,

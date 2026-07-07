@@ -1,9 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
 import { useAutocomplete } from "@/hooks/useAutocomplete";
 import { Chip } from "@/components/ui/Chip";
 import { cn } from "@/lib/utils";
+import { useUiStore } from "@/stores/useUiStore";
+import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
+import { createFadeSlideVariants } from "@/lib/motion/variants";
 
 type RecipientInputProps = {
   value: string;
@@ -35,6 +39,8 @@ export function RecipientInput({ value, onChange, placeholder, inputRef }: Recip
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
+  const dropdownVariants = useMemo(() => createFadeSlideVariants(effectiveAnimationMode, "y"), [effectiveAnimationMode]);
 
   const tokens = useMemo(() => parseRecipients(value), [value]);
 
@@ -47,6 +53,12 @@ export function RecipientInput({ value, onChange, placeholder, inputRef }: Recip
     (token: string) => {
       const trimmed = token.trim();
       if (!trimmed) return;
+      if (tokens.includes(trimmed)) {
+        setInputValue("");
+        setDropdownOpen(false);
+        setSelectedIndex(0);
+        return;
+      }
       onChange(serializeRecipients([...tokens, trimmed]));
       setInputValue("");
       setDropdownOpen(false);
@@ -119,7 +131,7 @@ export function RecipientInput({ value, onChange, placeholder, inputRef }: Recip
   }, [inputValue, commitToken]);
 
   return (
-    <div ref={containerRef} className="relative flex flex-1 flex-wrap items-center gap-1 py-1.5">
+    <div ref={containerRef} className="relative flex flex-1 flex-wrap items-center gap-1 overflow-y-auto py-1.5 max-h-20">
       {tokens.map((token, i) => (
         <Chip key={`${i}-${token}`} onRemove={() => removeToken(i)}>
           {token}
@@ -139,8 +151,15 @@ export function RecipientInput({ value, onChange, placeholder, inputRef }: Recip
         placeholder={tokens.length === 0 ? placeholder : undefined}
         className="min-w-[120px] flex-1 bg-transparent py-0.5 text-sm outline-none placeholder:text-muted-foreground/50"
       />
-      {showDropdown && (
-        <div className="absolute left-0 top-full z-50 mt-1 max-h-64 w-72 overflow-y-auto rounded-lg border border-border bg-popover shadow-lg">
+      <AnimatePresence>
+        {showDropdown && (
+        <AnimatedDiv
+          variants={dropdownVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          className="absolute left-0 top-full z-50 mt-1 max-h-64 w-72 overflow-y-auto rounded-lg border border-border bg-popover shadow-lg"
+        >
           {results.map((result, idx) => (
             <button
               key={result.item.email}
@@ -164,8 +183,9 @@ export function RecipientInput({ value, onChange, placeholder, inputRef }: Recip
               </span>
             </button>
           ))}
-        </div>
-      )}
+        </AnimatedDiv>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

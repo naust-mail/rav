@@ -4,17 +4,18 @@ import { useRef, useCallback, useEffect, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AnimatePresence } from "framer-motion";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
-import { PenLine, X, PanelRight, Inbox, Tag, RefreshCw } from "lucide-react";
-import { useMessages } from "@/hooks/useMessages";
+import { PenLine, PanelRight, Inbox, Tag, RefreshCw } from "lucide-react";
+import { useMessages, useMessage, useMessageByMessageId } from "@/hooks/useMessages";
 import { useTags, useTagMessages } from "@/hooks/useTags";
-import { useListDrafts, useGetDraft, useDeleteDraft } from "@/hooks/useCompose";
+import { useGetDraftAttachments } from "@/hooks/useCompose";
+import { extractHeader, buildReplyQuoteHtml, buildReplyQuoteText } from "@/lib/email-utils";
 import { createFadeSlideVariants, type MotionVariants } from "@/lib/motion/variants";
 import type { AnimationMode } from "@/lib/motion/config";
 import { ANIMATION_MODES } from "@/lib/motion/config";
 import { useUiStore } from "@/stores/useUiStore";
 import { useComposeStore } from "@/stores/useComposeStore";
 import { MessageListItem } from "./MessageListItem";
-import { formatFolderName, isDraftsFolder } from "./FolderTree";
+import { formatFolderName } from "./FolderTree";
 import { BulkActionBar } from "./BulkActionBar";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -56,150 +57,11 @@ function SkeletonRows({ count, height, compact }: { count: number; height: numbe
   );
 }
 
-function humanizeDate(iso: string): string {
-  const date = new Date(iso);
-  if (isNaN(date.getTime())) return iso;
 
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMinutes = Math.floor(diffMs / 60_000);
-  const diffHours = Math.floor(diffMs / 3_600_000);
-
-  if (diffMinutes < 1) return "just now";
-  if (diffMinutes < 60) {
-    return diffMinutes === 1 ? "1 minute ago" : `${diffMinutes} minutes ago`;
-  }
-  if (diffHours < 24) {
-    return diffHours === 1 ? "1 hour ago" : `${diffHours} hours ago`;
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (
-    date.getFullYear() === yesterday.getFullYear() &&
-    date.getMonth() === yesterday.getMonth() &&
-    date.getDate() === yesterday.getDate()
-  ) {
-    return "yesterday";
-  }
-
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-}
-
-function DraftItems() {
-  const { data } = useListDrafts(true);
-  const deleteDraft = useDeleteDraft();
-  const openDraft = useComposeStore((s) => s.openDraft);
-  const isComposeOpen = useComposeStore((s) => s.isOpen);
-  const density = useUiStore((s) => s.density);
-  const [loadingDraftId, setLoadingDraftId] = useState<string | null>(null);
-  const getDraft = useGetDraft(loadingDraftId);
-
-  // When draft data arrives, open it in the compose dialog.
-  useEffect(() => {
-    if (!getDraft.data || !loadingDraftId) return;
-    const d = getDraft.data;
-    openDraft({
-      id: d.id,
-      to: d.to,
-      cc: d.cc,
-      bcc: d.bcc,
-      subject: d.subject,
-      body: d.html_body ?? d.text_body,
-      inReplyTo: d.in_reply_to,
-      references: d.references,
-      attachments: d.attachments.map((a) => ({
-        id: a.id,
-        filename: a.filename,
-        contentType: a.content_type,
-        size: a.size,
-      })),
-    });
-    setLoadingDraftId(null); // eslint-disable-line react-hooks/set-state-in-effect -- clearing after zustand store update
-  }, [getDraft.data, loadingDraftId, openDraft]);
-
-  const drafts = data?.drafts ?? [];
-  if (drafts.length === 0) return null;
-
-  return (
-    <>
-      {drafts.map((draft) => {
-        const openHandler = () => { if (!isComposeOpen) setLoadingDraftId(draft.id); };
-        const keyHandler = (e: React.KeyboardEvent) => {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openHandler(); }
-        };
-        const deleteBtn = (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); deleteDraft.mutate(draft.id); }}
-            className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:flex items-center justify-center"
-            title="Delete draft"
-          >
-            <X className="size-3" />
-          </button>
-        );
-
-        if (density === "compact") {
-          return (
-            <div
-              key={draft.id}
-              role="row"
-              tabIndex={0}
-              onClick={openHandler}
-              onKeyDown={keyHandler}
-              className="group flex h-9 cursor-pointer items-center gap-2 border-b border-border px-3 text-sm transition-colors hover:bg-accent active:bg-accent/70"
-            >
-              <PenLine className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="w-32 shrink-0 truncate text-xs text-muted-foreground">
-                {draft.to || "No recipient"}
-              </span>
-              <span className="text-muted-foreground/50">&middot;</span>
-              <span className="min-w-0 flex-1 truncate text-foreground">
-                {draft.subject || "(no subject)"}
-              </span>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {humanizeDate(draft.updated_at)}
-              </span>
-              {deleteBtn}
-            </div>
-          );
-        }
-
-        return (
-          <div
-            key={draft.id}
-            role="row"
-            tabIndex={0}
-            onClick={openHandler}
-            onKeyDown={keyHandler}
-            className="group flex h-16 cursor-pointer flex-col justify-center border-b border-border px-3 py-1.5 transition-colors hover:bg-accent active:bg-accent/70"
-          >
-            <div className="flex items-center gap-2">
-              <PenLine className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-xs font-normal text-muted-foreground">
-                {draft.to || "No recipient"}
-              </span>
-              <span className="shrink-0 text-xs font-normal text-muted-foreground">
-                {humanizeDate(draft.updated_at)}
-              </span>
-              {deleteBtn}
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-sm font-normal text-foreground">
-                {draft.subject || "(no subject)"}
-              </span>
-            </div>
-          </div>
-        );
-      })}
-    </>
-  );
+/** Parse the draft UUID from a Message-ID header value like `<uuid@draft>`. */
+function parseDraftUuid(rawHeaders: string): string | null {
+  const match = rawHeaders.match(/Message-ID:\s*<([^@\s>]+)@draft>/i);
+  return match ? match[1] : null;
 }
 
 function ToggleReadingPaneButton() {
@@ -227,7 +89,6 @@ export function MessageList() {
   const density = useUiStore((s) => s.density);
   const selectedMessageUid = useUiStore((s) => s.selectedMessageUid);
   const selectMessage = useUiStore((s) => s.selectMessage);
-  const showDrafts = !activeTagId && isDraftsFolder(activeFolder);
   const selectedMessageUids = useUiStore((s) => s.selectedMessageUids);
   const bulkSelectMode = useUiStore((s) => s.bulkSelectMode);
   const keyboardNav = useUiStore((s) => s.keyboardNav);
@@ -259,10 +120,102 @@ export function MessageList() {
   const totalCount = isTagView
     ? (tagQuery.data?.total_count ?? 0)
     : (data?.pages[0]?.total_count ?? 0);
-  const isSyncing = isDraftsFolder(activeFolder) ? false : (data?.pages[0]?.syncing ?? false);
+  const isSyncing = data?.pages[0]?.syncing ?? false;
 
   // Resolve tag name for header display.
   const activeTagName = tagsData?.tags.find((t) => t.id === activeTagId)?.name;
+
+  // ----- Draft open state machine -----
+  // Step 1: click draft → fetch message detail → extract UUID + In-Reply-To → trigger step 2.
+  // Step 2: wait for attachments + original message (if reply) → build quote → open compose.
+  const openDraft = useComposeStore((s) => s.openDraft);
+  const [pendingDraft, setPendingDraft] = useState<{ folder: string; uid: number } | null>(null);
+  const [pendingDraftUuid, setPendingDraftUuid] = useState<string | null>(null);
+  // Message-ID of the original message being replied to, set in step 1, cleared in step 2.
+  const [pendingInReplyToId, setPendingInReplyToId] = useState<string | null>(null);
+  // Holds the fetched detail between step 1 and step 2.
+  const pendingDetailRef = useRef<import("@/types/message").MessageDetail | null>(null);
+
+  const messageDetail = useMessage(pendingDraft?.folder ?? "", pendingDraft?.uid ?? 0);
+  const draftAttachments = useGetDraftAttachments(pendingDraftUuid);
+  // Fetch the original message being replied to so we can reconstruct the quote on reopen.
+  const originalMessage = useMessageByMessageId(pendingInReplyToId);
+
+  // Step 1: message detail arrives - save to ref, extract UUID + reply context.
+  useEffect(() => {
+    if (!pendingDraft || !messageDetail.data) return;
+    const detail = messageDetail.data;
+    pendingDetailRef.current = detail;
+    setPendingDraft(null); // eslint-disable-line react-hooks/set-state-in-effect
+    const uuid = parseDraftUuid(detail.raw_headers);
+    if (uuid) {
+      const inReplyTo = extractHeader(detail.raw_headers, "In-Reply-To");
+      setPendingInReplyToId(inReplyTo || null); // eslint-disable-line react-hooks/set-state-in-effect
+      setPendingDraftUuid(uuid); // eslint-disable-line react-hooks/set-state-in-effect -- triggers step 2
+    } else {
+      // No UUID (not saved via our API) - open with what we have, no quote.
+      pendingDetailRef.current = null;
+      openDraft({
+        id: detail.uid.toString(),
+        to: detail.to_addresses.map((a) => a.address).join(", "),
+        cc: detail.cc_addresses.map((a) => a.address).join(", "),
+        bcc: extractHeader(detail.raw_headers, "Bcc") ?? "",
+        subject: detail.subject,
+        body: detail.html ?? detail.text ?? "",
+        inReplyTo: null,
+        references: null,
+        attachments: [],
+        isHtml: !!detail.html,
+      });
+    }
+  }, [pendingDraft, messageDetail.data, openDraft]);
+
+  // Step 2: wait for attachments + original message (if reply), then open compose.
+  useEffect(() => {
+    if (!pendingDraftUuid || draftAttachments.isPending) return;
+    // If waiting on the original message for quote reconstruction, hold off.
+    if (pendingInReplyToId && originalMessage.isPending) return;
+
+    const uuid = pendingDraftUuid;
+    const detail = pendingDetailRef.current;
+    if (!detail) return;
+    pendingDetailRef.current = null;
+    setPendingDraftUuid(null); // eslint-disable-line react-hooks/set-state-in-effect
+    setPendingInReplyToId(null); // eslint-disable-line react-hooks/set-state-in-effect
+
+    const orig = originalMessage.data ?? null;
+    const hasOrigHtml = !!(orig?.html && orig.html.trim());
+
+    openDraft({
+      id: uuid,
+      to: detail.to_addresses.map((a) => a.address).join(", "),
+      cc: detail.cc_addresses.map((a) => a.address).join(", "),
+      bcc: extractHeader(detail.raw_headers, "Bcc") ?? "",
+      subject: detail.subject,
+      body: detail.html ?? detail.text ?? "",
+      inReplyTo: extractHeader(detail.raw_headers, "In-Reply-To") || null,
+      references: extractHeader(detail.raw_headers, "References") || null,
+      attachments: (draftAttachments.data?.attachments ?? []).map((a) => ({
+        id: a.id,
+        filename: a.filename,
+        contentType: a.content_type,
+        size: a.size,
+      })),
+      isHtml: !!detail.html,
+      quotedHtml: orig && hasOrigHtml
+        ? buildReplyQuoteHtml(orig.html!, orig.from_address, orig.date)
+        : null,
+      quotedText: orig ? buildReplyQuoteText(orig.text, orig.from_address, orig.date) : null,
+    });
+  }, [
+    pendingDraftUuid,
+    draftAttachments.isPending,
+    draftAttachments.data,
+    pendingInReplyToId,
+    originalMessage.isPending,
+    originalMessage.data,
+    openDraft,
+  ]);
 
   const parentRef = useRef<HTMLDivElement>(null);
   const rowHeight = density === "compact" ? 36 : 64;
@@ -411,9 +364,9 @@ export function MessageList() {
               className={cn(
                 "flex size-4 shrink-0 items-center justify-center rounded border transition-colors transition-opacity",
                 messages.length === 0 ? 'opacity-50'
-                 : allSelected
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-muted-foreground/40 bg-transparent hover:border-primary",
+                  : allSelected
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-muted-foreground/40 bg-transparent hover:border-primary",
               )}
             >
               {allSelected && (
@@ -439,9 +392,6 @@ export function MessageList() {
           <span className="text-xs text-muted-foreground">
             {isLoading && !data ? "\u2026" : `${totalCount} messages`}
           </span>
-          {isSyncing && (
-            <span className="animate-pulse text-xs text-primary">syncing…</span>
-          )}
           <button
             type="button"
             aria-label="Refresh"
@@ -449,7 +399,7 @@ export function MessageList() {
             disabled={isFetching}
             className="hidden md:flex size-6 items-center justify-center rounded transition-colors hover:bg-accent disabled:opacity-50"
           >
-            <RefreshCw className={cn("size-3.5", isFetching && "animate-spin")} />
+            <RefreshCw className={cn("size-3.5", (isFetching || isSyncing) && "animate-spin", isSyncing && "text-primary")} />
           </button>
           <ToggleReadingPaneButton />
         </div>
@@ -482,8 +432,8 @@ export function MessageList() {
         </div>
       )}
 
-      {/* Empty state (only when not a drafts folder or no drafts either) */}
-      {!isLoading && !isError && messages.length === 0 && !showDrafts && (
+      {/* Empty state */}
+      {!isLoading && !isError && messages.length === 0 && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
           {isTagView ? (
             <Tag className="size-10 text-muted-foreground/40" strokeWidth={1.25} />
@@ -506,81 +456,82 @@ export function MessageList() {
         </div>
       )}
 
-      {/* Scrollable content: drafts + virtualized message list */}
-      {!isLoading && !isError && (showDrafts || messages.length > 0) && (
+      {/* Scrollable virtualized message list */}
+      {!isLoading && !isError && messages.length > 0 && (
         <div
           ref={parentRef}
           className="flex-1 overflow-y-auto"
           onMouseMove={keyboardNav ? () => useUiStore.getState().setKeyboardNav(false) : undefined}
         >
-          {/* Local drafts at top of the Drafts folder */}
-          {showDrafts && <DraftItems />}
+          <div
+            style={{
+              height: virtualizer.getTotalSize(),
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            <AnimatePresence initial={false}>
+              {virtualItems.map((virtualRow) => {
+                const message = messages[virtualRow.index];
+                if (!message) return null;
 
-          {/* Virtualized IMAP messages */}
-          {messages.length > 0 && (
-            <div
-              style={{
-                height: virtualizer.getTotalSize(),
-                width: "100%",
-                position: "relative",
-              }}
-            >
-              <AnimatePresence initial={false}>
-                {virtualItems.map((virtualRow) => {
-                  const message = messages[virtualRow.index];
-                  if (!message) return null;
+                const isDraftMessage = message.flags.includes("\\Draft");
+                const staggerDelay = changedVisibleDelays.get(message.uid) ?? 0;
+                const animateValue = {
+                  ...rowMotionVariants.animate,
+                  transition: {
+                    ...(rowMotionVariants.animate as { transition?: object }).transition,
+                    delay: staggerDelay,
+                  },
+                };
 
-                  const staggerDelay = changedVisibleDelays.get(message.uid) ?? 0;
-                  const animateValue = {
-                    ...rowMotionVariants.animate,
-                    transition: {
-                      ...(rowMotionVariants.animate as { transition?: object }).transition,
-                      delay: staggerDelay,
-                    },
-                  };
-
-                  return (
-                    <AnimatedDiv
-                      key={message.uid}
-                      data-testid="message-list-row-transition"
-                      data-row-uid={String(message.uid)}
-                      data-row-changed={changedVisibleDelays.has(message.uid) ? "true" : "false"}
-                      data-row-stagger-delay={String(staggerDelay)}
-                      variants={rowMotionVariants}
-                      initial={rowMotionVariants.initial}
-                      animate={animateValue}
-                      exit={rowMotionVariants.exit}
-                      exposeMotionProps={false}
-                      data-motion-props={JSON.stringify({
-                        initial: rowMotionVariants.initial,
-                        animate: animateValue,
-                        exit: rowMotionVariants.exit,
-                      })}
-                      style={{
-                        position: "absolute",
-                        top: virtualRow.start,
-                        left: 0,
-                        width: "100%",
-                        height: virtualRow.size,
+                return (
+                  <AnimatedDiv
+                    key={message.uid}
+                    data-testid="message-list-row-transition"
+                    data-row-uid={String(message.uid)}
+                    data-row-changed={changedVisibleDelays.has(message.uid) ? "true" : "false"}
+                    data-row-stagger-delay={String(staggerDelay)}
+                    variants={rowMotionVariants}
+                    initial={rowMotionVariants.initial}
+                    animate={animateValue}
+                    exit={rowMotionVariants.exit}
+                    exposeMotionProps={false}
+                    data-motion-props={JSON.stringify({
+                      initial: rowMotionVariants.initial,
+                      animate: animateValue,
+                      exit: rowMotionVariants.exit,
+                    })}
+                    style={{
+                      position: "absolute",
+                      top: virtualRow.start,
+                      left: 0,
+                      width: "100%",
+                      height: virtualRow.size,
+                    }}
+                  >
+                    <MessageListItem
+                      message={message}
+                      isSelected={selectedMessageUid === message.uid}
+                      density={density}
+                      onClick={(e) => {
+                        if (isDraftMessage) {
+                          setPendingDraft({ folder: message.folder, uid: message.uid });
+                        } else {
+                          handleClick(message.uid, e);
+                        }
                       }}
-                    >
-                      <MessageListItem
-                        message={message}
-                        isSelected={selectedMessageUid === message.uid}
-                        density={density}
-                        onClick={(e) => handleClick(message.uid, e)}
-                        bulkSelectMode={bulkSelectMode}
-                        isBulkSelected={selectedMessageUids.includes(message.uid)}
-                        onBulkToggle={toggleBulkSelect}
-                        suppressHover={keyboardNav}
-                        effectiveAnimationMode={effectiveAnimationMode}
-                      />
-                    </AnimatedDiv>
-                  );
-                })}
-              </AnimatePresence>
-            </div>
-          )}
+                      bulkSelectMode={bulkSelectMode}
+                      isBulkSelected={selectedMessageUids.includes(message.uid)}
+                      onBulkToggle={toggleBulkSelect}
+                      suppressHover={keyboardNav}
+                      effectiveAnimationMode={effectiveAnimationMode}
+                    />
+                  </AnimatedDiv>
+                );
+              })}
+            </AnimatePresence>
+          </div>
           {isFetchingNextPage && (
             <div className="flex items-center justify-center py-2">
               <span className="text-xs text-muted-foreground">Loading more...</span>

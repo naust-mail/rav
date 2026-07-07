@@ -27,9 +27,11 @@
     "fuzzysort": "^3.1.0",
     "lucide-react": "^1.20.0",
     "next": "16.2.9",
+    "openpgp": "^6.3.1",
     "radix-ui": "^1.6.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "react-qr-code": "^2.2.0",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"

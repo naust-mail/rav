@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
@@ -70,11 +70,15 @@ export function RichTextEditor({
   compact = false,
 }: RichTextEditorProps) {
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const [isReady, setIsReady] = useState(false);
 
   const editor = useEditor({
+    immediatelyRender: true,
     extensions: [
       StarterKit.configure({
         heading: false,
+        link: false,
+        underline: false,
       }),
       Link.configure({
         openOnClick: false,
@@ -103,9 +107,23 @@ export function RichTextEditor({
     },
   });
 
+  // Prevent running until editor is fully initialized
+  useEffect(() => {
+    if (!editor) return;
+
+    const onCreate = () => setIsReady(true);
+
+    editor.on('create', onCreate);
+
+    return () => {
+      editor.off('create', onCreate);
+    };
+  }, [editor]);
+
   // Sync external content changes (e.g. when opening a draft)
   useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
+    if (!isReady) return;
+    if (editor && !editor.isDestroyed && content !== editor.getHTML()) {
       editor.commands.setContent(content);
     }
   }, [content]); // eslint-disable-line react-hooks/exhaustive-deps

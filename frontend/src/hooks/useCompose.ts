@@ -1,9 +1,10 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { PgpSendRequest } from "@/types/pgp";
 import { apiPost, apiGet, apiPostFormData, apiDelete } from "@/lib/api";
 
-interface SendParams {
+type SendParams = {
   to: string;
   cc: string;
   bcc: string;
@@ -12,30 +13,34 @@ interface SendParams {
   htmlBody: string | null;
   inReplyTo: string | null;
   references: string | null;
+  /** UUID of the draft this send originates from, if any. Used to clean up the IMAP copy after send. */
   draftId: string | null;
   fromIdentityId: number | null;
-}
+  pgp?: PgpSendRequest | null;
+};
 
-interface SendResponse {
+type SendResponse = {
   status: string;
   message_id: string;
-}
+};
 
-interface UploadResponse {
+type UploadResponse = {
   attachments: {
     id: string;
     filename: string;
     content_type: string;
     size: number;
   }[];
-}
+};
 
-interface DeleteAttachmentResponse {
+type DeleteAttachmentResponse = {
   status: string;
-}
+};
 
-interface SaveDraftParams {
-  id: string;
+/** Parameters for saving a draft. `uuid` is client-generated and stable across saves. */
+type SaveDraftParams = {
+  /** Client-generated UUID. Used as the path segment and embedded as Message-ID in IMAP. */
+  uuid: string;
   to: string;
   cc: string;
   bcc: string;
@@ -44,43 +49,24 @@ interface SaveDraftParams {
   htmlBody: string | null;
   inReplyTo: string | null;
   references: string | null;
-}
+};
 
-interface SaveDraftResponse {
-  id: string;
+type SaveDraftResponse = {
   status: string;
-}
+};
 
-interface DraftListItem {
+/** One staged attachment for a draft, as returned by the backend. */
+export type DraftAttachment = {
   id: string;
-  to: string;
-  subject: string;
-  updated_at: string;
-}
-
-interface DraftListResponse {
-  drafts: DraftListItem[];
-}
-
-interface DraftDetail {
-  id: string;
-  to: string;
-  cc: string;
-  bcc: string;
-  subject: string;
-  text_body: string;
-  html_body: string | null;
-  in_reply_to: string | null;
-  references: string | null;
+  filename: string;
+  content_type: string;
+  size: number;
   created_at: string;
-  updated_at: string;
-  attachments: {
-    id: string;
-    filename: string;
-    content_type: string;
-    size: number;
-  }[];
-}
+};
+
+type DraftAttachmentsResponse = {
+  attachments: DraftAttachment[];
+};
 
 function parseRecipients(raw: string): string[] {
   return raw
@@ -104,6 +90,7 @@ export function useSendMessage() {
         references: params.references,
         draft_id: params.draftId,
         from_identity_id: params.fromIdentityId,
+        ...(params.pgp ? { pgp: params.pgp } : {}),
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["messages"] });
@@ -148,12 +135,11 @@ export function useDeleteAttachment() {
   });
 }
 
+/** Save draft body to IMAP via POST /drafts/{uuid}. The UUID travels in the path, not the body. */
 export function useSaveDraft() {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (params: SaveDraftParams) =>
-      apiPost<SaveDraftResponse>("/drafts", {
-        id: params.id,
+      apiPost<SaveDraftResponse>(`/drafts/${params.uuid}`, {
         to: params.to,
         cc: params.cc,
         bcc: params.bcc,
@@ -163,35 +149,52 @@ export function useSaveDraft() {
         in_reply_to: params.inReplyTo,
         references: params.references,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["drafts"] });
-    },
   });
 }
 
-export function useListDrafts(enabled: boolean) {
-  return useQuery({
-    queryKey: ["drafts"],
-    queryFn: () => apiGet<DraftListResponse>("/drafts"),
-    enabled,
-  });
-}
-
-export function useGetDraft(id: string | null) {
-  return useQuery({
-    queryKey: ["drafts", id],
-    queryFn: () => apiGet<DraftDetail>(`/drafts/${id}`),
-    enabled: !!id,
-  });
-}
-
+/** Delete/discard a draft: expunges from IMAP and removes staging record. */
 export function useDeleteDraft() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      apiDelete<{ status: string }>(`/drafts/${id}`),
+    mutationFn: (uuid: string) =>
+      apiDelete<{ status: string }>(`/drafts/${uuid}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["drafts"] });
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
     },
+  });
+}
+
+/** Returned by GET /drafts/reply-for/:message_id when a reply draft exists. */
+export type ReplyDraftRef = {
+  uuid: string;
+  imap_uid: number | null;
+  draft_folder: string;
+};
+
+/**
+ * Eagerly fetch the reply draft for a message as soon as it is opened.
+ * Result is cached by React Query so Reply clicks read it synchronously.
+ * Returns null when no draft exists (404) or messageId is empty.
+ */
+export function useReplyDraft(messageId: string | null) {
+  return useQuery({
+    queryKey: ["reply-draft", messageId],
+    queryFn: () =>
+      apiPost<ReplyDraftRef>(`/drafts/reply-for`, { message_id: messageId! }).catch(
+        () => null,
+      ),
+    enabled: !!messageId,
+    staleTime: 30_000,
+  });
+}
+
+/** Fetch staged attachments for a draft UUID (used when reopening a draft from IMAP). */
+export function useGetDraftAttachments(uuid: string | null) {
+  return useQuery({
+    queryKey: ["draft-attachments", uuid],
+    queryFn: () =>
+      apiGet<DraftAttachmentsResponse>(`/drafts/${uuid}/attachments`),
+    enabled: !!uuid,
   });
 }

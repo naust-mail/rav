@@ -73,7 +73,7 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<Tag>, String> {
 pub fn update_tag(conn: &Connection, id: &str, name: &str, color: &str) -> Result<bool, String> {
     let updated = conn
         .execute(
-            "UPDATE tags SET name = ?1, color = ?2, updated_at = datetime('now') WHERE id = ?3",
+            "UPDATE tags SET name = ?1, color = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?3",
             params![name, color, id],
         )
         .map_err(|e| format!("Failed to update tag: {e}"))?;
@@ -218,7 +218,7 @@ pub fn get_messages_by_tag(
         .prepare(
             "SELECT m.uid, m.folder, m.message_id, m.in_reply_to, m.references_header,
                     m.subject, m.from_address, m.from_name, m.to_addresses, m.cc_addresses,
-                    m.date, m.flags, m.size, m.has_attachments, m.snippet, m.reaction
+                    m.date, m.flags, m.has_attachments, m.size, m.snippet, m.reaction, m.date_epoch
              FROM messages m
              JOIN message_tags mt ON mt.message_uid = m.uid AND mt.message_folder = m.folder
              WHERE mt.tag_id = ?1
@@ -229,7 +229,7 @@ pub fn get_messages_by_tag(
 
     let rows = stmt
         .query_map(params![tag_id, per_page, offset], |row| {
-            let has_attachments_int: i32 = row.get(13)?;
+            let has_attachments_int: i32 = row.get(12)?;
             Ok(CachedMessage {
                 uid: row.get(0)?,
                 folder: row.get(1)?,
@@ -243,10 +243,11 @@ pub fn get_messages_by_tag(
                 cc_addresses: row.get(9)?,
                 date: row.get(10)?,
                 flags: row.get(11)?,
-                size: row.get(12)?,
                 has_attachments: has_attachments_int != 0,
+                size: row.get(13)?,
                 snippet: row.get(14)?,
                 reaction: row.get(15)?,
+                date_epoch: row.get(16)?,
             })
         })
         .map_err(|e| format!("Failed to query messages by tag: {e}"))?;
@@ -389,5 +390,25 @@ mod tests {
 
         let count = count_messages_by_tag(&conn, "t1").unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_get_messages_by_tag_fields_not_swapped() {
+        // Guards against has_attachments/size column order being swapped.
+        let conn = open_test_db();
+        conn.execute("INSERT OR IGNORE INTO folders (name) VALUES ('INBOX')", []).unwrap();
+        conn.execute(
+            "INSERT INTO messages (uid, folder, subject, from_address, from_name,
+             to_addresses, date, flags, size, has_attachments, snippet)
+             VALUES (42, 'INBOX', 'Test', 'a@ex', 'A', '[]', '2024-01-01', '', 9999, 1, '')",
+            [],
+        ).unwrap();
+        create_tag(&conn, "t1", "Tag", "#000").unwrap();
+        add_tag_to_message(&conn, "t1", 42, "INBOX").unwrap();
+
+        let msgs = get_messages_by_tag(&conn, "t1", 0, 10).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].has_attachments, "has_attachments should be true");
+        assert_eq!(msgs[0].size, 9999, "size should be 9999, not 1");
     }
 }

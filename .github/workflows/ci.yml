@@ -63,6 +63,14 @@ jobs:
       - name: Test (unit)
         run: bun run test
 
+      - name: Detect sticker assets
+        run: |
+          if [ -f public/stickers/manifest.json ]; then
+            echo "NEXT_PUBLIC_FEATURE_STICKERS=true" >> "$GITHUB_ENV"
+          else
+            echo "NEXT_PUBLIC_FEATURE_STICKERS=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Build (static export)
         run: bun run build
 

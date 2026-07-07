@@ -9,7 +9,7 @@ export type WsStatus = "connected" | "connecting" | "disconnected";
 export interface MailEvent {
   type: "NewMessages" | "FlagsChanged" | "FolderUpdated";
   data?: {
-    folder: string;
+    folder?: string;
     count?: number;
     latest_sender?: string;
     latest_subject?: string;
@@ -108,6 +108,9 @@ export function useWebSocket(onEvent?: (event: MailEvent) => void) {
               scheduleInvalidation("folders");
               break;
             case "FolderUpdated":
+              if (mailEvent.data?.folder) {
+                scheduleInvalidation(mailEvent.data.folder);
+              }
               scheduleInvalidation("folders");
               break;
           }

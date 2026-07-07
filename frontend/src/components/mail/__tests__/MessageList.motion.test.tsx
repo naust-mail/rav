@@ -94,9 +94,7 @@ vi.mock("@/hooks/useTags", () => ({
 }));
 
 vi.mock("@/hooks/useCompose", () => ({
-  useListDrafts: () => ({ data: { drafts: [] } }),
-  useGetDraft: () => ({ data: null }),
-  useDeleteDraft: () => ({ mutate: vi.fn() }),
+  useGetDraftAttachments: () => ({ data: null, isPending: false }),
 }));
 
 vi.mock("@/stores/useComposeStore", () => ({
@@ -117,6 +115,7 @@ vi.mock("@/hooks/useMessages", async () => {
   return {
     ...actual,
     useMessages: mockUseMessages,
+    useMessage: () => ({ data: null, isPending: false }),
     useUpdateFlags: () => ({ mutate: mockUpdateFlags }),
   };
 });

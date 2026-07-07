@@ -34,7 +34,19 @@ tantivy = "0.26"
 ical = "0.11"
 regex = "1.12.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rrule = "0.11"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
+aes-gcm = "0.10"
+hmac = "0.13.0"
+sha1 = "0.10"
+webauthn-rs = { version = "0.5.5", features = ["resident-key-support"] }
+url = "2"
+ipnet = "2"
+
+[features]
+default = ["stickers"]
+stickers = []
 
 [dev-dependencies]
 http-body-util = "0.1"

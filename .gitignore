@@ -101,5 +101,9 @@ _bmad/
 _bmad-output/
 docs/
 
+# Extras
+frontend/public/stickers
+frontend/public/stickers/manifest.json
+
 # Debugging files
 debugging/

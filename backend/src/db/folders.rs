@@ -33,7 +33,7 @@ pub fn upsert_folder(
         "INSERT OR REPLACE INTO folders
             (name, delimiter, parent, flags, is_subscribed,
              total_count, unread_count, uid_validity, highest_modseq, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         params![
             folder_name,
             delimiter,
@@ -64,7 +64,7 @@ pub fn insert_folder_if_new(
     conn.execute(
         "INSERT OR IGNORE INTO folders
             (name, delimiter, flags, is_subscribed, updated_at)
-         VALUES (?1, ?2, ?3, 1, datetime('now'))",
+         VALUES (?1, ?2, ?3, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         params![folder_name, delimiter, flags_csv],
     )
     .map_err(|e| format!("Failed to insert folder: {e}"))?;
@@ -145,7 +145,7 @@ pub fn remove_stale_folders(
 /// Touch `updated_at` on all folders so the folder-list cache TTL resets.
 pub fn touch_all_folders(conn: &Connection) -> Result<(), String> {
     conn.execute(
-        "UPDATE folders SET updated_at = datetime('now')",
+        "UPDATE folders SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
         [],
     )
     .map_err(|e| format!("Failed to touch folders: {e}"))?;
@@ -161,7 +161,7 @@ pub fn update_folder_status(
     total_count: u32,
 ) -> Result<(), String> {
     conn.execute(
-        "UPDATE folders SET uid_validity = ?1, total_count = ?2, messages_updated_at = datetime('now')
+        "UPDATE folders SET uid_validity = ?1, total_count = ?2, messages_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE name = ?3",
         params![uid_validity, total_count, name],
     )
@@ -180,7 +180,7 @@ pub fn update_folder_sync_status(
 ) -> Result<(), String> {
     conn.execute(
         "UPDATE folders SET uid_validity = ?1, total_count = ?2, highest_modseq = ?3,
-                messages_updated_at = datetime('now')
+                messages_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE name = ?4",
         params![uid_validity, total_count, highest_modseq as i64, name],
     )
@@ -207,6 +207,17 @@ pub fn refresh_unread_count(conn: &Connection, folder_name: &str) -> Result<(), 
     Ok(())
 }
 
+/// Overwrite a folder's total_count directly.
+/// Used for Drafts where total_count should reflect thread count, not raw IMAP EXISTS.
+pub fn set_folder_total_count(conn: &Connection, folder_name: &str, count: u32) -> Result<(), String> {
+    conn.execute(
+        "UPDATE folders SET total_count = ?1 WHERE name = ?2",
+        params![count, folder_name],
+    )
+    .map_err(|e| format!("Failed to set total_count: {e}"))?;
+    Ok(())
+}
+
 /// Adjust a folder's unread count by a signed delta (positive to increase, negative to decrease).
 /// Clamps to zero to avoid negative counts.
 pub fn adjust_unread_count(conn: &Connection, folder_name: &str, delta: i32) -> Result<(), String> {
@@ -225,7 +236,7 @@ pub fn is_folder_cache_fresh(conn: &Connection, max_age_secs: u32) -> Result<boo
         .query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM folders
-                WHERE updated_at > datetime('now', ?1)
+                WHERE updated_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)
             )",
             params![format!("-{max_age_secs} seconds")],
             |row| row.get(0),
@@ -242,7 +253,7 @@ pub fn is_folder_fresh(conn: &Connection, folder_name: &str, max_age_secs: u32) 
         .query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM folders
-                WHERE name = ?1 AND messages_updated_at > datetime('now', ?2)
+                WHERE name = ?1 AND messages_updated_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?2)
             )",
             params![folder_name, format!("-{max_age_secs} seconds")],
             |row| row.get(0),

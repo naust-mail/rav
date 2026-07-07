@@ -10,6 +10,7 @@ import { ContactDialog } from "@/components/contacts/ContactDialog";
 import { createFadeSlideVariants, createScaleFadeVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { useUiStore } from "@/stores/useUiStore";
+import { cn } from "@/lib/utils";
 import type { EmailAddress } from "@/types/message";
 
 function AddressPopover({
@@ -24,6 +25,7 @@ function AddressPopover({
   const createContact = useCreateContact();
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const shouldAnimate = useUiStore((s) => s.effectiveAnimationMode) !== "off";
 
   const handleAddToContacts = useCallback(
     (data: { name: string; email: string; company?: string; notes?: string }) => {
@@ -43,7 +45,10 @@ function AddressPopover({
         <Popover.Trigger asChild>{children}</Popover.Trigger>
         <Popover.Portal>
           <Popover.Content
-            className="z-50 w-56 rounded-lg border border-border bg-background p-1 shadow-lg duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2"
+            className={cn(
+              "z-50 w-56 rounded-lg border border-border bg-background p-1 shadow-lg",
+              shouldAnimate && "duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
+            )}
             sideOffset={4}
             align="start"
           >

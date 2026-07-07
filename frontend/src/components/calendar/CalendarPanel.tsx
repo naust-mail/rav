@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useCallback } from "react";
+import { useEffect, useMemo, useRef, useCallback, useState } from "react";
 import { AnimatePresence, animate } from "framer-motion";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { useCalendarStore } from "@/stores/useCalendarStore";
@@ -15,6 +15,8 @@ import { EventForm } from "./EventForm";
 import { EventDetail } from "./EventDetail";
 import { createFadeSlideVariants } from "@/lib/motion/variants";
 import { getMotionTokens } from "@/lib/motion/config";
+import { FEATURES } from "@/lib/features";
+import type { StickerDef } from "@/types/sticker";
 
 export function CalendarPanel() {
   const viewMode = useCalendarStore((s) => s.viewMode);
@@ -28,6 +30,16 @@ export function CalendarPanel() {
 
   const weekStartsOn = settings?.week_starts_on ?? 0;
   const timeFormat = settings?.time_format ?? "12h";
+
+  // Load the sticker catalog once at panel level (not per view-switch).
+  const [stickerCatalog, setStickerCatalog] = useState<StickerDef[]>([]);
+  useEffect(() => {
+    if (!FEATURES.stickers) return;
+    fetch("/stickers/manifest.json")
+      .then((r) => r.json())
+      .then(setStickerCatalog)
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (settings?.default_view) {
@@ -126,7 +138,7 @@ export function CalendarPanel() {
               exit={panelTransition.exit}
               className="flex min-h-0 min-w-0 flex-1"
             >
-              <MonthView weekStartsOn={weekStartsOn} timeFormat={timeFormat} />
+              <MonthView weekStartsOn={weekStartsOn} timeFormat={timeFormat} stickerCatalog={stickerCatalog} />
             </AnimatedDiv>
           )}
           {viewMode === "week" && (

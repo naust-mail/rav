@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use axum::extract::Query;
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
@@ -270,12 +269,12 @@ fn parse_date_start(date_str: &str) -> Option<i64> {
 // Query parameters
 // ---------------------------------------------------------------------------
 
-/// Query parameters for `GET /api/search`.
+/// Request body for `POST /api/search`.
 #[derive(Deserialize)]
 pub struct SearchParams {
     /// The search text (required, must not be empty).
     pub q: Option<String>,
-    /// Optional folder filter.
+    /// Optional folder filter (encrypted folder ID from the UI folder picker).
     pub folder: Option<String>,
     /// Optional from address filter.
     pub from: Option<String>,
@@ -314,7 +313,7 @@ fn default_limit() -> usize {
 // Response types
 // ---------------------------------------------------------------------------
 
-/// Response envelope for `GET /api/search`.
+/// Response envelope for `POST /api/search`.
 #[derive(Serialize)]
 pub struct SearchResponse {
     pub results: Vec<SearchResultItem>,
@@ -333,6 +332,7 @@ pub struct SearchResultItem {
     pub from_name: String,
     pub to_addresses: String,
     pub date: String,
+    pub date_epoch: i64,
     pub flags: String,
     pub has_attachments: bool,
     pub snippet: String,
@@ -342,7 +342,7 @@ pub struct SearchResultItem {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// `GET /api/search?q=text&folder=INBOX&from=alice&date_from=...&date_to=...&has_attachment=true&limit=50&offset=0`
+/// `POST /api/search`
 ///
 /// Searches the user's messages using both SQLite (for header fields) and
 /// Tantivy (for body text). Results are merged and deduplicated.
@@ -350,8 +350,9 @@ pub async fn search_messages(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
-    Query(params): Query<SearchParams>,
+    Json(params): Json<SearchParams>,
 ) -> Result<Response, AppError> {
+    let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
     // Validate that `q` is provided and non-empty.
     let query_text = params
         .q
@@ -372,7 +373,12 @@ pub async fn search_messages(
     // Parse structured operators from the query string.
     let parsed = parse_search_query(&query_text);
 
-    let folder = params.folder.or(parsed.folder);
+    // params.folder is an encrypted folder ID from the UI folder picker; parsed.folder
+    // is a plaintext name from the user-typed `in:INBOX` operator.
+    let ui_folder = params.folder.as_deref()
+        .map(|id| cipher.decrypt(id))
+        .transpose()?;
+    let folder = ui_folder.or(parsed.folder);
     let from = params.from.or(parsed.from);
     let to = params.to.or(parsed.to);
     let date_from = params.date_from.or(parsed.date_from);
@@ -417,13 +423,14 @@ pub async fn search_messages(
             seen.insert((msg.folder.clone(), msg.uid));
             SearchResultItem {
                 uid: msg.uid,
-                folder: msg.folder,
+                folder: cipher.encrypt(&msg.folder),
                 score: 1.0,
                 subject: msg.subject,
                 from_address: msg.from_address,
                 from_name: msg.from_name,
                 to_addresses: msg.to_addresses,
                 date: msg.date,
+                date_epoch: msg.date_epoch,
                 flags: msg.flags,
                 has_attachments: msg.has_attachments,
                 snippet: msg.snippet,
@@ -477,13 +484,14 @@ pub async fn search_messages(
             seen.insert((msg.folder.clone(), msg.uid));
             results.push(SearchResultItem {
                 uid: msg.uid,
-                folder: msg.folder,
+                folder: cipher.encrypt(&msg.folder),
                 score,
                 subject: msg.subject,
                 from_address: msg.from_address,
                 from_name: msg.from_name,
                 to_addresses: msg.to_addresses,
                 date: msg.date,
+                date_epoch: msg.date_epoch,
                 flags: msg.flags,
                 has_attachments: msg.has_attachments,
                 snippet: if snippet.is_empty() { msg.snippet } else { snippet },
@@ -494,9 +502,7 @@ pub async fn search_messages(
     // Sort results by date.
     let sort_asc = sort_order == "date_asc";
     results.sort_by(|a, b| {
-        let da = crate::db::messages::parse_date_to_epoch_public(&a.date);
-        let db_val = crate::db::messages::parse_date_to_epoch_public(&b.date);
-        if sort_asc { da.cmp(&db_val) } else { db_val.cmp(&da) }
+        if sort_asc { a.date_epoch.cmp(&b.date_epoch) } else { b.date_epoch.cmp(&a.date_epoch) }
     });
 
     // Cap to requested limit after sorting.

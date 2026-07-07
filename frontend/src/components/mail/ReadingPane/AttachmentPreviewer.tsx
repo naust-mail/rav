@@ -10,6 +10,8 @@ import {
   ChevronLeft,
   ChevronRight,
   FileText,
+  FileAudio,
+  FileVideo,
   File,
   CalendarDays,
 } from "lucide-react";
@@ -26,7 +28,53 @@ function isCalendarType(ct: string): boolean {
 }
 
 function isPdfType(ct: string): boolean {
-  return ct.toLowerCase() === "application/pdf" || ct.toLowerCase() === 'text/rfc822-headers' || ct.toLowerCase() === 'text/plain';
+  return ct.toLowerCase() === "application/pdf";
+}
+
+function isTextType(ct: string): boolean {
+  return ct.toLowerCase().startsWith("text/") && !isCalendarType(ct);
+}
+
+function isPgpType(ct: string): boolean {
+  return ct.toLowerCase().startsWith("application/pgp");
+}
+
+function isVideoType(ct: string): boolean {
+  return ct.toLowerCase().startsWith("video/");
+}
+
+function isAudioType(ct: string): boolean {
+  return ct.toLowerCase().startsWith("audio/");
+}
+
+function ThumbnailIcon({ contentType }: { contentType: string }) {
+  if (isCalendarType(contentType)) return <CalendarDays className="size-6 text-muted-foreground" />;
+  if (isPdfType(contentType) || isTextType(contentType) || isPgpType(contentType)) return <FileText className="size-6 text-muted-foreground" />;
+  if (isVideoType(contentType)) return <FileVideo className="size-6 text-muted-foreground" />;
+  if (isAudioType(contentType)) return <FileAudio className="size-6 text-muted-foreground" />;
+  return <File className="size-6 text-muted-foreground" />;
+}
+
+function TextPreview({ url }: { url: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    fetch(url)
+      .then((r) => r.text())
+      .then(setText)
+      .catch(() => setError(true));
+  }, [url]);
+
+  if (error) return <p className="text-sm text-muted-foreground">Failed to load preview.</p>;
+  if (text === null) return <p className="text-sm text-muted-foreground">Loading...</p>;
+
+  // React renders {text} as a text node - no HTML escaping needed, no XSS risk.
+  return (
+    <pre className="h-full w-full overflow-auto rounded-md bg-muted p-4 font-mono text-xs leading-relaxed text-foreground">
+      {text}
+    </pre>
+  );
 }
 
 interface AttachmentPreviewerProps {
@@ -175,12 +223,8 @@ export function AttachmentPreviewer({
                         alt={thumb.filename ?? ""}
                         className="size-full object-cover"
                       />
-                    ) : isPdfType(thumb.content_type) ? (
-                      <FileText className="size-6 text-muted-foreground" />
-                    ) : isCalendarType(thumb.content_type) ? (
-                      <CalendarDays className="size-6 text-muted-foreground" />
                     ) : (
-                      <File className="size-6 text-muted-foreground" />
+                      <ThumbnailIcon contentType={thumb.content_type} />
                     )}
                   </button>
                 );
@@ -202,9 +246,16 @@ export function AttachmentPreviewer({
                 src={url}
                 className="h-full w-full border-none"
                 title={att.filename ?? "PDF"}
+                sandbox="allow-scripts allow-same-origin"
               />
             ) : isCalendarType(att.content_type) ? (
               <IcsPreview url={url} filename={att.filename} />
+            ) : isTextType(att.content_type) || isPgpType(att.content_type) ? (
+              <TextPreview key={url} url={url} />
+            ) : isVideoType(att.content_type) ? (
+              <video src={url} controls className="max-h-full max-w-full rounded-md" />
+            ) : isAudioType(att.content_type) ? (
+              <audio src={url} controls className="w-full max-w-md" />
             ) : (
               <div className="flex flex-col items-center gap-4 text-center">
                 <Paperclip className="size-12 text-muted-foreground" />

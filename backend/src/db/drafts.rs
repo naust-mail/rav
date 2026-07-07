@@ -1,27 +1,24 @@
 use rusqlite::{Connection, params};
-use serde::Serialize;
 
-/// A locally-saved draft message.
-#[derive(Debug, Clone, Serialize)]
-pub struct Draft {
-    pub id: String,
-    pub to_addresses: String,
-    pub cc_addresses: String,
-    pub bcc_addresses: String,
-    pub subject: String,
-    pub text_body: String,
-    pub html_body: Option<String>,
-    pub in_reply_to: Option<String>,
-    pub references_header: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
+/// Maps a client-generated draft UUID to local state that IMAP doesn't store.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct DraftStaging {
+    /// Client-generated UUID, stable across saves.
+    pub uuid: String,
+    /// IMAP UID of the current draft copy in the Drafts folder.
+    pub imap_uid: Option<u32>,
+    /// Message-ID of the message being replied to. Stable across folder moves;
+    /// resolved to a UID+folder via the local messages cache on reopen.
+    pub reply_message_id: Option<String>,
 }
 
-/// An attachment associated with a draft.
-#[derive(Debug, Clone, Serialize)]
+/// An attachment file staged for a draft.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DraftAttachment {
     pub id: String,
-    pub draft_id: String,
+    pub draft_uuid: String,
     pub filename: String,
     pub content_type: String,
     pub size: i64,
@@ -29,157 +26,104 @@ pub struct DraftAttachment {
     pub created_at: String,
 }
 
-/// Insert or update a draft. Uses INSERT OR REPLACE to upsert.
-#[allow(clippy::too_many_arguments)]
-pub fn upsert_draft(
+/// Insert or update the staging record for a draft UUID.
+/// `reply_message_id` is only set on first save; subsequent saves leave it unchanged.
+pub fn upsert_staging(
     conn: &Connection,
-    id: &str,
-    to_addresses: &str,
-    cc_addresses: &str,
-    bcc_addresses: &str,
-    subject: &str,
-    text_body: &str,
-    html_body: Option<&str>,
-    in_reply_to: Option<&str>,
-    references_header: Option<&str>,
+    uuid: &str,
+    imap_uid: Option<u32>,
+    reply_message_id: Option<&str>,
 ) -> Result<(), String> {
     conn.execute(
-        "INSERT INTO drafts (id, to_addresses, cc_addresses, bcc_addresses, subject, text_body, html_body, in_reply_to, references_header, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
-         ON CONFLICT(id) DO UPDATE SET
-             to_addresses = excluded.to_addresses,
-             cc_addresses = excluded.cc_addresses,
-             bcc_addresses = excluded.bcc_addresses,
-             subject = excluded.subject,
-             text_body = excluded.text_body,
-             html_body = excluded.html_body,
-             in_reply_to = excluded.in_reply_to,
-             references_header = excluded.references_header,
-             updated_at = datetime('now')",
-        params![
-            id,
-            to_addresses,
-            cc_addresses,
-            bcc_addresses,
-            subject,
-            text_body,
-            html_body,
-            in_reply_to,
-            references_header,
-        ],
+        "INSERT INTO draft_staging (uuid, imap_uid, reply_message_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT(uuid) DO UPDATE SET
+             imap_uid = excluded.imap_uid,
+             reply_message_id = COALESCE(draft_staging.reply_message_id, excluded.reply_message_id)",
+        params![uuid, imap_uid, reply_message_id],
     )
-    .map_err(|e| format!("Failed to upsert draft: {e}"))?;
+    .map_err(|e| format!("Failed to upsert draft_staging: {e}"))?;
     Ok(())
 }
 
-/// Retrieve a single draft by ID.
-pub fn get_draft(conn: &Connection, id: &str) -> Result<Option<Draft>, String> {
+/// Retrieve a staging record by UUID.
+pub fn get_staging(conn: &Connection, uuid: &str) -> Result<Option<DraftStaging>, String> {
     let result = conn.query_row(
-        "SELECT id, to_addresses, cc_addresses, bcc_addresses, subject, text_body, html_body, in_reply_to, references_header, created_at, updated_at
-         FROM drafts WHERE id = ?1",
-        params![id],
-        |row| {
-            Ok(Draft {
-                id: row.get(0)?,
-                to_addresses: row.get(1)?,
-                cc_addresses: row.get(2)?,
-                bcc_addresses: row.get(3)?,
-                subject: row.get(4)?,
-                text_body: row.get(5)?,
-                html_body: row.get(6)?,
-                in_reply_to: row.get(7)?,
-                references_header: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        },
+        "SELECT uuid, imap_uid, reply_message_id FROM draft_staging WHERE uuid = ?1",
+        params![uuid],
+        |row| Ok(DraftStaging {
+            uuid: row.get(0)?,
+            imap_uid: row.get(1)?,
+            reply_message_id: row.get(2)?,
+        }),
     );
-
     match result {
-        Ok(draft) => Ok(Some(draft)),
+        Ok(s) => Ok(Some(s)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(format!("Failed to get draft: {e}")),
+        Err(e) => Err(format!("Failed to get draft_staging: {e}")),
     }
 }
 
-/// List all drafts, ordered by updated_at descending.
-pub fn list_drafts(conn: &Connection) -> Result<Vec<Draft>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, to_addresses, cc_addresses, bcc_addresses, subject, text_body, html_body, in_reply_to, references_header, created_at, updated_at
-             FROM drafts ORDER BY updated_at DESC",
-        )
-        .map_err(|e| format!("Failed to prepare list_drafts: {e}"))?;
-
-    let rows = stmt
-        .query_map([], |row| {
-            Ok(Draft {
-                id: row.get(0)?,
-                to_addresses: row.get(1)?,
-                cc_addresses: row.get(2)?,
-                bcc_addresses: row.get(3)?,
-                subject: row.get(4)?,
-                text_body: row.get(5)?,
-                html_body: row.get(6)?,
-                in_reply_to: row.get(7)?,
-                references_header: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
-            })
-        })
-        .map_err(|e| format!("Failed to query drafts: {e}"))?;
-
-    let mut drafts = Vec::new();
-    for row in rows {
-        drafts.push(row.map_err(|e| format!("Failed to read draft row: {e}"))?);
+/// Find a staging record by the Message-ID of the message being replied to.
+pub fn find_by_reply_message_id(conn: &Connection, reply_message_id: &str) -> Result<Option<DraftStaging>, String> {
+    let result = conn.query_row(
+        "SELECT uuid, imap_uid, reply_message_id FROM draft_staging WHERE reply_message_id = ?1",
+        params![reply_message_id],
+        |row| Ok(DraftStaging {
+            uuid: row.get(0)?,
+            imap_uid: row.get(1)?,
+            reply_message_id: row.get(2)?,
+        }),
+    );
+    match result {
+        Ok(s) => Ok(Some(s)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Failed to find draft_staging by reply_message_id: {e}")),
     }
-    Ok(drafts)
 }
 
-/// Delete a draft by ID. Cascade will handle attachments in DB.
-pub fn delete_draft(conn: &Connection, id: &str) -> Result<bool, String> {
-    let deleted = conn
-        .execute("DELETE FROM drafts WHERE id = ?1", params![id])
-        .map_err(|e| format!("Failed to delete draft: {e}"))?;
-    Ok(deleted > 0)
+/// Delete a staging record. Cascades to draft_attachments.
+pub fn delete_staging(conn: &Connection, uuid: &str) -> Result<bool, String> {
+    let n = conn
+        .execute("DELETE FROM draft_staging WHERE uuid = ?1", params![uuid])
+        .map_err(|e| format!("Failed to delete draft_staging: {e}"))?;
+    Ok(n > 0)
 }
 
 /// Add an attachment record for a draft.
 pub fn add_draft_attachment(
     conn: &Connection,
     id: &str,
-    draft_id: &str,
+    draft_uuid: &str,
     filename: &str,
     content_type: &str,
     size: i64,
     file_path: &str,
 ) -> Result<(), String> {
+    // Ensure staging row exists so the FK doesn't fail.
+    upsert_staging(conn, draft_uuid, None, None)?;
     conn.execute(
-        "INSERT INTO draft_attachments (id, draft_id, filename, content_type, size, file_path)
+        "INSERT INTO draft_attachments (id, draft_uuid, filename, content_type, size, file_path)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, draft_id, filename, content_type, size, file_path],
+        params![id, draft_uuid, filename, content_type, size, file_path],
     )
     .map_err(|e| format!("Failed to add draft attachment: {e}"))?;
     Ok(())
 }
 
-/// Get all attachments for a draft.
-pub fn get_draft_attachments(
-    conn: &Connection,
-    draft_id: &str,
-) -> Result<Vec<DraftAttachment>, String> {
+/// Get all attachments for a draft UUID.
+pub fn get_draft_attachments(conn: &Connection, draft_uuid: &str) -> Result<Vec<DraftAttachment>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, draft_id, filename, content_type, size, file_path, created_at
-             FROM draft_attachments WHERE draft_id = ?1 ORDER BY created_at ASC",
+            "SELECT id, draft_uuid, filename, content_type, size, file_path, created_at
+             FROM draft_attachments WHERE draft_uuid = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| format!("Failed to prepare get_draft_attachments: {e}"))?;
 
     let rows = stmt
-        .query_map(params![draft_id], |row| {
+        .query_map(params![draft_uuid], |row| {
             Ok(DraftAttachment {
                 id: row.get(0)?,
-                draft_id: row.get(1)?,
+                draft_uuid: row.get(1)?,
                 filename: row.get(2)?,
                 content_type: row.get(3)?,
                 size: row.get(4)?,
@@ -189,19 +133,19 @@ pub fn get_draft_attachments(
         })
         .map_err(|e| format!("Failed to query draft attachments: {e}"))?;
 
-    let mut attachments = Vec::new();
+    let mut out = Vec::new();
     for row in rows {
-        attachments.push(row.map_err(|e| format!("Failed to read attachment row: {e}"))?);
+        out.push(row.map_err(|e| format!("Failed to read attachment row: {e}"))?);
     }
-    Ok(attachments)
+    Ok(out)
 }
 
 /// Delete a single attachment by ID.
 pub fn delete_draft_attachment(conn: &Connection, id: &str) -> Result<bool, String> {
-    let deleted = conn
+    let n = conn
         .execute("DELETE FROM draft_attachments WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to delete draft attachment: {e}"))?;
-    Ok(deleted > 0)
+    Ok(n > 0)
 }
 
 #[cfg(test)]
@@ -210,143 +154,41 @@ mod tests {
     use crate::db::pool::open_test_db;
 
     #[test]
-    fn test_upsert_and_get_draft() {
+    fn test_upsert_and_get_staging() {
         let conn = open_test_db();
+        upsert_staging(&conn, "uuid-1", None, None).unwrap();
+        let s = get_staging(&conn, "uuid-1").unwrap().unwrap();
+        assert_eq!(s.uuid, "uuid-1");
+        assert!(s.imap_uid.is_none());
 
-        upsert_draft(
-            &conn,
-            "draft-1",
-            "bob@example.com",
-            "",
-            "",
-            "Hello",
-            "Hi Bob",
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-
-        let draft = get_draft(&conn, "draft-1").unwrap().unwrap();
-        assert_eq!(draft.id, "draft-1");
-        assert_eq!(draft.to_addresses, "bob@example.com");
-        assert_eq!(draft.subject, "Hello");
-        assert_eq!(draft.text_body, "Hi Bob");
-        assert!(draft.html_body.is_none());
+        upsert_staging(&conn, "uuid-1", Some(42), None).unwrap();
+        let s = get_staging(&conn, "uuid-1").unwrap().unwrap();
+        assert_eq!(s.imap_uid, Some(42));
     }
 
     #[test]
-    fn test_upsert_updates_existing() {
+    fn test_delete_staging() {
         let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-1", "bob@example.com", "", "", "v1", "body1", None, None, None).unwrap();
-        upsert_draft(&conn, "draft-1", "carol@example.com", "", "", "v2", "body2", None, None, None).unwrap();
-
-        let draft = get_draft(&conn, "draft-1").unwrap().unwrap();
-        assert_eq!(draft.to_addresses, "carol@example.com");
-        assert_eq!(draft.subject, "v2");
-        assert_eq!(draft.text_body, "body2");
+        upsert_staging(&conn, "uuid-1", Some(1), None).unwrap();
+        assert!(delete_staging(&conn, "uuid-1").unwrap());
+        assert!(get_staging(&conn, "uuid-1").unwrap().is_none());
+        assert!(!delete_staging(&conn, "uuid-1").unwrap());
     }
 
     #[test]
-    fn test_list_drafts_returns_all() {
+    fn test_attachments_cascade_on_staging_delete() {
         let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-a", "", "", "", "First", "", None, None, None).unwrap();
-        upsert_draft(&conn, "draft-b", "", "", "", "Second", "", None, None, None).unwrap();
-
-        let drafts = list_drafts(&conn).unwrap();
-        assert_eq!(drafts.len(), 2);
-        let ids: Vec<&str> = drafts.iter().map(|d| d.id.as_str()).collect();
-        assert!(ids.contains(&"draft-a"));
-        assert!(ids.contains(&"draft-b"));
+        add_draft_attachment(&conn, "att-1", "uuid-1", "file.pdf", "application/pdf", 100, "/path").unwrap();
+        assert_eq!(get_draft_attachments(&conn, "uuid-1").unwrap().len(), 1);
+        delete_staging(&conn, "uuid-1").unwrap();
+        assert!(get_draft_attachments(&conn, "uuid-1").unwrap().is_empty());
     }
 
     #[test]
-    fn test_delete_draft() {
+    fn test_add_attachment_auto_creates_staging() {
         let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-1", "", "", "", "Test", "", None, None, None).unwrap();
-        assert!(get_draft(&conn, "draft-1").unwrap().is_some());
-
-        let deleted = delete_draft(&conn, "draft-1").unwrap();
-        assert!(deleted);
-        assert!(get_draft(&conn, "draft-1").unwrap().is_none());
-    }
-
-    #[test]
-    fn test_delete_nonexistent_draft() {
-        let conn = open_test_db();
-        let deleted = delete_draft(&conn, "no-such-draft").unwrap();
-        assert!(!deleted);
-    }
-
-    #[test]
-    fn test_get_nonexistent_draft() {
-        let conn = open_test_db();
-        assert!(get_draft(&conn, "no-such-draft").unwrap().is_none());
-    }
-
-    #[test]
-    fn test_add_and_get_attachments() {
-        let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-1", "", "", "", "Test", "", None, None, None).unwrap();
-
-        add_draft_attachment(
-            &conn,
-            "att-1",
-            "draft-1",
-            "file.pdf",
-            "application/pdf",
-            1024,
-            "/data/abc/attachments/draft-1/att-1",
-        )
-        .unwrap();
-
-        add_draft_attachment(
-            &conn,
-            "att-2",
-            "draft-1",
-            "photo.jpg",
-            "image/jpeg",
-            2048,
-            "/data/abc/attachments/draft-1/att-2",
-        )
-        .unwrap();
-
-        let atts = get_draft_attachments(&conn, "draft-1").unwrap();
-        assert_eq!(atts.len(), 2);
-        assert_eq!(atts[0].filename, "file.pdf");
-        assert_eq!(atts[0].size, 1024);
-        assert_eq!(atts[1].filename, "photo.jpg");
-    }
-
-    #[test]
-    fn test_delete_attachment() {
-        let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-1", "", "", "", "Test", "", None, None, None).unwrap();
-        add_draft_attachment(&conn, "att-1", "draft-1", "file.pdf", "application/pdf", 100, "/path").unwrap();
-
-        let deleted = delete_draft_attachment(&conn, "att-1").unwrap();
-        assert!(deleted);
-
-        let atts = get_draft_attachments(&conn, "draft-1").unwrap();
-        assert!(atts.is_empty());
-    }
-
-    #[test]
-    fn test_cascade_delete_attachments_on_draft_delete() {
-        let conn = open_test_db();
-
-        upsert_draft(&conn, "draft-1", "", "", "", "Test", "", None, None, None).unwrap();
-        add_draft_attachment(&conn, "att-1", "draft-1", "file.pdf", "application/pdf", 100, "/path").unwrap();
-        add_draft_attachment(&conn, "att-2", "draft-1", "pic.jpg", "image/jpeg", 200, "/path2").unwrap();
-
-        delete_draft(&conn, "draft-1").unwrap();
-
-        let atts = get_draft_attachments(&conn, "draft-1").unwrap();
-        assert!(atts.is_empty());
+        assert!(get_staging(&conn, "uuid-2").unwrap().is_none());
+        add_draft_attachment(&conn, "att-1", "uuid-2", "f.txt", "text/plain", 10, "/p").unwrap();
+        assert!(get_staging(&conn, "uuid-2").unwrap().is_some());
     }
 }

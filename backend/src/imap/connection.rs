@@ -1,3 +1,7 @@
+use tracing::warn;
+
+use crate::error::ConnectError;
+
 use super::error::ImapError;
 use super::types::ImapCredentials;
 
@@ -23,14 +27,23 @@ pub(crate) async fn connect(
     // 10 second timeout for the initial TCP connection
     let tcp = tokio::time::timeout(std::time::Duration::from_secs(10), connect_future)
         .await
-        .map_err(|_| ImapError::ConnectionFailed("connection timed out".to_string()))?
-        .map_err(|e| ImapError::ConnectionFailed(e.to_string()))?;
+        .map_err(|_| {
+            warn!(host = connect_host, port = creds.port, "IMAP TCP connect timed out");
+            ImapError::ConnectionFailed(ConnectError::Timeout)
+        })?
+        .map_err(|e| {
+            warn!(error = %e, host = connect_host, port = creds.port, "IMAP TCP connect failed");
+            ImapError::ConnectionFailed(ConnectError::from_io(&e))
+        })?;
 
     if creds.tls {
         let tls_stream = tls_connector
             .connect(&creds.host, tcp)
             .await
-            .map_err(|e| ImapError::ConnectionFailed(e.to_string()))?;
+            .map_err(|e| {
+                warn!(error = %e, host = creds.host, port = creds.port, "IMAP TLS handshake failed");
+                ImapError::ConnectionFailed(ConnectError::TlsHandshake)
+            })?;
         let client = async_imap::Client::new(ImapStream::Tls(tls_stream));
         let session = client
             .login(&creds.email, &creds.password)
@@ -51,11 +64,18 @@ pub(crate) async fn connect(
 pub(crate) fn classify_login_error(err: async_imap::error::Error) -> ImapError {
     match err {
         async_imap::error::Error::No(_) => ImapError::AuthenticationFailed,
-        async_imap::error::Error::Io(e) => ImapError::ConnectionFailed(e.to_string()),
-        async_imap::error::Error::ConnectionLost => {
-            ImapError::ConnectionFailed("connection lost".to_string())
+        async_imap::error::Error::Io(e) => {
+            warn!(error = %e, "IMAP I/O error during session login");
+            ImapError::ConnectionFailed(ConnectError::from_io(&e))
         }
-        other => ImapError::ProtocolError(other.to_string()),
+        async_imap::error::Error::ConnectionLost => {
+            warn!("IMAP connection lost during session login");
+            ImapError::ConnectionFailed(ConnectError::Unreachable)
+        }
+        other => {
+            warn!(error = %other, "Unexpected IMAP error during session login");
+            ImapError::ConnectionFailed(ConnectError::BadServerResponse)
+        }
     }
 }
 
@@ -63,9 +83,13 @@ pub(crate) fn classify_login_error(err: async_imap::error::Error) -> ImapError {
 pub(crate) fn map_imap_error(err: async_imap::error::Error) -> ImapError {
     match err {
         async_imap::error::Error::No(msg) => ImapError::ProtocolError(format!("NO: {msg}")),
-        async_imap::error::Error::Io(e) => ImapError::ConnectionFailed(e.to_string()),
+        async_imap::error::Error::Io(e) => {
+            warn!(error = %e, "IMAP I/O error");
+            ImapError::ConnectionFailed(ConnectError::from_io(&e))
+        }
         async_imap::error::Error::ConnectionLost => {
-            ImapError::ConnectionFailed("connection lost".to_string())
+            warn!("IMAP connection lost");
+            ImapError::ConnectionFailed(ConnectError::Unreachable)
         }
         other => ImapError::ProtocolError(other.to_string()),
     }

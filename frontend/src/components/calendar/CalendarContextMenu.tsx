@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence } from "framer-motion";
-import { Pencil, Trash2, Plus } from "lucide-react";
+import { Pencil, Trash2, Plus, Smile } from "lucide-react";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { createScaleFadeVariants } from "@/lib/motion/variants";
 import { useUiStore } from "@/stores/useUiStore";
@@ -27,13 +27,15 @@ type CalendarContextMenuProps = {
   state: CalendarContextMenuState | null;
   onClose: () => void;
   timeFormat: string;
+  /** When provided, shows "Add sticker" on day cells. */
+  onAddSticker?: (date: Date) => void;
 };
 
 const MENU_WIDTH = 188;
 const MENU_MAX_HEIGHT = 160;
 const MARGIN = 8;
 
-export function CalendarContextMenu({ state, onClose, timeFormat }: CalendarContextMenuProps) {
+export function CalendarContextMenu({ state, onClose, timeFormat, onAddSticker }: CalendarContextMenuProps) {
   const openEventForm = useCalendarStore((s) => s.openEventForm);
   const setDate = useCalendarStore((s) => s.setDate);
   const selectEvent = useCalendarStore((s) => s.selectEvent);
@@ -163,20 +165,32 @@ export function CalendarContextMenu({ state, onClose, timeFormat }: CalendarCont
           )}
 
           {state.type === "day" && (
-            <button
-              type="button"
-              onClick={() => {
-                setDate(state.date);
-                openEventForm();
-                handleClose();
-              }}
-              className="flex w-full items-center gap-2.5 px-3 py-1.5 text-sm text-foreground hover:bg-accent"
-            >
-              <Plus className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">
-                New event on {state.date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-              </span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setDate(state.date);
+                  openEventForm();
+                  handleClose();
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-1.5 text-sm text-foreground hover:bg-accent"
+              >
+                <Plus className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">
+                  New event on {state.date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </span>
+              </button>
+              {onAddSticker && (
+                <button
+                  type="button"
+                  onClick={() => onAddSticker(state.date)}
+                  className="flex w-full items-center gap-2.5 px-3 py-1.5 text-sm text-foreground hover:bg-accent"
+                >
+                  <Smile className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">Add sticker</span>
+                </button>
+              )}
+            </>
           )}
         </AnimatedDiv>
       )}

@@ -650,10 +650,7 @@ async fn fetch_and_store_headers(
     min_uid: u32,
 ) -> u32 {
     let fetches: Option<Vec<_>> = match session
-        .uid_fetch(
-            uid_range,
-            "(UID ENVELOPE FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Message-ID In-Reply-To References Content-Class x-ms-exchange-generated-message-class)])",
-        )
+        .uid_fetch(uid_range, crate::imap::client::HEADER_FETCH_ITEMS)
         .await
     {
         Ok(stream) => {
@@ -782,6 +779,14 @@ async fn fetch_and_store_headers(
             let cc_json = serde_json::to_string(&cc).unwrap_or_else(|_| "[]".to_string());
             let subject_str = subject.as_deref().unwrap_or("");
             let date_str = date.as_deref().unwrap_or("");
+            let date_epoch = {
+                let from_header = db::messages::parse_date_epoch(date_str);
+                if from_header > 0 {
+                    from_header
+                } else {
+                    fetch.internal_date().map(|d| d.timestamp()).unwrap_or(0)
+                }
+            };
             let flags_csv = flags.join(",");
 
             if let Err(e) = db::messages::upsert_message(
@@ -797,6 +802,7 @@ async fn fetch_and_store_headers(
                 &to_json,
                 &cc_json,
                 date_str,
+                date_epoch,
                 &flags_csv,
                 size,
                 has_attach,
@@ -960,6 +966,7 @@ async fn process_new_messages(
                                 references: None,
                                 attachments: vec![],
                                 auto_submitted: true,
+                                pgp: None,
                             };
                             if let Err(e) = smtp_client.send_message(&smtp_creds, &reply).await {
                                 tracing::warn!(
@@ -991,61 +998,128 @@ async fn process_new_messages(
         return;
     }
 
-    for msg in &new_messages {
+    let sieve_active = config.sieve_host.is_some();
+
+    'msg: for msg in &new_messages {
         let matched = db::filters::matching_rules(
             &conn,
-            &msg.from_address,
-            &msg.to_addresses,
-            &msg.subject,
-            msg.has_attachments,
+            &db::filters::MessageContext {
+                from_address: &msg.from_address,
+                to_addresses: &msg.to_addresses,
+                cc_addresses: &msg.cc_addresses,
+                subject: &msg.subject,
+                body_snippet: &msg.snippet,
+                size: msg.size,
+                has_attachments: msg.has_attachments,
+                is_reply: msg.in_reply_to.is_some(),
+            },
         );
         let matched = match matched {
             Ok(m) => m,
             Err(e) => { tracing::warn!(error = %e, "filters: matching_rules error"); continue; }
         };
 
-        if let Some(rule) = matched.into_iter().next() {
-            match rule.action.action_type.as_str() {
-                "mark_read" => {
-                    if let Err(e) = imap_client
-                        .add_flags(creds, "INBOX", msg.uid, &["\\Seen"])
-                        .await
-                    {
-                        tracing::warn!(error = %e, uid = msg.uid, "filter mark_read failed");
-                    } else {
-                        let _ = db::messages::update_message_flags(
-                            &conn, "INBOX", msg.uid, "\\Seen",
-                        );
-                    }
-                }
-                "move" => {
-                    if let Some(ref target) = rule.action.action_value {
+        for rule in matched {
+            if sieve_active && crate::sieve::is_sieve_capable(&rule) {
+                continue;
+            }
+            for action in &rule.actions {
+                match action.action_type.as_str() {
+                    "mark_read" => {
                         if let Err(e) = imap_client
-                            .move_message(creds, "INBOX", msg.uid, target)
+                            .add_flags(creds, "INBOX", msg.uid, &["\\Seen"])
                             .await
                         {
-                            tracing::warn!(error = %e, uid = msg.uid, target = %target, "filter move failed");
+                            tracing::warn!(error = %e, uid = msg.uid, "filter mark_read failed");
                         } else {
-                            let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                            let _ = db::messages::update_message_flags(
+                                &conn, "INBOX", msg.uid, "\\Seen",
+                            );
                         }
                     }
-                }
-                "delete" => {
-                    if let Err(e) = imap_client
-                        .move_message(creds, "INBOX", msg.uid, "Trash")
-                        .await
-                    {
-                        tracing::warn!(error = %e, uid = msg.uid, "filter delete failed");
-                    } else {
-                        let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                    "mark_starred" => {
+                        if let Err(e) = imap_client
+                            .add_flags(creds, "INBOX", msg.uid, &["\\Flagged"])
+                            .await
+                        {
+                            tracing::warn!(error = %e, uid = msg.uid, "filter mark_starred failed");
+                        } else {
+                            let _ = db::messages::update_message_flags(
+                                &conn, "INBOX", msg.uid, "\\Flagged",
+                            );
+                        }
                     }
-                }
-                "tag" => {
-                    if let Some(ref tag_id) = rule.action.action_value {
-                        let _ = db::tags::add_tag_to_message(&conn, tag_id, msg.uid, "INBOX");
+                    "move" => {
+                        if let Some(ref target) = action.action_value {
+                            if let Err(e) = imap_client
+                                .move_message(creds, "INBOX", msg.uid, target)
+                                .await
+                            {
+                                tracing::warn!(error = %e, uid = msg.uid, target = %target, "filter move failed");
+                            } else {
+                                let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                                // Message is no longer in INBOX; skip remaining actions.
+                                continue 'msg;
+                            }
+                        }
                     }
+                    "delete" => {
+                        if let Err(e) = imap_client
+                            .move_message(creds, "INBOX", msg.uid, "Trash")
+                            .await
+                        {
+                            tracing::warn!(error = %e, uid = msg.uid, "filter delete failed");
+                        } else {
+                            let _ = db::messages::delete_message(&conn, "INBOX", msg.uid);
+                            continue 'msg;
+                        }
+                    }
+                    "tag" => {
+                        if let Some(ref tag_id) = action.action_value {
+                            let _ = db::tags::add_tag_to_message(&conn, tag_id, msg.uid, "INBOX");
+                        }
+                    }
+                    "forward" => {
+                        if let Some(ref forward_to) = action.action_value {
+                            let smtp_host = config.smtp_host.as_deref().unwrap_or_default();
+                            if !smtp_host.is_empty() {
+                                let smtp_creds = SmtpCredentials {
+                                    host: smtp_host.to_string(),
+                                    connect_host: transport.smtp_connect_host.clone(),
+                                    port: config.smtp_port,
+                                    tls: config.tls_enabled,
+                                    email: creds.email.clone(),
+                                    password: creds.password.clone(),
+                                    tls_params: transport.smtp_tls_params.clone(),
+                                };
+                                let fwd = SendableMessage {
+                                    from: creds.email.clone(),
+                                    to: vec![forward_to.clone()],
+                                    cc: vec![],
+                                    bcc: vec![],
+                                    subject: format!("Fwd: {}", msg.subject),
+                                    text_body: format!(
+                                        "---------- Forwarded message ----------\nFrom: {}\nSubject: {}\n\n{}",
+                                        msg.from_address, msg.subject, msg.snippet
+                                    ),
+                                    html_body: None,
+                                    in_reply_to: None,
+                                    references: None,
+                                    attachments: vec![],
+                                    auto_submitted: false,
+                                    pgp: None,
+                                };
+                                if let Err(e) = smtp_client.send_message(&smtp_creds, &fwd).await {
+                                    tracing::warn!(error = %e, uid = msg.uid, to = %forward_to, "filter forward failed");
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+            }
+            if rule.stop_processing {
+                break;
             }
         }
     }

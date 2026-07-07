@@ -1,15 +1,47 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { InfiniteData } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPatch, apiDelete } from "@/lib/api";
 import { useWsStatus } from "@/lib/ws-context";
 import type { FoldersResponse } from "@/types/folder";
+import type { MessagesResponse } from "@/types/message";
+
+const PREVIEW_PER_PAGE = 20;
 
 export function useFolders() {
+  const queryClient = useQueryClient();
   const { status } = useWsStatus();
   return useQuery({
     queryKey: ["folders"],
-    queryFn: () => apiGet<FoldersResponse>("/folders"),
+    queryFn: async () => {
+      const data = await apiGet<FoldersResponse>("/folders");
+      // Seed each folder's message cache with the preview data so clicking a
+      // folder shows content immediately without a separate round trip.
+      for (const folder of data.folders) {
+        if (folder.recent_messages.length === 0) continue;
+        queryClient.setQueryData<InfiniteData<MessagesResponse>>(
+          ["messages", folder.name],
+          (existing) => {
+            // Don't overwrite a cache entry that's already been populated by
+            // a real messages fetch (which may have fresher or more data).
+            if (existing) return existing;
+            return {
+              pages: [
+                {
+                  messages: folder.recent_messages,
+                  total_count: folder.total_count,
+                  page: 0,
+                  per_page: PREVIEW_PER_PAGE,
+                },
+              ],
+              pageParams: [0],
+            };
+          },
+        );
+      }
+      return data;
+    },
     refetchInterval: status === "connected" ? false : 30_000,
   });
 }

@@ -22,6 +22,7 @@ import { useUiStore } from "@/stores/useUiStore";
 import { useUpdateDisplayPreferences } from "@/hooks/useDisplayPreferences";
 import { ConnectionStatus } from "@/components/shared/ConnectionStatus";
 import { useWsStatus } from "@/lib/ws-context";
+import { useQueryClient } from "@tanstack/react-query";
 
 type NavButtonClickEvent = MouseEvent<Element>;
 
@@ -39,6 +40,7 @@ function NavButton({
   onClick?: (event: NavButtonClickEvent) => void;
 }) {
   const tooltipLabel = disabled ? `${label} (coming soon)` : label;
+  const shouldAnimate = useUiStore((s) => s.effectiveAnimationMode) !== "off";
 
   return (
     <Tooltip.Root>
@@ -62,7 +64,10 @@ function NavButton({
         <Tooltip.Content
           side="right"
           sideOffset={8}
-          className="rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md border border-border animate-in fade-in-0 zoom-in-95"
+          className={cn(
+            "rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md border border-border",
+            shouldAnimate && "animate-in fade-in-0 zoom-in-95",
+          )}
         >
           {tooltipLabel}
         </Tooltip.Content>
@@ -85,6 +90,7 @@ const THEME_STORAGE_KEY = "oxi-theme";
 export function NavRail() {
   const { status: wsStatus, failCount: wsFailCount } = useWsStatus();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const viewMode = useUiStore((s) => s.viewMode);
   const setViewMode = useUiStore((s) => s.setViewMode);
   const setTheme = useUiStore((s) => s.setTheme);
@@ -111,8 +117,9 @@ export function NavRail() {
     } catch {
       // Even if the API call fails, redirect to login
     }
+    queryClient.clear();
     router.replace("/");
-  }, [router]);
+  }, [router, queryClient]);
 
   return (
     <Tooltip.Provider delayDuration={400}>
@@ -140,7 +147,10 @@ export function NavRail() {
               <Tooltip.Content
                 side="right"
                 sideOffset={8}
-                className="rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md border border-border animate-in fade-in-0 zoom-in-95"
+                className={cn(
+                  "rounded-md bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md border border-border",
+                  effectiveAnimationMode !== "off" && "animate-in fade-in-0 zoom-in-95",
+                )}
               >
                 Compose new message (C)
               </Tooltip.Content>

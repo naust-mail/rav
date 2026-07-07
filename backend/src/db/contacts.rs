@@ -330,8 +330,8 @@ pub fn increment_contact_count(conn: &Connection, email: &str) -> Result<(), Str
     conn.execute(
         "UPDATE contacts
          SET contact_count = contact_count + 1,
-             last_contacted = datetime('now'),
-             updated_at = datetime('now')
+             last_contacted = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE email = ?1",
         params![email],
     )

@@ -100,7 +100,7 @@ async fn run_sync(
             let _ = db::folders::invalidate_folder_freshness(&conn, folder_name);
             any_changes = true;
             event_bus
-                .publish(user_hash, MailEvent::FolderUpdated)
+                .publish(user_hash, MailEvent::FolderUpdated { folder: Some(folder_name.to_string()) })
                 .await;
             continue;
         }
@@ -142,7 +142,7 @@ async fn run_sync(
     }
 
     if any_changes {
-        event_bus.publish(user_hash, MailEvent::FolderUpdated).await;
+        event_bus.publish(user_hash, MailEvent::FolderUpdated { folder: None }).await;
     }
 
     // ── Deep index phase: fetch & index bodies if enabled ────────────
@@ -237,7 +237,7 @@ async fn index_message_bodies(
                     from_name: msg.from_name,
                     to_addresses: msg.to_addresses,
                     body_text: text.clone(),
-                    date_epoch: db::messages::parse_date_to_epoch_public(&msg.date),
+                    date_epoch: msg.date_epoch,
                     has_attachments: msg.has_attachments,
                 };
                 let _ = user_index.index_message(&indexable);

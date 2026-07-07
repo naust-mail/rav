@@ -9,6 +9,10 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
 use crate::imap::client::{ImapClient, ImapCredentials};
+use crate::routes::messages::types::MessageSummary;
+
+/// How many recent messages to embed per folder in the list response.
+const FOLDER_PREVIEW_LIMIT: u32 = 20;
 
 /// Response envelope for `GET /api/folders`.
 #[derive(Serialize)]
@@ -16,15 +20,19 @@ struct FoldersResponse {
     folders: Vec<FolderEntry>,
 }
 
-/// A single folder in the response.
+/// A single folder in the response, including a preview of its most recent messages.
 #[derive(Serialize)]
 struct FolderEntry {
+    /// Opaque encrypted folder ID for use in subsequent API requests.
+    id: String,
     name: String,
     delimiter: Option<String>,
     attributes: Vec<String>,
     is_subscribed: bool,
     total_count: u32,
     unread_count: u32,
+    /// Top N most recent messages, ready to seed the client cache.
+    recent_messages: Vec<MessageSummary>,
 }
 
 /// How many seconds the folder list cache is considered fresh.
@@ -111,22 +119,67 @@ pub async fn list_folders(
     let cached = db::folders::get_all_folders(&conn)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
-    // Build response from cached data (includes any stored counts).
+    let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
+
+    // Fetch threaded message previews for every folder, then batch-fetch their tags.
+    let mut folder_previews: Vec<(String, Vec<db::messages::ThreadedMessage>)> = Vec::new();
+    for f in &cached {
+        let previews = db::messages::get_threaded_messages(&conn, &f.name, 0, FOLDER_PREVIEW_LIMIT)
+            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        folder_previews.push((f.name.clone(), previews));
+    }
+
+    // One tags lookup covering all preview messages across all folders.
+    let all_refs: Vec<(u32, &str)> = folder_previews
+        .iter()
+        .flat_map(|(_, msgs)| msgs.iter().map(|t| (t.msg.uid, t.msg.folder.as_str())))
+        .collect();
+    let tags_map = db::tags::get_tags_for_messages(&conn, &all_refs).unwrap_or_default();
+
     let folders: Vec<FolderEntry> = cached
         .into_iter()
-        .map(|f| {
+        .zip(folder_previews)
+        .map(|(f, (_, previews))| {
             let attributes: Vec<String> = if f.flags.is_empty() {
                 vec![]
             } else {
                 f.flags.split(',').map(|s| s.to_string()).collect()
             };
+            let recent_messages: Vec<MessageSummary> = previews
+                .into_iter()
+                .map(|t| {
+                    let msg_tags = tags_map
+                        .get(&(t.msg.uid, t.msg.folder.clone()))
+                        .cloned()
+                        .unwrap_or_default();
+                    MessageSummary {
+                        uid: t.msg.uid,
+                        folder: cipher.encrypt(&t.msg.folder),
+                        subject: t.msg.subject,
+                        from_address: t.msg.from_address,
+                        from_name: t.msg.from_name,
+                        to_addresses: t.msg.to_addresses,
+                        date: t.msg.date,
+                        flags: t.msg.flags,
+                        size: t.msg.size,
+                        has_attachments: t.msg.has_attachments,
+                        snippet: t.msg.snippet,
+                        reaction: t.msg.reaction,
+                        tags: msg_tags,
+                        thread_count: t.thread_count,
+                        unread_count: t.unread_count,
+                    }
+                })
+                .collect();
             FolderEntry {
+                id: cipher.encrypt(&f.name),
                 name: f.name,
                 delimiter: f.delimiter,
                 attributes,
                 is_subscribed: f.is_subscribed,
                 total_count: f.total_count,
                 unread_count: f.unread_count,
+                recent_messages,
             }
         })
         .collect();

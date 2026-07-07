@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, useEffect, useRef, useMemo } from "react";
+import { useState, type FormEvent, useRef, useMemo } from "react";
 import { Dialog } from "radix-ui";
 import { AnimatePresence } from "framer-motion";
 import { X, Loader2 } from "lucide-react";
@@ -40,20 +40,13 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
   const contentMotionProps = useMemo(() => createScaleFadeVariants(effectiveAnimationMode), [effectiveAnimationMode]);
   const emailInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setEmail("");
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPassword("");
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setError(null);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setRemember(false);
-      const timer = setTimeout(() => emailInputRef.current?.focus(), 50);
-      return () => clearTimeout(timer);
-    }
-  }, [open]);
+  function handleClose() {
+    setEmail("");
+    setPassword("");
+    setError(null);
+    setRemember(false);
+    onClose();
+  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -81,7 +74,7 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
       setAccounts(accountsData.accounts);
       setActiveAccount(response.account.id);
       queryClient.clear();
-      onClose();
+      handleClose();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "An unexpected error occurred",
@@ -92,7 +85,7 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
   }
 
   return (
-    <Dialog.Root open={open} onOpenChange={(o) => !o && onClose()}>
+    <Dialog.Root open={open} onOpenChange={(o) => !o && handleClose()}>
       <Dialog.Portal forceMount>
         <AnimatePresence>
           {open ? (
@@ -108,7 +101,10 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
                   className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
                 />
               </Dialog.Overlay>
-              <Dialog.Content asChild>
+              <Dialog.Content
+                asChild
+                onOpenAutoFocus={(e) => { e.preventDefault(); emailInputRef.current?.focus(); }}
+              >
                 <AnimatedDiv
                   data-testid="add-account-content-transition"
                   variants={contentMotionProps}

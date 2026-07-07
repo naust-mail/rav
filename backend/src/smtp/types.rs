@@ -1,5 +1,7 @@
 //! SMTP data types.
 
+use serde::Deserialize;
+
 /// Parameters needed to establish an SMTP connection.
 /// Passed explicitly to every trait method so the trait stays stateless.
 #[derive(Clone)]
@@ -32,6 +34,27 @@ impl std::fmt::Debug for SmtpCredentials {
     }
 }
 
+/// Whether to sign or sign+encrypt an outbound PGP/MIME message.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PgpMode {
+    Sign,
+    Encrypt,
+}
+
+/// Parameters for PGP/MIME message wrapping.
+/// Set by the client after performing crypto in the browser worker.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PgpSendParams {
+    pub mode: PgpMode,
+    /// Armored detached signature (for Sign mode).
+    pub signature: Option<String>,
+    /// Armored PGP MESSAGE ciphertext (for Encrypt mode).
+    pub ciphertext: Option<String>,
+    /// micalg value for multipart/signed (e.g. "pgp-sha256").
+    pub micalg: String,
+}
+
 /// A message ready to be sent via SMTP.
 #[derive(Debug, Clone)]
 pub struct SendableMessage {
@@ -58,6 +81,8 @@ pub struct SendableMessage {
     /// When true, adds `Auto-Submitted: auto-replied` per RFC 3834.
     /// Set on automated replies (vacation responder) to prevent mail loops.
     pub auto_submitted: bool,
+    /// If set, wrap outbound message in PGP/MIME.
+    pub pgp: Option<PgpSendParams>,
 }
 
 /// A single file attachment to include in an outgoing message.

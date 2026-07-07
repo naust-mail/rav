@@ -18,6 +18,13 @@ pub use super::types::{
 
 pub(crate) use super::connection::connect;
 
+/// IMAP fetch items used for bulk header sync. Both the polling path (client.rs) and the
+/// IDLE push path (idle.rs) must use this constant so the set of fetched attributes stays
+/// in sync.
+pub(crate) const HEADER_FETCH_ITEMS: &str =
+    "(UID ENVELOPE INTERNALDATE FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[HEADER.FIELDS \
+     (Message-ID In-Reply-To References Content-Class x-ms-exchange-generated-message-class)])";
+
 #[cfg(test)]
 #[path = "mock.rs"]
 pub mod mock;
@@ -103,14 +110,19 @@ pub trait ImapClient: Send + Sync {
         uid: u32,
     ) -> Result<(), ImapError>;
 
-    /// Append a raw RFC822 message to a folder (e.g. saving sent mail to "Sent").
+    /// Append a raw RFC822 message to a folder.
+    ///
+    /// If `message_id` is provided, the folder is selected after the append and a UID SEARCH
+    /// by `Message-ID` header is performed to retrieve the assigned UID. Returns `Some(uid)`
+    /// on success, `None` if the search returned no results or `message_id` was not given.
     async fn append_message(
         &self,
         creds: &ImapCredentials,
         folder: &str,
         message_bytes: &[u8],
         flags: &[&str],
-    ) -> Result<(), ImapError>;
+        message_id: Option<&str>,
+    ) -> Result<Option<u32>, ImapError>;
 
     /// Create a new folder (mailbox) and subscribe to it.
     async fn create_folder(
@@ -326,10 +338,7 @@ impl ImapClient for RealImapClient {
             // We only fetch Message-ID, In-Reply-To, and References (a few bytes per message)
             // rather than full raw headers, to keep bulk syncs lightweight.
             let mut fetch_stream = session
-                .uid_fetch(
-                    uid_range,
-                    "(UID ENVELOPE FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Message-ID In-Reply-To References Content-Class x-ms-exchange-generated-message-class)])",
-                )
+                .uid_fetch(uid_range, HEADER_FETCH_ITEMS)
                 .await
                 .map_err(map_imap_error)?;
 
@@ -395,6 +404,17 @@ impl ImapClient for RealImapClient {
                     (None, vec![], vec![], vec![], None)
                 };
 
+                let date_epoch = {
+                    let from_header = date.as_deref()
+                        .map(crate::db::messages::parse_date_epoch)
+                        .unwrap_or(0);
+                    if from_header > 0 {
+                        from_header
+                    } else {
+                        fetch.internal_date().map(|d| d.timestamp()).unwrap_or(0)
+                    }
+                };
+
                 // Extract threading headers from the small HEADER.FIELDS response.
                 let message_id = parsed_threading.as_ref().and_then(|p| {
                     p.message_id().map(|s| format!("<{s}>"))
@@ -447,6 +467,7 @@ impl ImapClient for RealImapClient {
                     from,
                     to,
                     date,
+                    date_epoch,
                     flags,
                     has_attachments: has_attach,
                     size,
@@ -618,12 +639,27 @@ impl ImapClient for RealImapClient {
                 .or_else(|| raw_str.split_once("\n\n"))
                 .map_or_else(|| raw_str.to_string(), |(h, _)| h.to_string());
 
+            // Detect PGP/MIME structure from top-level content type.
+            use crate::imap::types::PgpStatusKind;
+            let pgp_status = detect_pgp_mime(&parsed);
+
+            // For encrypted messages, clear body and attachments — the client decrypts.
+            let (text_plain, text_html, attachments) = if pgp_status
+                .as_ref()
+                .is_some_and(|s| s.kind == PgpStatusKind::Encrypted)
+            {
+                (None, None, vec![])
+            } else {
+                (text_plain, text_html, attachments)
+            };
+
             ImapMessageBody {
                 uid,
                 text_plain,
                 text_html,
                 attachments,
                 raw_headers,
+                pgp_status,
             }
         };
 
@@ -819,7 +855,8 @@ impl ImapClient for RealImapClient {
         folder: &str,
         message_bytes: &[u8],
         flags: &[&str],
-    ) -> Result<(), ImapError> {
+        message_id: Option<&str>,
+    ) -> Result<Option<u32>, ImapError> {
         let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
         let flags_str: Vec<String> = flags.iter().map(|f| f.to_string()).collect();
@@ -829,17 +866,25 @@ impl ImapClient for RealImapClient {
             Some(format!("({})", flags_str.join(" ")))
         };
         session
-            .append(
-                folder,
-                flags_joined.as_deref(),
-                None,
-                message_bytes,
-            )
+            .append(folder, flags_joined.as_deref(), None, message_bytes)
             .await
             .map_err(map_imap_error)?;
 
+        // If the caller provided the Message-ID it embedded in the RFC822, SELECT the folder
+        // and search by that header to retrieve the UID assigned by the server.
+        let uid = if let Some(mid) = message_id {
+            session.select(folder).await.map_err(map_imap_error)?;
+            let uids = session
+                .uid_search(format!("HEADER Message-ID {mid}"))
+                .await
+                .map_err(map_imap_error)?;
+            uids.into_iter().max()
+        } else {
+            None
+        };
+
         self.cache.release(creds, session);
-        Ok(())
+        Ok(uid)
     }
 
     async fn create_folder(
@@ -1162,5 +1207,182 @@ impl ImapClient for RealImapClient {
             return Err(ImapError::MessageNotFound { uid, folder: folder.to_string() });
         }
         Ok(raw)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PGP/MIME detection helpers
+// ---------------------------------------------------------------------------
+
+/// Inspect the top-level MIME content type of a parsed message and return
+/// PGP status if the message uses RFC 3156 PGP/MIME structure.
+fn detect_pgp_mime(
+    parsed: &mail_parser::Message<'_>,
+) -> Option<crate::imap::types::PgpMessageStatus> {
+    use mail_parser::MimeHeaders;
+    use crate::imap::types::{PgpMessageStatus, PgpStatusKind};
+
+    let ct = parsed.content_type()?;
+    if ct.ctype() != "multipart" {
+        return None;
+    }
+
+    match ct.subtype() {
+        Some("encrypted")
+            if ct
+                .attribute("protocol")
+                .is_some_and(|p| p == "application/pgp-encrypted") =>
+        {
+            let ciphertext = find_part_content(parsed, "application", "octet-stream");
+            Some(PgpMessageStatus {
+                kind: PgpStatusKind::Encrypted,
+                ciphertext,
+                signature: None,
+                micalg: None,
+                signed_content: None,
+            })
+        }
+        Some("signed")
+            if ct
+                .attribute("protocol")
+                .is_some_and(|p| p == "application/pgp-signature") =>
+        {
+            let signature = find_part_content(parsed, "application", "pgp-signature");
+            let micalg = ct.attribute("micalg").map(|s| s.to_string());
+            // Extract the raw first body part (including its MIME headers) so
+            // the client can verify over the exact bytes that were signed per RFC 3156.
+            // Part 0 is the outer multipart; part 1 is the first child (the signed body).
+            // Base64-encoded because the part may contain arbitrary bytes (binary attachments).
+            let signed_content = parsed.parts.get(1).and_then(|part| {
+                use base64::Engine;
+                let raw = parsed.raw_message.as_ref();
+                let start = part.offset_header as usize;
+                let end = part.offset_end as usize;
+                // Use get() rather than index to avoid a panic on a malformed message
+                // where mail_parser emits offsets outside the raw buffer.
+                raw.get(start..end)
+                    .map(|slice| base64::engine::general_purpose::STANDARD.encode(slice))
+            });
+            Some(PgpMessageStatus {
+                kind: PgpStatusKind::Signed,
+                ciphertext: None,
+                signature,
+                micalg,
+                signed_content,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Find a MIME part matching the given type/subtype and return its contents.
+fn find_part_content(
+    parsed: &mail_parser::Message<'_>,
+    ctype: &str,
+    subtype: &str,
+) -> Option<String> {
+    use mail_parser::MimeHeaders;
+    for part in parsed.parts.iter() {
+        if let Some(ct) = part.content_type()
+            && ct.ctype() == ctype && ct.subtype() == Some(subtype)
+        {
+            return Some(String::from_utf8_lossy(part.contents()).into_owned());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(raw: &str) -> mail_parser::Message<'_> {
+        mail_parser::MessageParser::default()
+            .parse(raw.as_bytes())
+            .expect("test message failed to parse")
+    }
+
+    #[test]
+    fn detect_plain_message_returns_none() {
+        let msg = parse(
+            "From: a@b.com\r\nSubject: Hi\r\nContent-Type: text/plain\r\n\r\nHello",
+        );
+        assert!(detect_pgp_mime(&msg).is_none());
+    }
+
+    #[test]
+    fn detect_multipart_signed_extracts_signature_and_micalg() {
+        let boundary = "abc123";
+        let sig = "-----BEGIN PGP SIGNATURE-----\nhashdata\n-----END PGP SIGNATURE-----";
+        let raw = format!(
+            "From: a@b.com\r\n\
+             Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; \
+             micalg=pgp-sha256; boundary=\"{boundary}\"\r\n\
+             \r\n\
+             --{boundary}\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             Hello world\r\n\
+             --{boundary}\r\n\
+             Content-Type: application/pgp-signature\r\n\
+             \r\n\
+             {sig}\r\n\
+             --{boundary}--\r\n",
+        );
+        let msg = parse(&raw);
+        let status = detect_pgp_mime(&msg).expect("should detect signed");
+        assert_eq!(status.kind, crate::imap::types::PgpStatusKind::Signed);
+        assert_eq!(status.micalg.as_deref(), Some("pgp-sha256"));
+        assert!(status.signature.as_deref().unwrap().contains("PGP SIGNATURE"));
+        assert!(status.ciphertext.is_none());
+        // signed_content is base64-encoded raw bytes of the first body part.
+        let sc_b64 = status.signed_content.expect("signed_content should be present");
+        use base64::Engine;
+        let sc_bytes = base64::engine::general_purpose::STANDARD.decode(&sc_b64).unwrap();
+        let sc = String::from_utf8(sc_bytes).unwrap();
+        assert!(sc.contains("Content-Type: text/plain"));
+        assert!(sc.contains("Hello world"));
+    }
+
+    #[test]
+    fn detect_multipart_encrypted_extracts_ciphertext() {
+        let boundary = "pgpbnd";
+        let ct = "-----BEGIN PGP MESSAGE-----\nciphertext\n-----END PGP MESSAGE-----";
+        let raw = format!(
+            "From: a@b.com\r\n\
+             Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; \
+             boundary=\"{boundary}\"\r\n\
+             \r\n\
+             --{boundary}\r\n\
+             Content-Type: application/pgp-encrypted\r\n\
+             \r\n\
+             Version: 1\r\n\
+             --{boundary}\r\n\
+             Content-Type: application/octet-stream\r\n\
+             \r\n\
+             {ct}\r\n\
+             --{boundary}--\r\n",
+        );
+        let msg = parse(&raw);
+        let status = detect_pgp_mime(&msg).expect("should detect encrypted");
+        assert_eq!(status.kind, crate::imap::types::PgpStatusKind::Encrypted);
+        assert!(status.ciphertext.as_deref().unwrap().contains("PGP MESSAGE"));
+        assert!(status.signature.is_none());
+        assert!(status.micalg.is_none());
+    }
+
+    #[test]
+    fn detect_multipart_signed_wrong_protocol_returns_none() {
+        let boundary = "bnd";
+        let raw = format!(
+            "From: a@b.com\r\n\
+             Content-Type: multipart/signed; protocol=\"application/pkcs7-signature\"; \
+             boundary=\"{boundary}\"\r\n\
+             \r\n\
+             --{boundary}\r\nContent-Type: text/plain\r\n\r\nHi\r\n\
+             --{boundary}--\r\n",
+        );
+        let msg = parse(&raw);
+        assert!(detect_pgp_mime(&msg).is_none());
     }
 }

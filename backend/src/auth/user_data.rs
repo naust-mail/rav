@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 
 mod embedded {
@@ -21,7 +22,8 @@ pub fn hash_email(email: &str) -> String {
 /// Provision a per-user data directory under `data_dir`.
 ///
 /// Creates `{data_dir}/{user_hash}/` with a `tantivy/` subdirectory,
-/// opens (or creates) `db.sqlite`, and runs refinery migrations on it.
+/// opens (or creates) `db.sqlite`, and runs any pending schema migrations
+/// via refinery.
 ///
 /// This function is idempotent: calling it multiple times with the same
 /// arguments is safe and will not produce errors.
@@ -43,12 +45,15 @@ pub fn provision_user_data(data_dir: &str, user_hash: &str) -> Result<PathBuf, S
         }
     }
 
-    // Open (or create) the SQLite database.
     let db_path = user_dir.join("db.sqlite");
-    let mut conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("failed to open database: {e}"))?;
+    let mut conn =
+        Connection::open(&db_path).map_err(|e| format!("failed to open sqlite: {e}"))?;
 
-    // Run refinery migrations.
+    conn.execute_batch("PRAGMA journal_mode=WAL;")
+        .map_err(|e| format!("failed to enable WAL: {e}"))?;
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| format!("failed to enable foreign keys: {e}"))?;
+
     embedded::migrations::runner()
         .run(&mut conn)
         .map_err(|e| format!("failed to run migrations: {e}"))?;

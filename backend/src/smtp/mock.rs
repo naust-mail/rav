@@ -4,6 +4,8 @@ use super::{AttachmentData, SendableMessage, SmtpClient, SmtpCredentials, SmtpEr
 use async_trait::async_trait;
 use std::sync::Mutex;
 
+use crate::error::ConnectError;
+
 /// A mock SMTP client that records sent messages.
 ///
 /// Uses interior mutability (`Mutex`) so it can be shared behind `&self`.
@@ -106,6 +108,7 @@ mod tests {
             references: None,
             attachments: vec![],
             auto_submitted: false,
+            pgp: None,
         }
     }
 
@@ -138,6 +141,7 @@ mod tests {
                 content_id: None,
             }],
             auto_submitted: false,
+            pgp: None,
         };
 
         let result = mock.send_message(&test_creds(), &msg).await;
@@ -208,8 +212,8 @@ mod tests {
     async fn smtp_error_display_formats_correctly() {
         let cases: Vec<(SmtpError, &str)> = vec![
             (
-                SmtpError::ConnectionFailed("timeout".to_string()),
-                "Connection failed: timeout",
+                SmtpError::ConnectionFailed(ConnectError::Timeout),
+                "Connection timed out - the server did not respond",
             ),
             (SmtpError::AuthenticationFailed, "Authentication failed"),
             (

@@ -85,6 +85,54 @@ pub struct AppConfig {
     /// SMTP_HOST is optional and falls back to IMAP_HOST when not set.
     #[serde(default = "default_allow_custom_mail_servers")]
     pub allow_custom_mail_servers: bool,
+
+    /// Rewrite http(s) links in rendered emails to pass through /api/v1/link.
+    /// Each link is HMAC-signed to prevent open redirect abuse.
+    /// Requires a secret persisted in data_dir/link_proxy.key (auto-generated on first run).
+    #[serde(default)]
+    pub link_proxy_enabled: bool,
+
+    /// WebAuthn relying party ID (e.g. "box.example.com").
+    /// Required for passkey enrollment and authentication. When unset, passkey routes
+    /// return 503.
+    #[serde(default)]
+    pub webauthn_rp_id: Option<String>,
+
+    /// WebAuthn relying party origin URL (e.g. "https://box.example.com").
+    /// Must match the browser's origin exactly. Required with webauthn_rp_id.
+    #[serde(default)]
+    pub webauthn_rp_origin: Option<String>,
+
+    /// Comma-separated list of trusted proxy CIDRs whose forwarded IP headers
+    /// are accepted for rate limiting (e.g. "127.0.0.1/32,172.28.0.0/24").
+    /// When unset, X-Real-IP and X-Forwarded-For are ignored and the raw socket
+    /// peer address is used. Set this to your reverse proxy's IP or subnet when
+    /// running behind nginx, Apache, Caddy, or any other proxy.
+    #[serde(default)]
+    pub trusted_proxies: String,
+
+    /// Enable in-browser PGP (sign, encrypt, verify, decrypt).
+    /// Controlled by WEBMAIL_PGP in the box wizard; defaults to true.
+    #[serde(default = "default_pgp_enabled")]
+    pub pgp_enabled: bool,
+
+    /// ManageSieve server hostname. When set, filter rules are pushed as Sieve scripts
+    /// in addition to being stored in SQLite. The IDLE filter application skips rules
+    /// that are Sieve-capable when this is configured.
+    #[serde(default)]
+    pub sieve_host: Option<String>,
+
+    /// ManageSieve server port.
+    #[serde(default = "default_sieve_port")]
+    pub sieve_port: u16,
+}
+
+fn default_pgp_enabled() -> bool {
+    true
+}
+
+fn default_sieve_port() -> u16 {
+    4190
 }
 
 fn default_allow_custom_mail_servers() -> bool {

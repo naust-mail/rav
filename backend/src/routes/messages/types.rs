@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub use crate::imap::types::PgpMessageStatus;
+
 pub use crate::email_theme::EmailTheme;
 
 /// Default page size for paginated list queries.
@@ -108,6 +110,7 @@ pub(crate) struct MessageDetailResponse {
     pub(crate) attachments: Vec<AttachmentMeta>,
     pub(crate) thread: Vec<ThreadMessage>,
     pub(crate) email_theme: Option<EmailTheme>,
+    pub(crate) pgp_status: Option<PgpMessageStatus>,
 }
 
 /// A message summary within a thread.

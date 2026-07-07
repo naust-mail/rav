@@ -193,10 +193,11 @@ pub async fn tag_message_handler(
     Path(id): Path<String>,
     Json(body): Json<TagMessageBody>,
 ) -> Result<Response, AppError> {
+    let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&body.message_folder)?;
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
-    db::tags::add_tag_to_message(&conn, &id, body.message_uid, &body.message_folder)
+    db::tags::add_tag_to_message(&conn, &id, body.message_uid, &folder)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(serde_json::json!({ "status": "ok" })).into_response())
@@ -206,8 +207,9 @@ pub async fn tag_message_handler(
 pub async fn untag_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Path((id, folder, uid)): Path<(String, String, u32)>,
+    Path((id, folder_id, uid)): Path<(String, String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
@@ -231,11 +233,13 @@ pub async fn bulk_tag_handler(
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
+    let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
     let tx = conn.unchecked_transaction()
         .map_err(|e| AppError::InternalError(format!("Transaction error: {e}")))?;
 
     for msg in &body.messages {
-        db::tags::add_tag_to_message(&tx, &id, msg.uid, &msg.folder)
+        let folder = cipher.decrypt(&msg.folder)?;
+        db::tags::add_tag_to_message(&tx, &id, msg.uid, &folder)
             .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
     }
 
@@ -252,6 +256,7 @@ pub async fn list_tag_messages_handler(
     Path(id): Path<String>,
     Query(query): Query<PaginationQuery>,
 ) -> Result<Response, AppError> {
+    let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
@@ -271,7 +276,10 @@ pub async fn list_tag_messages_handler(
                 .get(&(m.uid, m.folder.clone()))
                 .cloned()
                 .unwrap_or_default();
-            build_summary(m, msg_tags)
+            let encrypted_folder = cipher.encrypt(&m.folder);
+            let mut summary = build_summary(m, msg_tags);
+            summary.folder = encrypted_folder;
+            summary
         })
         .collect();
 
@@ -288,8 +296,9 @@ pub async fn list_tag_messages_handler(
 pub async fn get_message_tags_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 

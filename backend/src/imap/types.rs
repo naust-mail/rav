@@ -33,6 +33,9 @@ pub struct ImapMessageHeader {
     pub to: Vec<EmailAddress>,
     /// Date header value (raw string from the server).
     pub date: Option<String>,
+    /// Resolved sort epoch: parsed from the Date header, falling back to INTERNALDATE.
+    /// Zero only if both are absent/unparseable.
+    pub date_epoch: i64,
     /// IMAP flags currently set on this message (e.g. `\Seen`, `\Flagged`).
     pub flags: Vec<String>,
     /// Whether this message has attachments (derived from BODYSTRUCTURE).
@@ -51,6 +54,32 @@ pub struct ImapMessageHeader {
     pub reaction: Option<String>,
 }
 
+/// Whether a message is PGP encrypted, signed, or both.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PgpStatusKind {
+    Encrypted,
+    Signed,
+    #[allow(dead_code)]
+    SignedAndEncrypted,
+}
+
+/// PGP status detected from the top-level MIME structure of a received message.
+#[derive(Debug, Clone, Serialize)]
+pub struct PgpMessageStatus {
+    pub kind: PgpStatusKind,
+    /// Armored PGP ciphertext (for Encrypted kind). The client decrypts this.
+    pub ciphertext: Option<String>,
+    /// Armored detached signature (for Signed kind). The client verifies this.
+    pub signature: Option<String>,
+    /// micalg value from multipart/signed (e.g. "pgp-sha256").
+    pub micalg: Option<String>,
+    /// Base64-encoded raw bytes of the signed MIME body part (for Signed kind).
+    /// RFC 3156 signatures are computed over the complete first body part
+    /// including its MIME headers; `message.text` alone is not sufficient.
+    pub signed_content: Option<String>,
+}
+
 /// The full body of an email message, including attachments.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImapMessageBody {
@@ -64,6 +93,8 @@ pub struct ImapMessageBody {
     pub attachments: Vec<ImapAttachment>,
     /// Raw RFC 822 headers as a single string.
     pub raw_headers: String,
+    /// PGP status if the message uses PGP/MIME structure.
+    pub pgp_status: Option<PgpMessageStatus>,
 }
 
 /// Metadata about a single attachment in an email message.

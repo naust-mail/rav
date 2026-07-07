@@ -22,8 +22,9 @@ pub async fn report_spam_handler(
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(http_client): Extension<Arc<reqwest::Client>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let trained = learn_message(&session, &config, &imap_client, &http_client, &folder, uid, "learnspam").await?;
     Ok(Json(serde_json::json!({ "trained": trained })).into_response())
 }
@@ -37,8 +38,9 @@ pub async fn report_ham_handler(
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(http_client): Extension<Arc<reqwest::Client>>,
-    Path((folder, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(String, u32)>,
 ) -> Result<Response, AppError> {
+    let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let trained = learn_message(&session, &config, &imap_client, &http_client, &folder, uid, "learnham").await?;
     Ok(Json(serde_json::json!({ "trained": trained })).into_response())
 }

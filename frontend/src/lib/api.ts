@@ -192,14 +192,16 @@ export async function apiDownload(path: string, filename: string): Promise<void>
   URL.revokeObjectURL(url);
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
+export async function apiDelete<T>(path: string, body?: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "DELETE",
     headers: {
       "X-Requested-With": "XMLHttpRequest",
+      ...(body ? { "Content-Type": "application/json" } : {}),
       ...getActiveAccountHeader(),
     },
     credentials: "same-origin",
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
 
   if (!res.ok) {

@@ -171,7 +171,7 @@ pub fn update_identity(
         return get_identity(conn, id);
     }
 
-    sets.push("updated_at = datetime('now')".to_string());
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
     let set_clause = sets.join(", ");
     let sql = format!("UPDATE identities SET {set_clause} WHERE id = ?{idx}");
     values.push(Box::new(id));
@@ -203,7 +203,7 @@ pub fn has_identities(conn: &Connection) -> Result<bool, String> {
 /// Clear the is_default flag on all identities.
 fn clear_default(conn: &Connection) -> Result<(), String> {
     conn.execute(
-        "UPDATE identities SET is_default = 0, updated_at = datetime('now') WHERE is_default = 1",
+        "UPDATE identities SET is_default = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE is_default = 1",
         [],
     )
     .map_err(|e| format!("Failed to clear default identity: {e}"))?;

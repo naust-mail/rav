@@ -25,7 +25,8 @@ RUN bun install
 
 # Copy remaining frontend source and build static export
 COPY frontend/ .
-RUN bun run build
+# Stickers are gitignored assets; only enable the feature if they're actually present.
+RUN if [ -f public/stickers/manifest.json ]; then export NEXT_PUBLIC_FEATURE_STICKERS=true; else export NEXT_PUBLIC_FEATURE_STICKERS=false; fi && bun run build
 
 # ---------------------------------------------------------------------------
 # Stage 2 — Backend build

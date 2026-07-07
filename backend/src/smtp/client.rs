@@ -1,10 +1,13 @@
 //! SMTP client abstraction and real implementation.
 
 use async_trait::async_trait;
+use tracing::warn;
+
+use crate::error::ConnectError;
 
 // Import and re-export types for backward compatibility
 pub use crate::smtp::error::SmtpError;
-pub use crate::smtp::types::{AttachmentData, SendableMessage, SmtpCredentials};
+pub use crate::smtp::types::{AttachmentData, PgpMode, PgpSendParams, SendableMessage, SmtpCredentials};
 
 // ---------------------------------------------------------------------------
 // Trait definition
@@ -25,6 +28,143 @@ pub trait SmtpClient: Send + Sync {
         creds: &SmtpCredentials,
         message: &SendableMessage,
     ) -> Result<String, SmtpError>;
+}
+
+// ---------------------------------------------------------------------------
+// PGP/MIME wrapping helpers
+// ---------------------------------------------------------------------------
+
+/// Normalize line endings to CRLF.
+fn to_crlf(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\r\n")
+}
+
+/// Extract envelope headers from formatted RFC 822 bytes, stripping MIME-specific
+/// headers (Content-Type, MIME-Version) so they can be replaced by PGP variants.
+fn filter_envelope_headers(raw: &str) -> String {
+    let (headers_str, _) = raw
+        .split_once("\r\n\r\n")
+        .or_else(|| raw.split_once("\n\n"))
+        .map_or((raw, ""), |p| p);
+
+    let mut result: Vec<&str> = Vec::new();
+    let mut skip_continuation = false;
+
+    for line in headers_str.split("\r\n") {
+        if line.is_empty() {
+            continue;
+        }
+        // Folded continuation lines start with whitespace.
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if !skip_continuation {
+                result.push(line);
+            }
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        skip_continuation = lower.starts_with("content-type:")
+            || lower.starts_with("mime-version:");
+        if !skip_continuation {
+            result.push(line);
+        }
+    }
+
+    result.join("\r\n")
+}
+
+/// Wrap the inner email bytes in a PGP/MIME envelope per RFC 3156.
+pub(crate) fn wrap_pgp_mime(inner_bytes: &[u8], pgp: &PgpSendParams) -> Result<Vec<u8>, String> {
+    let raw = std::str::from_utf8(inner_bytes)
+        .map_err(|e| format!("Message bytes are not valid UTF-8: {e}"))?;
+
+    let envelope_headers = filter_envelope_headers(raw);
+    let boundary = format!("----pgpboundary{}", uuid::Uuid::new_v4().simple());
+
+    let wrapped = match pgp.mode {
+        PgpMode::Sign => {
+            let sig = pgp.signature.as_deref()
+                .ok_or_else(|| "PGP sign mode requires a signature".to_string())?;
+
+            // Part 1 is the canonical plain text body that the client signed.
+            // The client signed toCanonical(content), so we reproduce that here.
+            let body_text = extract_text_body(raw);
+            let canonical = to_crlf(&body_text);
+
+            format!(
+                "{envelope_headers}\r\n\
+                 MIME-Version: 1.0\r\n\
+                 Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; \
+                 micalg={micalg}; boundary=\"{boundary}\"\r\n\
+                 \r\n\
+                 --{boundary}\r\n\
+                 Content-Type: text/plain; charset=utf-8\r\n\
+                 \r\n\
+                 {canonical}\r\n\
+                 --{boundary}\r\n\
+                 Content-Type: application/pgp-signature\r\n\
+                 Content-Description: OpenPGP digital signature\r\n\
+                 \r\n\
+                 {sig}\r\n\
+                 --{boundary}--\r\n",
+                micalg = pgp.micalg,
+            )
+        }
+        PgpMode::Encrypt => {
+            let ct = pgp.ciphertext.as_deref()
+                .ok_or_else(|| "PGP encrypt mode requires ciphertext".to_string())?;
+
+            format!(
+                "{envelope_headers}\r\n\
+                 MIME-Version: 1.0\r\n\
+                 Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; \
+                 boundary=\"{boundary}\"\r\n\
+                 \r\n\
+                 --{boundary}\r\n\
+                 Content-Type: application/pgp-encrypted\r\n\
+                 Content-Description: PGP/MIME version identification\r\n\
+                 \r\n\
+                 Version: 1\r\n\
+                 \r\n\
+                 --{boundary}\r\n\
+                 Content-Type: application/octet-stream; name=\"encrypted.asc\"\r\n\
+                 Content-Description: OpenPGP encrypted message\r\n\
+                 Content-Disposition: inline; filename=\"encrypted.asc\"\r\n\
+                 \r\n\
+                 {ct}\r\n\
+                 --{boundary}--\r\n",
+            )
+        }
+    };
+
+    Ok(wrapped.into_bytes())
+}
+
+/// Extract the plain-text body from raw RFC 822 bytes for use as Part 1 of
+/// a multipart/signed message. Falls back to empty string if not found.
+fn extract_text_body(raw: &str) -> String {
+    // Split on the first blank line to get the body.
+    let body = raw
+        .split_once("\r\n\r\n")
+        .or_else(|| raw.split_once("\n\n"))
+        .map(|(_, b)| b)
+        .unwrap_or("");
+
+    // For multipart bodies, find the first text/plain part.
+    // For simple single-part, the body IS the text.
+    if body.contains("Content-Type: text/plain") {
+        // Walk parts: find the text/plain part body.
+        if let Some(start) = body.find("Content-Type: text/plain") {
+            let after_header = &body[start..];
+            if let Some(part_body_start) = after_header.find("\r\n\r\n").or_else(|| after_header.find("\n\n")) {
+                let part_body = &after_header[part_body_start..].trim_start_matches("\r\n").trim_start_matches('\n');
+                // Cut at the next boundary if present.
+                let end = part_body.find("\r\n--").or_else(|| part_body.find("\n--")).unwrap_or(part_body.len());
+                return part_body[..end].to_string();
+            }
+        }
+    }
+
+    body.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +263,6 @@ impl SmtpClient for RealSmtpClient {
         // Build the body part(s).
         let body_part = if let Some(ref html) = message.html_body {
             if inline_atts.is_empty() {
-                // Simple alternative: text + HTML.
                 MultiPart::alternative()
                     .singlepart(
                         SinglePart::builder()
@@ -136,7 +275,6 @@ impl SmtpClient for RealSmtpClient {
                             .body(html.clone()),
                     )
             } else {
-                // Alternative with related HTML part containing inline images.
                 let mut related = MultiPart::related().singlepart(
                     SinglePart::builder()
                         .content_type(ContentType::TEXT_HTML)
@@ -215,42 +353,69 @@ impl SmtpClient for RealSmtpClient {
                     .build()
             } else if creds.port == 587 {
                 AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&creds.host)
-                    .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
+                    .map_err(|e| {
+                        warn!(error = %e, host = creds.host, "SMTP STARTTLS relay setup failed");
+                        SmtpError::ConnectionFailed(ConnectError::TlsHandshake)
+                    })?
                     .port(creds.port)
                     .credentials(smtp_creds)
                     .build()
             } else {
                 AsyncSmtpTransport::<Tokio1Executor>::relay(&creds.host)
-                    .map_err(|e| SmtpError::ConnectionFailed(e.to_string()))?
+                    .map_err(|e| {
+                        warn!(error = %e, host = creds.host, "SMTP TLS relay setup failed");
+                        SmtpError::ConnectionFailed(ConnectError::TlsHandshake)
+                    })?
                     .port(creds.port)
                     .credentials(smtp_creds)
                     .build()
             }
         } else {
-            // No TLS — plaintext submission.
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&creds.connect_host)
                 .port(creds.port)
                 .credentials(smtp_creds)
                 .build()
         };
 
-        // Send the message.
-        transport.send(email).await.map_err(|e| {
-            let msg = e.to_string();
-            if msg.to_lowercase().contains("authentication")
-                || msg.to_lowercase().contains("credentials")
-                || msg.to_lowercase().contains("auth")
-            {
-                SmtpError::AuthenticationFailed
-            } else if msg.to_lowercase().contains("connect")
-                || msg.to_lowercase().contains("dns")
-                || msg.to_lowercase().contains("resolve")
-                || msg.to_lowercase().contains("timeout")
-                || msg.to_lowercase().contains("tls")
-            {
-                SmtpError::ConnectionFailed(msg)
+        // Send the message, wrapping in PGP/MIME if requested.
+        let send_result = if let Some(ref pgp) = message.pgp {
+            let inner_bytes = email.formatted();
+            let envelope = email.envelope().clone();
+            let pgp_bytes = wrap_pgp_mime(&inner_bytes, pgp)
+                .map_err(SmtpError::SendFailed)?;
+            transport.send_raw(&envelope, &pgp_bytes).await
+        } else {
+            transport.send(email).await
+        };
+
+        send_result.map_err(|e| {
+            if e.is_tls() {
+                warn!(error = %e, host = creds.host, "SMTP TLS error");
+                SmtpError::ConnectionFailed(ConnectError::TlsHandshake)
+            } else if e.is_timeout() {
+                warn!(host = creds.host, "SMTP connection timed out");
+                SmtpError::ConnectionFailed(ConnectError::Timeout)
+            } else if e.is_transport_shutdown() {
+                warn!(error = %e, host = creds.host, "SMTP transport shutdown unexpectedly");
+                SmtpError::ConnectionFailed(ConnectError::Unreachable)
             } else {
-                SmtpError::SendFailed(msg)
+                let msg = e.to_string();
+                if msg.to_lowercase().contains("authentication")
+                    || msg.to_lowercase().contains("credentials")
+                    || msg.to_lowercase().contains("auth")
+                {
+                    warn!(error = %e, host = creds.host, "SMTP authentication failed");
+                    SmtpError::AuthenticationFailed
+                } else if msg.to_lowercase().contains("connect")
+                    || msg.to_lowercase().contains("dns")
+                    || msg.to_lowercase().contains("resolve")
+                {
+                    warn!(error = %e, host = creds.host, "SMTP connection failed");
+                    SmtpError::ConnectionFailed(ConnectError::Unreachable)
+                } else {
+                    warn!(error = %e, host = creds.host, "SMTP send failed");
+                    SmtpError::SendFailed(msg)
+                }
             }
         })?;
 
@@ -265,3 +430,96 @@ impl SmtpClient for RealSmtpClient {
 #[cfg(test)]
 #[path = "mock.rs"]
 pub mod mock;
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+    use crate::smtp::types::{PgpMode, PgpSendParams};
+
+    fn inner_message(body: &str) -> Vec<u8> {
+        format!(
+            "From: alice@example.com\r\n\
+             To: bob@example.com\r\n\
+             Subject: Test\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             MIME-Version: 1.0\r\n\
+             \r\n\
+             {body}"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn sign_produces_multipart_signed_structure() {
+        let params = PgpSendParams {
+            mode: PgpMode::Sign,
+            signature: Some("-----BEGIN PGP SIGNATURE-----\nSIGDATA\n-----END PGP SIGNATURE-----".into()),
+            ciphertext: None,
+            micalg: "pgp-sha256".into(),
+        };
+        let output = wrap_pgp_mime(&inner_message("Hello"), &params).unwrap();
+        let text = std::str::from_utf8(&output).unwrap();
+
+        assert!(text.contains("multipart/signed"), "must be multipart/signed");
+        assert!(text.contains("protocol=\"application/pgp-signature\""), "must carry pgp-signature protocol");
+        assert!(text.contains("micalg=pgp-sha256"), "must carry micalg");
+        assert!(text.contains("Content-Type: application/pgp-signature"), "must have signature part");
+        assert!(text.contains("SIGDATA"), "must include signature body");
+        // Envelope headers kept, MIME headers replaced.
+        assert!(text.contains("From: alice@example.com"));
+        assert!(!text.contains("MIME-Version: 1.0\r\nContent-Type: text/plain"), "inner MIME-Version must be stripped");
+    }
+
+    #[test]
+    fn encrypt_produces_multipart_encrypted_structure() {
+        let params = PgpSendParams {
+            mode: PgpMode::Encrypt,
+            signature: None,
+            ciphertext: Some("-----BEGIN PGP MESSAGE-----\nCIPHER\n-----END PGP MESSAGE-----".into()),
+            micalg: "pgp-sha256".into(),
+        };
+        let output = wrap_pgp_mime(&inner_message("Secret"), &params).unwrap();
+        let text = std::str::from_utf8(&output).unwrap();
+
+        assert!(text.contains("multipart/encrypted"), "must be multipart/encrypted");
+        assert!(text.contains("protocol=\"application/pgp-encrypted\""), "must carry pgp-encrypted protocol");
+        assert!(text.contains("Content-Type: application/pgp-encrypted\r\n"), "must have version part");
+        assert!(text.contains("Version: 1"), "must include RFC 3156 version header");
+        assert!(text.contains("Content-Type: application/octet-stream"), "must have ciphertext part");
+        assert!(text.contains("CIPHER"), "must include ciphertext body");
+    }
+
+    #[test]
+    fn sign_without_signature_returns_err() {
+        let params = PgpSendParams {
+            mode: PgpMode::Sign,
+            signature: None,
+            ciphertext: None,
+            micalg: "pgp-sha256".into(),
+        };
+        assert!(wrap_pgp_mime(&inner_message("Hi"), &params).is_err());
+    }
+
+    #[test]
+    fn encrypt_without_ciphertext_returns_err() {
+        let params = PgpSendParams {
+            mode: PgpMode::Encrypt,
+            signature: None,
+            ciphertext: None,
+            micalg: "pgp-sha256".into(),
+        };
+        assert!(wrap_pgp_mime(&inner_message("Hi"), &params).is_err());
+    }
+
+    #[test]
+    fn non_utf8_inner_returns_err() {
+        let params = PgpSendParams {
+            mode: PgpMode::Sign,
+            signature: Some("SIG".into()),
+            ciphertext: None,
+            micalg: "pgp-sha256".into(),
+        };
+        // 0xFF is not valid UTF-8.
+        assert!(wrap_pgp_mime(&[0xFF, 0xFE], &params).is_err());
+    }
+}

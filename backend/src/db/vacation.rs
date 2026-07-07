@@ -106,7 +106,7 @@ pub fn update_vacation(
     }
 
     if !sets.is_empty() {
-        sets.push("updated_at = datetime('now')".to_string());
+        sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
         let sql = format!(
             "UPDATE vacation_responder SET {} WHERE id = ?{idx}",
             sets.join(", ")
@@ -150,7 +150,7 @@ pub fn should_reply_and_record(
         }
         // Update timestamp.
         conn.execute(
-            "UPDATE vacation_replies SET replied_at = datetime('now') WHERE sender_email = ?1",
+            "UPDATE vacation_replies SET replied_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE sender_email = ?1",
             params![sender_email],
         )
         .map_err(|e| format!("Failed to update vacation_replies: {e}"))?;

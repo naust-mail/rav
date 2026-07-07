@@ -185,7 +185,7 @@ pub fn update_preferences(
         return get_preferences(conn);
     }
 
-    sets.push("updated_at = datetime('now')".to_string());
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')".to_string());
     let set_clause = sets.join(", ");
     let sql = format!("UPDATE display_preferences SET {set_clause} WHERE id = ?{idx}");
     values.push(Box::new(1_i32));

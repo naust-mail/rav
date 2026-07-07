@@ -130,6 +130,13 @@ mod tests {
             base_path: None,
             allow_custom_mail_servers: false,
             rspamd_url: None,
+            link_proxy_enabled: false,
+            pgp_enabled: true,
+            webauthn_rp_id: None,
+            webauthn_rp_origin: None,
+            trusted_proxies: String::new(),
+            sieve_host: None,
+            sieve_port: 4190,
         }
     }
 

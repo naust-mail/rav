@@ -11,8 +11,14 @@ import {
   isToday,
   getEventColorClasses,
   formatTime,
+  formatDateISO,
 } from "./calendarUtils";
 import { EventListPopover, type EventListPopoverState } from "./EventListPopover";
+import { FEATURES } from "@/lib/features";
+import { useCalendarStickers, usePutSticker, useDeleteSticker } from "@/hooks/useCalendarStickers";
+import { StickerCell } from "./StickerCell";
+import { StickerPicker } from "./StickerPicker";
+import type { StickerDef } from "@/types/sticker";
 import { EventChip } from "./EventChip";
 import { CalendarContextMenu, type CalendarContextMenuState } from "./CalendarContextMenu";
 import { cn } from "@/lib/utils";
@@ -21,9 +27,11 @@ import type { CalendarEvent } from "@/types/calendar";
 type MonthViewProps = {
   weekStartsOn: number;
   timeFormat: string;
+  /** Sticker catalog - only passed when FEATURES.stickers is true. */
+  stickerCatalog?: StickerDef[];
 };
 
-export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
+export function MonthView({ weekStartsOn, timeFormat, stickerCatalog = [] }: MonthViewProps) {
   const selectedDate = useCalendarStore((s) => s.selectedDate);
   const setDate = useCalendarStore((s) => s.setDate);
   const setViewMode = useCalendarStore((s) => s.setViewMode);
@@ -39,6 +47,16 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
   );
   const { data } = useCalendarEvents(range.start, range.end);
   const events = useMemo(() => data?.events ?? [], [data]);
+
+  const fromDate = useMemo(() => range.start.slice(0, 10), [range.start]);
+  const toDate = useMemo(() => range.end.slice(0, 10), [range.end]);
+  const { data: stickersByDate } = useCalendarStickers(
+    FEATURES.stickers ? fromDate : "",
+    FEATURES.stickers ? toDate : "",
+  );
+  const putSticker = usePutSticker();
+  const deleteSticker = useDeleteSticker();
+  const [stickerPickerDate, setStickerPickerDate] = useState<Date | null>(null);
 
   const days = useMemo(
     () => getMonthGrid(year, month, weekStartsOn),
@@ -124,9 +142,12 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
               key={idx}
               onClick={() => handleDayClick(day)}
               onDoubleClick={() => handleDayDoubleClick(day)}
-              onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, type: "day", date: day }); }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setContextMenu({ x: e.clientX, y: e.clientY, type: "day", date: day });
+              }}
               className={cn(
-                "min-h-0 cursor-pointer border-b border-r border-border p-1 transition-colors hover:bg-accent/50",
+                "relative min-h-0 cursor-pointer border-b border-r border-border p-1 transition-colors hover:bg-accent/50",
                 !isCurrentMonth && "bg-muted/30",
                 isSelected && "bg-accent",
               )}
@@ -143,6 +164,13 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
               >
                 {day.getDate()}
               </button>
+              {FEATURES.stickers && stickersByDate?.get(formatDateISO(day)) && (
+                <StickerCell
+                  stickerId={stickersByDate.get(formatDateISO(day))!.sticker_id}
+                  catalog={stickerCatalog}
+                  faded={!isCurrentMonth}
+                />
+              )}
 
               {/* Event chips */}
               <div className="space-y-0.5 overflow-hidden">
@@ -202,7 +230,35 @@ export function MonthView({ weekStartsOn, timeFormat }: MonthViewProps) {
         state={contextMenu}
         onClose={() => setContextMenu(null)}
         timeFormat={timeFormat}
+        onAddSticker={
+          FEATURES.stickers
+            ? (date) => { setStickerPickerDate(date); setContextMenu(null); }
+            : undefined
+        }
       />
+      {FEATURES.stickers && (
+        <StickerPicker
+          open={stickerPickerDate !== null}
+          date={stickerPickerDate}
+          currentStickerId={
+            stickerPickerDate
+              ? (stickersByDate?.get(formatDateISO(stickerPickerDate))?.sticker_id ?? null)
+              : null
+          }
+          catalog={stickerCatalog}
+          onSelect={(id) => {
+            if (stickerPickerDate) {
+              putSticker.mutate({ date: formatDateISO(stickerPickerDate), sticker_id: id });
+            }
+          }}
+          onRemove={() => {
+            if (stickerPickerDate) {
+              deleteSticker.mutate(formatDateISO(stickerPickerDate));
+            }
+          }}
+          onClose={() => setStickerPickerDate(null)}
+        />
+      )}
     </div>
   );
 }

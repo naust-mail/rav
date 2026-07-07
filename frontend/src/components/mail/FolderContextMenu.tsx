@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from "react";
+import { AnimatePresence } from "framer-motion";
 import { MailOpen, Pencil, Trash2 } from "lucide-react";
 import { useDeleteFolder, useMarkAllRead } from "@/hooks/useFolders";
 import { useLongPress } from "@/hooks/useLongPress";
 import { cn } from "@/lib/utils";
+import { useUiStore } from "@/stores/useUiStore";
+import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
+import { createScaleFadeVariants } from "@/lib/motion/variants";
 
 /** System folders that cannot be renamed or deleted. */
 const SYSTEM_FOLDERS = new Set([
@@ -51,6 +55,8 @@ export function FolderContextMenu({
   const markAllRead = useMarkAllRead();
 
   const isSystem = isSystemFolder(folderName);
+  const effectiveAnimationMode = useUiStore((s) => s.effectiveAnimationMode);
+  const motionProps = useMemo(() => createScaleFadeVariants(effectiveAnimationMode), [effectiveAnimationMode]);
 
   const closeMenu = useCallback(() => {
     setMenuPos(null);
@@ -135,12 +141,15 @@ export function FolderContextMenu({
     >
       {children}
 
-      {menuPos && (
-        <div
+      <AnimatePresence>
+        {menuPos && (
+        <AnimatedDiv
           ref={menuRef}
-          className={cn(
-            "fixed z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md",
-          )}
+          variants={motionProps}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          className="fixed z-50 min-w-[160px] rounded-md border border-border bg-popover py-1 shadow-md"
           style={{
             left: Math.max(4, Math.min(menuPos.x, window.innerWidth - 204)),
             top: Math.max(4, Math.min(menuPos.y, window.innerHeight - 88)),
@@ -188,8 +197,9 @@ export function FolderContextMenu({
                 : "Delete"}
           </button>
           )}
-        </div>
-      )}
+        </AnimatedDiv>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

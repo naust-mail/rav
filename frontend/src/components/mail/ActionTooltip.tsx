@@ -1,6 +1,8 @@
 "use client";
 
 import { Tooltip } from "radix-ui";
+import { cn } from "@/lib/utils";
+import { useUiStore } from "@/stores/useUiStore";
 
 type ActionTooltipProps = {
   /** Text shown in the tooltip. */
@@ -10,6 +12,8 @@ type ActionTooltipProps = {
 
 /** Wraps a single action button with a styled Radix tooltip. Use inside ActionTooltip.Provider. */
 export function ActionTooltip({ label, children }: ActionTooltipProps) {
+  const shouldAnimate = useUiStore((s) => s.effectiveAnimationMode) !== "off";
+
   return (
     <Tooltip.Root>
       <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
@@ -17,7 +21,10 @@ export function ActionTooltip({ label, children }: ActionTooltipProps) {
         <Tooltip.Content
           side="bottom"
           sideOffset={6}
-          className="z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95"
+          className={cn(
+            "z-50 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs font-medium text-popover-foreground shadow-md",
+            shouldAnimate && "animate-in fade-in-0 zoom-in-95",
+          )}
         >
           {label}
         </Tooltip.Content>

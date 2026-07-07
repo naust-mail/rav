@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
@@ -47,20 +47,14 @@ vi.mock("@/hooks/useTags", () => ({
 }));
 
 vi.mock("@/hooks/useCompose", () => ({
-  useListDrafts: () => ({
-    data: {
-      drafts: [
-        { id: "d-1", to: "alice@example.com", subject: "Hello", updated_at: "2026-06-15T10:00:00Z" },
-      ],
-    },
-  }),
-  useGetDraft: () => ({ data: null }),
-  useDeleteDraft: () => ({ mutate: vi.fn() }),
+  useGetDraftAttachments: () => ({ data: null, isPending: false }),
 }));
+
+const mockOpenDraft = vi.fn();
 
 vi.mock("@/stores/useComposeStore", () => ({
   useComposeStore: (selector?: (s: { openDraft: () => void; isOpen: boolean }) => unknown) => {
-    const state = { openDraft: vi.fn(), isOpen: false };
+    const state = { openDraft: mockOpenDraft, isOpen: false };
     return selector ? selector(state) : state;
   },
 }));
@@ -69,40 +63,71 @@ vi.mock("../BulkActionBar", () => ({
   BulkActionBar: () => null,
 }));
 
+const draftMessage = {
+  uid: 1,
+  folder: "Drafts",
+  subject: "Draft subject",
+  from_address: "me@example.com",
+  from_name: "Me",
+  to_addresses: "alice@example.com",
+  cc_addresses: "",
+  date: "2026-06-15T10:00:00Z",
+  flags: "\\Draft \\Seen",
+  size: 100,
+  has_attachments: false,
+  snippet: "Draft content",
+  reaction: null,
+  tags: [],
+  thread_count: 1,
+  unread_count: 0,
+};
+
+const mockMessageDetail = {
+  uid: 1,
+  folder: "Drafts",
+  subject: "Draft subject",
+  from_address: "me@example.com",
+  from_name: "Me",
+  to_addresses: [{ name: null, address: "alice@example.com" }],
+  cc_addresses: [],
+  date: "2026-06-15T10:00:00Z",
+  flags: ["\\Draft", "\\Seen"],
+  html: "<p>Draft body</p>",
+  text: null,
+  raw_headers: "Message-ID: <test-uuid-123@draft>\r\nSubject: Draft subject\r\n",
+  attachments: [],
+  thread: [],
+  pgp_status: null,
+};
+
 vi.mock("@/hooks/useMessages", () => ({
-  useMessages: () => ({ data: { pages: [{ messages: [], next_cursor: null }] }, isLoading: false, isFetching: false, isError: false, refetch: vi.fn(), fetchNextPage: vi.fn(), hasNextPage: false }),
+  useMessages: () => ({
+    data: { pages: [{ messages: [draftMessage], total_count: 1, syncing: false }] },
+    isLoading: false,
+    isFetching: false,
+    isError: false,
+    refetch: vi.fn(),
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+  }),
+  useMessage: () => ({ data: mockMessageDetail, isPending: false }),
   useUpdateFlags: () => ({ mutate: vi.fn() }),
 }));
 
 import { MessageList } from "../MessageList";
 
-describe("DraftItems density", () => {
-  it("renders compact row (h-9) in compact density", () => {
-    mockUiState.density = "compact";
+describe("Draft message in IMAP list", () => {
+  it("renders the draft message row", () => {
     render(<MessageList />);
-    const rows = document.querySelectorAll('[role="row"]');
-    expect(rows.length).toBeGreaterThan(0);
-    // Compact draft row has h-9 class
-    const compact = Array.from(rows).find((r) => r.className.includes("h-9"));
-    expect(compact).toBeTruthy();
+    expect(screen.getByText("Draft subject")).toBeTruthy();
   });
 
-  it("renders comfortable row (h-16) in comfortable density", () => {
-    mockUiState.density = "comfortable";
+  it("clicking a draft message does not call selectMessage", () => {
+    mockUiState.selectMessage = vi.fn();
     render(<MessageList />);
-    const rows = document.querySelectorAll('[role="row"]');
-    expect(rows.length).toBeGreaterThan(0);
-    const comfortable = Array.from(rows).find((r) => r.className.includes("h-16"));
-    expect(comfortable).toBeTruthy();
-  });
-
-  it("compact row shows recipient, separator dot, and subject on one row", () => {
-    mockUiState.density = "compact";
-    render(<MessageList />);
-    expect(screen.getByText("alice@example.com")).toBeTruthy();
-    expect(screen.getByText("Hello")).toBeTruthy();
-    // Separator dot rendered as middot entity
-    const dots = document.querySelectorAll('[role="row"] .text-muted-foreground\\/50');
-    expect(dots.length).toBeGreaterThan(0);
+    const row = screen.getByText("Draft subject").closest("[data-testid]") ?? screen.getByText("Draft subject");
+    fireEvent.click(row);
+    expect(mockUiState.selectMessage).not.toHaveBeenCalled();
   });
 });
