@@ -21,6 +21,7 @@ impl FolderCipher {
 
     /// Derive a cipher directly from a session token. Same derivation as in
     /// `auth::session`. Useful in tests where only the token is available.
+    #[cfg(test)]
     pub fn from_session_token(token: &str) -> Self {
         use hmac::{KeyInit, Mac, SimpleHmac};
         use sha2::Sha256;

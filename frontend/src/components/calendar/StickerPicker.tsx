@@ -36,12 +36,16 @@ export function StickerPicker({
     return order;
   }, [catalog]);
 
-  const [activeCategory, setActiveCategory] = useState<string>(() => categories[0] ?? "");
-  useEffect(() => { if (categories.length) setActiveCategory(categories[0]); }, [categories]);
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+
+  const selectedCategory =
+    activeCategory && categories.includes(activeCategory)
+      ? activeCategory
+      : categories[0] ?? "";
 
   const visible = useMemo(
-    () => catalog.filter((s) => s.category === activeCategory),
-    [catalog, activeCategory],
+    () => catalog.filter((s) => s.category === selectedCategory),
+    [ catalog, selectedCategory ],
   );
 
   useEffect(() => {
@@ -87,7 +91,7 @@ export function StickerPicker({
               onClick={() => setActiveCategory(cat)}
               className={cn(
                 "shrink-0 rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors",
-                cat === activeCategory
+                cat === selectedCategory
                   ? "bg-primary text-primary-foreground"
                   : "bg-muted text-muted-foreground hover:bg-muted/80",
               )}

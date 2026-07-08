@@ -8,7 +8,12 @@ const mockWorkerInstance = {
   onerror: null as ((e: ErrorEvent) => void) | null,
 };
 
-vi.stubGlobal('Worker', vi.fn(() => mockWorkerInstance));
+vi.stubGlobal(
+  'Worker',
+  vi.fn(function () {
+    return mockWorkerInstance;
+  }),
+);
 
 // Import after mocking
 const { generateKey, decryptMessage, signContent, verifySignature, encryptMessage } =

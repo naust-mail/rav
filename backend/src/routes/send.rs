@@ -272,8 +272,8 @@ async fn cleanup_draft(
     };
 
     // Expunge the IMAP Drafts copy before deleting the staging record.
-    if let Some(imap_host) = config.imap_host.as_deref() {
-        if let Some(uid) = db::drafts::get_staging(&conn, draft_id)
+    if let Some(imap_host) = config.imap_host.as_deref()
+        && let Some(uid) = db::drafts::get_staging(&conn, draft_id)
             .ok()
             .flatten()
             .and_then(|s| s.imap_uid)
@@ -293,7 +293,6 @@ async fn cleanup_draft(
                 tracing::warn!(error = %e, uid = uid, "Failed to expunge draft from IMAP after send");
             }
         }
-    }
 
     if let Err(e) = db::drafts::delete_staging(&conn, draft_id) {
         tracing::warn!(error = %e, "Failed to delete draft staging after send");

@@ -210,11 +210,10 @@ pub async fn apply_filters_handler(
                         }
                     }
                     "tag" => {
-                        if let Some(ref tag_id) = action.action_value {
-                            if let Err(e) = db::tags::add_tag_to_message(&conn, tag_id, msg.uid, "INBOX") {
+                        if let Some(ref tag_id) = action.action_value
+                            && let Err(e) = db::tags::add_tag_to_message(&conn, tag_id, msg.uid, "INBOX") {
                                 errors.push(format!("uid {} tag: {e}", msg.uid));
                             }
-                        }
                     }
                     "forward" => {
                         if let (Some(forward_to), Some(smtp_creds)) = (&action.action_value, &smtp_creds_opt) {

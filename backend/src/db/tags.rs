@@ -373,7 +373,7 @@ mod tests {
         let map = get_tags_for_messages(&conn, &refs).unwrap();
 
         assert_eq!(map.get(&(1, "INBOX".to_string())).unwrap().len(), 1);
-        assert!(map.get(&(2, "INBOX".to_string())).is_none());
+        assert!(!map.contains_key(&(2, "INBOX".to_string())));
     }
 
     #[test]

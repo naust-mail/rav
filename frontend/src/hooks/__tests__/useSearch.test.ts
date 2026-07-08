@@ -6,12 +6,12 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 
-const { mockApiGet } = vi.hoisted(() => ({
-  mockApiGet: vi.fn(),
+const { mockApiPost } = vi.hoisted(() => ({
+  mockApiPost: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
-  apiGet: mockApiGet,
+  apiPost: mockApiPost,
 }));
 
 import { useSearch } from "../useSearch";
@@ -36,27 +36,30 @@ function createWrapper() {
 
 describe("useSearch", () => {
   afterEach(() => {
-    mockApiGet.mockReset();
+    mockApiPost.mockReset();
   });
 
   it("normalizes committed query before building params", async () => {
-    mockApiGet.mockResolvedValue({ total_count: 0, results: [] });
+    mockApiPost.mockResolvedValue({ total_count: 0, results: [] });
 
     renderHook(() => useSearch("   from:alice    report   "), {
       wrapper: createWrapper(),
     });
 
     await waitFor(() => {
-      expect(mockApiGet).toHaveBeenCalledTimes(1);
+      expect(mockApiPost).toHaveBeenCalledTimes(1);
     });
 
-    expect(mockApiGet).toHaveBeenCalledWith(
-      "/search?q=from%3Aalice+report&sort=date_desc&limit=200&offset=0",
-    );
+    expect(mockApiPost).toHaveBeenCalledWith("/search", {
+      q: "from:alice report",
+      sort: "date_desc",
+      limit: 200,
+      offset: 0,
+    });
   });
 
-  it("does not call apiGet for empty or whitespace queries", async () => {
-    mockApiGet.mockResolvedValue({ total_count: 0, results: [] });
+  it("does not call apiPost for empty or whitespace queries", async () => {
+    mockApiPost.mockResolvedValue({ total_count: 0, results: [] });
 
     const { rerender } = renderHook(
       ({ query }) => useSearch(query),
@@ -69,7 +72,7 @@ describe("useSearch", () => {
     rerender({ query: "     " });
 
     await waitFor(() => {
-      expect(mockApiGet).not.toHaveBeenCalled();
+      expect(mockApiPost).not.toHaveBeenCalled();
     });
   });
 });

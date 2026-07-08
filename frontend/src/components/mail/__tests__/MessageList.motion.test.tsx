@@ -116,6 +116,7 @@ vi.mock("@/hooks/useMessages", async () => {
     ...actual,
     useMessages: mockUseMessages,
     useMessage: () => ({ data: null, isPending: false }),
+    useMessageByMessageId: () => ({ data: undefined, isPending: false }),
     useUpdateFlags: () => ({ mutate: mockUpdateFlags }),
   };
 });

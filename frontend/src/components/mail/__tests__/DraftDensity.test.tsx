@@ -112,6 +112,7 @@ vi.mock("@/hooks/useMessages", () => ({
     isFetchingNextPage: false,
   }),
   useMessage: () => ({ data: mockMessageDetail, isPending: false }),
+  useMessageByMessageId: () => ({ data: undefined, isPending: false }),
   useUpdateFlags: () => ({ mutate: vi.fn() }),
 }));
 

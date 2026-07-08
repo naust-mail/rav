@@ -171,6 +171,7 @@ vi.mock("@/hooks/useCompose", () => ({
   useDeleteAttachment: () => ({ mutate: vi.fn() }),
   useDeleteDraft: () => ({ mutate: vi.fn() }),
   useGetDraftAttachments: () => ({ data: null, isPending: false }),
+  useReplyDraft: () => ({ data: null, isPending: false }),
 }));
 
 vi.mock("@/hooks/usePgp", () => ({

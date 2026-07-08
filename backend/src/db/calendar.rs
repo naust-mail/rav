@@ -331,10 +331,7 @@ fn iso_to_ical_dtstart(iso: &str) -> String {
         format!("DTSTART;VALUE=DATE:{compact}")
     } else {
         // Datetime: 2025-03-06T09:00:00Z -> DTSTART:20250306T090000Z
-        let compact = iso
-            .replace('-', "")
-            .replace(':', "")
-            .replacen('T', "T", 1); // keep the T separator intact
+        let compact = iso.replace(['-', ':'], "");
         // The replace above turns colons in the time part to nothing; fix the T.
         // e.g. "20250306T090000Z"
         format!("DTSTART:{compact}")

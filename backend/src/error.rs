@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn connect_error_from_io_other_is_unreachable() {
-        let e = std::io::Error::new(std::io::ErrorKind::Other, "dns failure");
+        let e = std::io::Error::other("dns failure");
         assert_eq!(ConnectError::from_io(&e), ConnectError::Unreachable);
     }
 

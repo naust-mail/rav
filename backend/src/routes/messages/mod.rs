@@ -239,11 +239,10 @@ pub async fn list_messages(
 
     // For Drafts, keep total_count in sync with thread count so the folder badge
     // matches the list (raw IMAP EXISTS inflates it when phantom copies exist).
-    if let Ok(Some(f)) = db::folders::get_folder(&conn, &folder) {
-        if f.flags.contains("\\Drafts") {
+    if let Ok(Some(f)) = db::folders::get_folder(&conn, &folder)
+        && f.flags.contains("\\Drafts") {
             let _ = db::folders::set_folder_total_count(&conn, &folder, total_count);
         }
-    }
 
     tracing::info!(
         folder = %folder,

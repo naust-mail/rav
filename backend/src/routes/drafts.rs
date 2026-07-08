@@ -122,11 +122,10 @@ pub async fn save_draft_handler(
         .unwrap_or_else(|| "Drafts".to_string());
 
     // Expunge the previous IMAP copy before writing the new one.
-    if let Some(old_uid) = existing_uid {
-        if let Err(e) = imap_client.expunge_message(&imap_creds, &drafts_folder, old_uid).await {
+    if let Some(old_uid) = existing_uid
+        && let Err(e) = imap_client.expunge_message(&imap_creds, &drafts_folder, old_uid).await {
             tracing::warn!(error = %e, uid = old_uid, "Failed to expunge old draft from IMAP");
         }
-    }
 
     let message_id = format!("<{}@draft>", uuid);
     let new_uid = match build_draft_rfc822(&req, &session.email, &message_id) {
