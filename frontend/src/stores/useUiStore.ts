@@ -4,7 +4,7 @@ import { create, type UseBoundStore, type StoreApi } from "zustand";
 
 import type { AnimationMode } from "@/lib/motion/config";
 
-const STORAGE_KEY = "oxi-ui-settings";
+const STORAGE_KEY = "rav-ui-settings";
 
 interface PersistedSettings {
   sidebarWidth: number;

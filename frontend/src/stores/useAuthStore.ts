@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-const ACTIVE_ACCOUNT_STORAGE_KEY = "oxi-active-account-id";
+const ACTIVE_ACCOUNT_STORAGE_KEY = "rav-active-account-id";
 
 function loadActiveAccountId(): string | null {
   if (typeof window === "undefined") {

@@ -85,7 +85,7 @@ function useResolvedTheme() {
   return theme;
 }
 
-const THEME_STORAGE_KEY = "oxi-theme";
+const THEME_STORAGE_KEY = "rav-theme";
 
 export function NavRail() {
   const { status: wsStatus, failCount: wsFailCount } = useWsStatus();

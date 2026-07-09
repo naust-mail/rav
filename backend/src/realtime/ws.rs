@@ -19,7 +19,7 @@ use crate::smtp::client::SmtpClient;
 fn extract_browser_id(cookie_header: &str) -> Option<String> {
     for segment in cookie_header.split(';') {
         let trimmed = segment.trim();
-        if let Some(id) = trimmed.strip_prefix("oxi_browser=") {
+        if let Some(id) = trimmed.strip_prefix("rav_browser=") {
             let id = id.trim();
             if !id.is_empty() {
                 return Some(id.to_string());

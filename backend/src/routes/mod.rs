@@ -427,7 +427,7 @@ pub fn create_router(svc: AppServices) -> Router {
         .nest("/api", api_router)
         .fallback_service(static_service);
 
-    // If BASE_PATH is set (e.g. "/oxi"), nest the entire app under that prefix.
+    // If BASE_PATH is set (e.g. "/rav"), nest the entire app under that prefix.
     let router = match config.base_path.as_deref() {
         Some(bp) if !bp.is_empty() => Router::new().nest(bp, inner),
         _ => inner,

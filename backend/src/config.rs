@@ -39,7 +39,7 @@ pub struct AppConfig {
 
     /// Path to a PEM certificate to add to the in-process TLS trust store.
     /// Use this when the mail server uses a self-signed cert not in the system
-    /// CA bundle. The cert is trusted only within oxi - no system-wide changes.
+    /// CA bundle. The cert is trusted only within Rav - no system-wide changes.
     #[serde(default)]
     pub tls_ca_cert_path: Option<String>,
 
@@ -70,7 +70,7 @@ pub struct AppConfig {
     #[serde(default = "default_environment")]
     pub environment: String,
 
-    /// Optional base path prefix (e.g. "/oxi") for serving behind a reverse proxy subpath.
+    /// Optional base path prefix (e.g. "/rav") for serving behind a reverse proxy subpath.
     #[serde(default)]
     pub base_path: Option<String>,
 
@@ -224,7 +224,7 @@ mod tests {
             .merge(("smtp_host", "smtp.example.com"))
             .merge(("smtp_port", 465u16))
             .merge(("tls_enabled", false))
-            .merge(("data_dir", "/var/oxi"))
+            .merge(("data_dir", "/var/rav"))
             .merge(("session_timeout_hours", 48u64))
             .merge(("static_dir", "/srv/static"))
             .merge(("environment", "production"))
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(config.smtp_host.as_deref(), Some("smtp.example.com"));
         assert_eq!(config.smtp_port, 465);
         assert!(!config.tls_enabled);
-        assert_eq!(config.data_dir, "/var/oxi");
+        assert_eq!(config.data_dir, "/var/rav");
         assert_eq!(config.session_timeout_hours, 48);
         assert_eq!(config.static_dir, "/srv/static");
         assert_eq!(config.environment, "production");
@@ -254,13 +254,13 @@ mod tests {
         // and cleans up env vars after use.
         unsafe {
             std::env::set_var("IMAP_HOST", "test-imap.example.com");
-            std::env::set_var("DATA_DIR", "/tmp/oxi-test");
+            std::env::set_var("DATA_DIR", "/tmp/rav-test");
         }
 
         let config = AppConfig::load().expect("load with env vars should succeed");
 
         assert_eq!(config.imap_host.as_deref(), Some("test-imap.example.com"));
-        assert_eq!(config.data_dir, "/tmp/oxi-test");
+        assert_eq!(config.data_dir, "/tmp/rav-test");
 
         // Clean up
         unsafe {

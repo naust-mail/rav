@@ -4,7 +4,7 @@ use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 
 /// Upload a Sieve script via ManageSieve (RFC 5804), plain TCP (no TLS).
-/// Intended for internal Docker use where oxi and Dovecot share a network.
+/// Intended for internal Docker use where Rav and Dovecot share a network.
 pub async fn push_script(
     host: &str,
     port: u16,

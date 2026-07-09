@@ -54,7 +54,7 @@ impl PasskeyService {
                     .map_err(|e| format!("Invalid WEBAUTHN_RP_ORIGIN: {e}"))?;
                 let wbn = WebauthnBuilder::new(rp_id, &origin)
                     .map_err(|e| format!("WebauthnBuilder error: {e}"))?
-                    .rp_name("oxi Mail")
+                    .rp_name("Rav Mail")
                     .build()
                     .map_err(|e| format!("Webauthn build error: {e}"))?;
                 Some(wbn)

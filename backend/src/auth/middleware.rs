@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::session::SessionStore;
 
-pub const BROWSER_COOKIE: &str = "oxi_browser";
+pub const BROWSER_COOKIE: &str = "rav_browser";
 pub const ACTIVE_ACCOUNT_HEADER: &str = "X-Active-Account";
 
 const UNAUTHORIZED_BODY: &str = r#"{"error":{"code":"UNAUTHORIZED","message":"Invalid or expired session","status":401}}"#;
@@ -59,7 +59,7 @@ fn extract_cookie_value(req: &Request, cookie_name: &str) -> Option<String> {
 }
 
 fn extract_session_cookie(req: &Request, account_id: &str) -> Option<String> {
-    let cookie_name = format!("oxi_session_{}", account_id);
+    let cookie_name = format!("rav_session_{}", account_id);
     extract_cookie_value(req, &cookie_name)
 }
 
@@ -203,7 +203,7 @@ mod tests {
 
     fn build_auth_headers(session: &TestSession) -> String {
         format!(
-            "oxi_browser={}; oxi_session_{}={}",
+            "rav_browser={}; rav_session_{}={}",
             session.browser_id, session.account_id, session.token
         )
     }
@@ -233,7 +233,7 @@ mod tests {
         let req = Request::builder()
             .uri("/protected")
             .header(ACTIVE_ACCOUNT_HEADER, &session.account_id)
-            .header("cookie", format!("oxi_session_{}={}", session.account_id, session.token))
+            .header("cookie", format!("rav_session_{}={}", session.account_id, session.token))
             .body(Body::empty())
             .unwrap();
 
@@ -251,7 +251,7 @@ mod tests {
 
         let req = Request::builder()
             .uri("/protected")
-            .header("cookie", format!("oxi_browser={}", session.browser_id))
+            .header("cookie", format!("rav_browser={}", session.browser_id))
             .body(Body::empty())
             .unwrap();
 
@@ -270,7 +270,7 @@ mod tests {
         let req = Request::builder()
             .uri("/protected")
             .header(ACTIVE_ACCOUNT_HEADER, &session.account_id)
-            .header("cookie", format!("oxi_browser={}", session.browser_id))
+            .header("cookie", format!("rav_browser={}", session.browser_id))
             .body(Body::empty())
             .unwrap();
 
@@ -291,7 +291,7 @@ mod tests {
             .uri("/protected")
             .header(ACTIVE_ACCOUNT_HEADER, &session.account_id)
             .header("cookie", format!(
-                "oxi_browser={}; oxi_session_{}=invalid-token",
+                "rav_browser={}; rav_session_{}=invalid-token",
                 session.browser_id, session.account_id
             ))
             .body(Body::empty())
@@ -333,7 +333,7 @@ mod tests {
             .uri("/protected")
             .header(ACTIVE_ACCOUNT_HEADER, &session.account_id)
             .header("cookie", format!(
-                "oxi_browser={}; oxi_session_{}={}",
+                "rav_browser={}; rav_session_{}={}",
                 wrong_browser_id, session.account_id, session.token
             ))
             .body(Body::empty())
@@ -379,7 +379,7 @@ mod tests {
             .header(
                 "cookie",
                 format!(
-                    "theme=dark; oxi_browser={}; lang=en; oxi_session_{}={}",
+                    "theme=dark; rav_browser={}; lang=en; rav_session_{}={}",
                     session.browser_id, session.account_id, session.token
                 ),
             )
@@ -402,7 +402,7 @@ mod tests {
             .uri("/protected")
             .header(ACTIVE_ACCOUNT_HEADER, &session.account_id)
             .header("cookie", format!(
-                "other_browser={}; oxi_session_{}={}",
+                "other_browser={}; rav_session_{}={}",
                 session.browser_id, session.account_id, session.token
             ))
             .body(Body::empty())
@@ -526,7 +526,7 @@ mod tests {
             .uri(format!("/protected?account_id={}", session2.account_id))
             .header(ACTIVE_ACCOUNT_HEADER, &session1.account_id)
             .header("cookie", format!(
-                "oxi_browser={}; oxi_session_{}={}",
+                "rav_browser={}; rav_session_{}={}",
                 session1.browser_id, session1.account_id, session1.token
             ))
             .body(Body::empty())

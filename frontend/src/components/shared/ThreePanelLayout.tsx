@@ -290,7 +290,7 @@ export function ThreePanelLayout({
               ) : (
                 <div className="flex h-full w-full items-center justify-center">
                   <span className="text-2xl font-bold tracking-tight text-muted-foreground/40 select-none">
-                    oxi<span className="text-primary/40">.email</span>
+                    Rav
                   </span>
                 </div>
               )}

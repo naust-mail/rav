@@ -28,7 +28,7 @@
             tls_ca_cert_path: None,
             imap_connect_host: None,
             smtp_connect_host: None,
-            data_dir: "/tmp/oxi-test".to_string(),
+            data_dir: "/tmp/rav-test".to_string(),
             session_timeout_hours: 24,
             static_dir: static_dir.to_string(),
             environment: "development".to_string(),
@@ -166,7 +166,7 @@
     /// Helper: create an in-memory MfaCrypto using a fixed test key.
     fn test_mfa_crypto() -> Arc<crate::mfa::crypto::MfaCrypto> {
         Arc::new(
-            crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/oxi-test-mfa")
+            crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/rav-test-mfa")
                 .expect("test MfaCrypto"),
         )
     }
@@ -184,7 +184,7 @@
             tls_ca_cert_path: None,
             imap_connect_host: None,
             smtp_connect_host: None,
-            data_dir: "/tmp/oxi-test".to_string(),
+            data_dir: "/tmp/rav-test".to_string(),
             session_timeout_hours: 24,
             static_dir: "/tmp".to_string(),
             environment: "development".to_string(),
@@ -214,7 +214,7 @@
             tls_ca_cert_path: None,
             imap_connect_host: None,
             smtp_connect_host: None,
-            data_dir: "/tmp/oxi-test".to_string(),
+            data_dir: "/tmp/rav-test".to_string(),
             session_timeout_hours: 24,
             static_dir: "/tmp".to_string(),
             environment: "development".to_string(),
@@ -241,7 +241,7 @@
             imap_client: test_imap_client(),
             smtp_client: test_smtp_client(),
             http_client: test_http_client(),
-            search_engine: test_search_engine("/tmp/oxi-test"),
+            search_engine: test_search_engine("/tmp/rav-test"),
             event_bus: test_event_bus(),
             idle_manager: test_idle_manager(),
             mfa_crypto: test_mfa_crypto(),
@@ -275,7 +275,7 @@
     /// Helper: build auth headers for multi-account requests.
     fn auth_headers(browser_id: &str, account_id: &str, token: &str) -> Vec<(&'static str, String)> {
         vec![
-            ("cookie", format!("oxi_browser={browser_id}; oxi_session_{account_id}={token}")),
+            ("cookie", format!("rav_browser={browser_id}; rav_session_{account_id}={token}")),
             ("x-active-account", account_id.to_string()),
         ]
     }
@@ -733,7 +733,7 @@
             .get_all("set-cookie");
         // Should have clearing cookies for both browser and account session
         let cookie_str = format!("{:?}", set_cookie);
-        assert!(cookie_str.contains("oxi_browser=;") || cookie_str.contains("Max-Age=0"));
+        assert!(cookie_str.contains("rav_browser=;") || cookie_str.contains("Max-Age=0"));
     }
 
     // -----------------------------------------------------------------------

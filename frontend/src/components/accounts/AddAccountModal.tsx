@@ -53,7 +53,7 @@ export function AddAccountModal({ open, onClose }: AddAccountModalProps) {
     setLoading(true);
     setError(null);
 
-    const browserId = getCookie("oxi_browser");
+    const browserId = getCookie("rav_browser");
 
     const payload: Record<string, unknown> = {
       email,

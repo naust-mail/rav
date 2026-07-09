@@ -196,7 +196,7 @@ export default function Home() {
         return;
       }
 
-      const browserId = getCookie("oxi_browser");
+      const browserId = getCookie("rav_browser");
       const serialized = serializeCredential(cred);
 
       const response = await apiPost<LoginSuccess>(
@@ -236,7 +236,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
 
-    const browserId = getCookie("oxi_browser");
+    const browserId = getCookie("rav_browser");
     const payload: Record<string, unknown> = { email, password, remember };
     if (browserId) payload.browser_id = browserId;
     if (totpCode.trim()) payload.totp_code = totpCode.replace(/\s/g, "");
@@ -278,7 +278,7 @@ export default function Home() {
         {/* Branding */}
         <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold tracking-tight text-foreground">
-            oxi<span className="text-primary">.email</span>
+            Rav
           </h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in to your account

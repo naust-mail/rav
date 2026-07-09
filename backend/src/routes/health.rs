@@ -56,7 +56,7 @@ mod tests {
             tls_ca_cert_path: None,
             imap_connect_host: None,
             smtp_connect_host: None,
-            data_dir: "/tmp/oxi-test".to_string(),
+            data_dir: "/tmp/rav-test".to_string(),
             session_timeout_hours: 24,
             static_dir: "nonexistent_static_dir".to_string(),
             environment: "development".to_string(),
@@ -89,12 +89,12 @@ mod tests {
             smtp_client: Arc::new(crate::smtp::client::mock::MockSmtpClient::new()),
             http_client: Arc::new(reqwest::Client::new()),
             search_engine: Arc::new(crate::search::engine::SearchEngine::new(
-                std::path::PathBuf::from("/tmp/oxi-test"),
+                std::path::PathBuf::from("/tmp/rav-test"),
             )),
             event_bus: Arc::new(crate::realtime::events::EventBus::new()),
             idle_manager: Arc::new(crate::realtime::idle::IdleManager::new()),
             mfa_crypto: Arc::new(
-                crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/oxi-test-mfa")
+                crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/rav-test-mfa")
                     .expect("test mfa_crypto"),
             ),
             passkey_service,

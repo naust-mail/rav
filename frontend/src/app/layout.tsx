@@ -15,7 +15,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "oxi.email",
+  title: "Rav",
   description: "A modern email client built with Rust and Next.js",
 };
 

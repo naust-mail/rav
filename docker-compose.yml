@@ -18,7 +18,7 @@ services:
       - WEBAUTHN_RP_ID=${WEBAUTHN_RP_ID:-}
       - WEBAUTHN_RP_ORIGIN=${WEBAUTHN_RP_ORIGIN:-}
     volumes:
-      - oxi-data:/data
+      - rav-data:/data
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -f http://localhost:3001${BASE_PATH:-}/api/health"]
       interval: 30s
@@ -27,4 +27,4 @@ services:
       start_period: 5s
 
 volumes:
-  oxi-data:
+  rav-data:

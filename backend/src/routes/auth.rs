@@ -14,7 +14,7 @@ use crate::db;
 use crate::mfa::crypto::MfaCrypto;
 use crate::mfa::totp;
 
-pub const BROWSER_COOKIE: &str = "oxi_browser";
+pub const BROWSER_COOKIE: &str = "rav_browser";
 
 /// JSON body expected on `POST /api/auth/login`.
 #[derive(Deserialize)]
@@ -133,7 +133,7 @@ fn browser_cookie(browser_id: &str, max_age_secs: u64, secure: bool) -> String {
 fn account_session_cookie(account_id: &str, token: &str, max_age_secs: u64, secure: bool) -> String {
     let secure_flag = if secure { " Secure;" } else { "" };
     format!(
-        "oxi_session_{}={};{} HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        "rav_session_{}={};{} HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
         account_id, token, secure_flag, max_age_secs
     )
 }
@@ -149,7 +149,7 @@ fn clearing_browser_cookie(secure: bool) -> String {
 fn clearing_account_cookie(account_id: &str, secure: bool) -> String {
     let secure_flag = if secure { " Secure;" } else { "" };
     format!(
-        "oxi_session_{}=;{} HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+        "rav_session_{}=;{} HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
         account_id, secure_flag
     )
 }
@@ -162,7 +162,7 @@ fn extract_browser_id(headers: &axum::http::HeaderMap) -> Option<String> {
         .find_map(|cookie| {
             for segment in cookie.split(';') {
                 let trimmed = segment.trim();
-                if let Some(id) = trimmed.strip_prefix("oxi_browser=") {
+                if let Some(id) = trimmed.strip_prefix("rav_browser=") {
                     let id = id.trim();
                     if !id.is_empty() {
                         return Some(id.to_string());
@@ -174,7 +174,7 @@ fn extract_browser_id(headers: &axum::http::HeaderMap) -> Option<String> {
 }
 
 fn extract_session_cookies(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
-    let prefix = "oxi_session_";
+    let prefix = "rav_session_";
     let mut sessions = Vec::new();
     
     for cookie in headers.get_all("cookie").iter().filter_map(|v| v.to_str().ok()) {

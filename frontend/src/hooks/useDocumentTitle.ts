@@ -12,6 +12,6 @@ export function useDocumentTitle() {
       (f) => f.name === "INBOX" || f.name.toLowerCase() === "inbox",
     );
     const unread = inbox?.unread_count ?? 0;
-    document.title = unread > 0 ? `(${unread}) oxi.email` : "oxi.email";
+    document.title = unread > 0 ? `(${unread}) Rav` : "Rav";
   }, [data]);
 }

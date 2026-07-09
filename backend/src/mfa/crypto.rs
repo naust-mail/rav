@@ -7,7 +7,7 @@ use rand::RngCore;
 
 /// Wraps the server-side AES-256-GCM key used to encrypt TOTP secrets at rest.
 ///
-/// One key per oxi instance, stored as 32 raw bytes in `{data_dir}/.mfa_key`
+/// One key per Rav instance, stored as 32 raw bytes in `{data_dir}/.mfa_key`
 /// with mode 600. Generated on first use if the file does not exist.
 /// Losing this file invalidates all enrolled TOTP secrets.
 pub struct MfaCrypto {

@@ -17,7 +17,7 @@ export function useNotifications() {
   });
   const [bannerDismissed, setBannerDismissed] = useState(() => {
     if (typeof window === "undefined") return false;
-    return localStorage.getItem("oxi-notif-banner-dismissed") === "true";
+    return localStorage.getItem("rav-notif-banner-dismissed") === "true";
   });
 
   const { data: prefs } = useNotificationPreferences();
@@ -35,7 +35,7 @@ export function useNotifications() {
 
   const dismissBanner = useCallback(() => {
     setBannerDismissed(true);
-    localStorage.setItem("oxi-notif-banner-dismissed", "true");
+    localStorage.setItem("rav-notif-banner-dismissed", "true");
   }, []);
 
   // Re-check permission on visibility change
@@ -80,7 +80,7 @@ export function useNotifications() {
         if (permission === "granted" && !isQuietTime(quietHours)) {
           const notification = new Notification(title, {
             body,
-            tag: `oxi-${folder}`,
+            tag: `rav-${folder}`,
             icon: "/notification-icon.svg",
           });
 

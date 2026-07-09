@@ -33,7 +33,7 @@ function useResolvedTheme() {
   return theme;
 }
 
-const THEME_STORAGE_KEY = "oxi-theme";
+const THEME_STORAGE_KEY = "rav-theme";
 
 export function CommandPalette() {
   const open = useUiStore((s) => s.commandPaletteOpen);
