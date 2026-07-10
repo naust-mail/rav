@@ -250,7 +250,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
- "sha1",
+ "sha1 0.10.6",
  "sync_wrapper",
  "tokio",
  "tokio-tungstenite",
@@ -2423,7 +2423,7 @@ dependencies = [
 
 [[package]]
 name = "rav-email-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "aes-gcm",
  "async-imap",
@@ -2452,7 +2452,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha1",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "tantivy",
  "tempfile",
@@ -2906,6 +2906,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -3551,7 +3562,7 @@ dependencies = [
  "constant_time_eq",
  "hmac 0.12.1",
  "rand 0.9.4",
- "sha1",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "url",
  "urlencoding",
@@ -3765,7 +3776,7 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.9.4",
- "sha1",
+ "sha1 0.10.6",
  "thiserror 2.0.18",
 ]
 
