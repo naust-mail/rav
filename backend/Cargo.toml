@@ -34,7 +34,7 @@ tantivy = "0.26"
 ical = "0.11"
 regex = "1.12.3"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-rrule = "0.11"
+rrule = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 totp-rs = { version = "5", features = ["gen_secret", "otpauth"] }
 aes-gcm = "0.10"
