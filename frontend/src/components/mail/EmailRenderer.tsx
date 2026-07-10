@@ -2,13 +2,14 @@
 
 import { useRef, useCallback, useEffect, useState, useMemo } from "react";
 import { useUiStore } from "@/stores/useUiStore";
+import type { EmailTheme } from "@/types/message";
 
 interface EmailRendererProps {
   html: string | null;
   text: string | null;
   blockRemoteResources?: boolean;
   theme?: "light" | "dark" | "auto";
-  emailTheme?: 'light' | 'dark' | 'transparent' | 'adaptive';
+  emailTheme?: EmailTheme | null;
 }
 
 // We want to

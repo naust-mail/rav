@@ -168,7 +168,7 @@ export function ThreePanelLayout({
     isAnimating.current = true;
     const t = setTimeout(() => { isAnimating.current = false; }, motionTokens.duration.normal * 1000 + 20);
     return () => clearTimeout(t);
-  }, [mobilePanelView]);
+  }, [mobilePanelView, motionTokens.duration.normal]);
 
   // Mobile branch: three full-width panels sliding via CSS translateX
   if (isMobile) {

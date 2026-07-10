@@ -357,7 +357,7 @@ export function ReadingPane() {
       });
     }, 1500);
     return () => clearTimeout(timer);
-  }, [data?.uid, data?.folder, mobilePanelView, isMobile]);
+  }, [data?.uid, data?.folder_name, mobilePanelView, isMobile]);
 
   // No message selected
   if (selectedMessageUid === null) {
@@ -394,8 +394,8 @@ export function ReadingPane() {
     );
   }
 
-  const attachmentBaseUrl = `${process.env.NEXT_PUBLIC_BASE_PATH || ""}/api/messages/${encodeURIComponent(data.folder)}/${data.uid}/attachments`;
-  const messageKey = `${data.folder}:${data.uid}`;
+  const attachmentBaseUrl = `${process.env.NEXT_PUBLIC_BASE_PATH || ""}/api/messages/${encodeURIComponent(data.folder_id)}/${data.uid}/attachments`;
+  const messageKey = `${data.folder_name}:${data.uid}`;
   const remoteAllowed = allowedRemoteUids.has(messageKey);
   const showRemoteBanner = !remoteAllowed && hasRemoteResources(data.html);
 
@@ -563,7 +563,7 @@ export function ReadingPane() {
       {/* Thread view — only shown when there are multiple messages in the thread */}
       {data.thread && data.thread.length > 1 && (() => {
         const visibleThread = data.thread.filter(
-          (m) => m.folder === activeFolder || m.uid === data.uid,
+          (m) => m.folder_name === activeFolder || m.uid === data.uid,
         );
         return visibleThread.length > 1 ? (
           <ThreadView thread={visibleThread} currentUid={data.uid} />
@@ -602,7 +602,7 @@ export function ReadingPane() {
           </pre>
         ) : (
           <PgpBodyView
-            key={`${data.folder}-${data.uid}`}
+            key={`${data.folder_name}-${data.uid}`}
             message={data}
             emailTheme={emailTheme}
             blockRemoteResources={!remoteAllowed}

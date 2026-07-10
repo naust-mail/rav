@@ -104,6 +104,8 @@ static NAMED_COLORS: LazyLock<NamedColorList> = LazyLock::new(|| {
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum EmailTheme {
     Light = 0,

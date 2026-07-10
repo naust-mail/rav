@@ -80,7 +80,7 @@ function SearchResultRow({
     <button
       type="button"
       onClick={onClick}
-      data-search-result-folder={result.folder}
+      data-search-result-folder={result.folder_name}
       data-search-result-uid={result.uid}
       className={cn(
         "flex w-full cursor-pointer flex-col gap-0.5 border-b border-border px-3 py-2 text-left transition-colors",
@@ -105,7 +105,7 @@ function SearchResultRow({
           {sender}
         </span>
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-          {result.folder}
+          {result.folder_name}
         </span>
         <span className={cn("shrink-0 text-xs", isFlagged ? "text-primary" : "text-muted-foreground")}>
           {formattedDate}
@@ -258,7 +258,7 @@ export function SearchResults() {
 
   const handleResultClick = useCallback(
     (result: SearchResultItem) => {
-      setActiveFolder(result.folder);
+      setActiveFolder(result.folder_name);
       selectMessage(result.uid);
     },
     [setActiveFolder, selectMessage],
@@ -350,7 +350,7 @@ export function SearchResults() {
                 <AnimatePresence initial={false}>
                   {results.map((result) => (
                     <AnimatedDiv
-                      key={`${result.folder}-${result.uid}`}
+                      key={`${result.folder_name}-${result.uid}`}
                       data-testid="search-results-item-transition"
                       variants={itemTransition}
                       initial={itemTransition.initial}
@@ -360,7 +360,7 @@ export function SearchResults() {
                       <SearchResultRow
                         result={result}
                         isSelected={
-                          activeFolder === result.folder &&
+                          activeFolder === result.folder_name &&
                           selectedMessageUid === result.uid
                         }
                         onClick={() => handleResultClick(result)}

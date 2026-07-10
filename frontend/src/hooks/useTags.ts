@@ -2,6 +2,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPut, apiDelete } from "@/lib/api";
+import { resolveFolderId } from "@/lib/folders";
 import type { Tag, MessageTag } from "@/types/tag";
 import type { MessageHeader } from "@/types/message";
 
@@ -71,11 +72,12 @@ export function useDeleteTag() {
 }
 
 export function useMessageTags(folder: string | null, uid: number | null) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["message-tags", folder, uid],
     queryFn: () =>
       apiGet<MessageTagsResponse>(
-        `/messages/${encodeURIComponent(folder!)}/${uid}/tags`,
+        `/messages/${encodeURIComponent(resolveFolderId(queryClient, folder!))}/${uid}/tags`,
       ),
     enabled: !!folder && uid != null && uid > 0,
   });
@@ -95,7 +97,7 @@ export function useAddTagToMessage() {
     }) =>
       apiPost(`/tags/${tagId}/messages`, {
         message_uid: messageUid,
-        message_folder: messageFolder,
+        message_folder: resolveFolderId(queryClient, messageFolder),
       }),
     onSuccess: (_, { tagId, messageUid, messageFolder }) => {
       queryClient.invalidateQueries({
@@ -121,7 +123,7 @@ export function useRemoveTagFromMessage() {
       messageFolder: string;
     }) =>
       apiDelete(
-        `/tags/${tagId}/messages/${encodeURIComponent(messageFolder)}/${messageUid}`,
+        `/tags/${tagId}/messages/${encodeURIComponent(resolveFolderId(queryClient, messageFolder))}/${messageUid}`,
       ),
     onSuccess: (_, { tagId, messageUid, messageFolder }) => {
       queryClient.invalidateQueries({
@@ -144,7 +146,12 @@ export function useBulkAddTag() {
       tagId: string;
       messages: { uid: number; folder: string }[];
     }) =>
-      apiPost(`/tags/${tagId}/messages/bulk`, { messages }),
+      apiPost(`/tags/${tagId}/messages/bulk`, {
+        messages: messages.map((m) => ({
+          uid: m.uid,
+          folder: resolveFolderId(queryClient, m.folder),
+        })),
+      }),
     onSuccess: (_, { tagId, messages }) => {
       queryClient.invalidateQueries({ queryKey: ["tags"] });
       queryClient.invalidateQueries({ queryKey: ["tag-messages", tagId] });

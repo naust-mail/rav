@@ -3,8 +3,55 @@ use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
+
+/// Opaque, single-use token identifying a folder for one request. A fresh
+/// value is minted by `FolderCipher::encrypt` on every call - even twice for
+/// the same folder name in the same response - so it must never be compared
+/// for equality, used as a cache/map key, or held past the request it was
+/// issued for. `#[serde(transparent)]` keeps the wire format a plain string,
+/// unchanged from before this type existed.
+///
+/// `Default` produces an empty placeholder, not a valid id - only for
+/// building a response struct before its real `encrypt()`-derived value is
+/// filled in. Never serialize a default value to a client.
+// `#[serde(transparent)]` isn't in ts-rs's supported-attribute list (only
+// rename/rename-all/tag/content/untagged/skip/skip_serializing[_if]/flatten/
+// default are), so `cargo build --features ts-export` prints a harmless
+// "failed to parse serde attribute" warning for this line. Verified benign:
+// ts-rs's default handling of a single-field tuple struct already produces
+// the correct `export type FolderId = string` regardless.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
+#[serde(transparent)]
+pub struct FolderId(String);
+
+impl FolderId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FolderId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// Explicit-only construction from a raw string: for parsing wire values at a
+// boundary (tests reading HTTP JSON, axum's Deserialize-based Path/Json
+// extraction). Never used implicitly, so it doesn't undermine the "you can't
+// accidentally pass a folder name where an id is expected" guarantee - it
+// just names the one place a bare string legitimately becomes an id.
+#[cfg(test)]
+impl From<&str> for FolderId {
+    fn from(s: &str) -> Self {
+        FolderId(s.to_string())
+    }
+}
 
 /// Encrypts and decrypts IMAP folder names using AES-256-GCM with a
 /// session-derived key. IDs are opaque, tamper-proof, and expire with
@@ -37,7 +84,7 @@ impl FolderCipher {
     /// Encrypts a folder name. Returns `base64url(nonce || ciphertext+tag)`.
     /// A fresh 12-byte nonce is generated per call so the same folder name
     /// produces a different ID each session.
-    pub fn encrypt(&self, folder_name: &str) -> String {
+    pub fn encrypt(&self, folder_name: &str) -> FolderId {
         let mut nonce_bytes = [0u8; 12];
         rand::rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -47,15 +94,15 @@ impl FolderCipher {
         let mut buf = Vec::with_capacity(12 + ciphertext.len());
         buf.extend_from_slice(&nonce_bytes);
         buf.extend_from_slice(&ciphertext);
-        URL_SAFE_NO_PAD.encode(&buf)
+        FolderId(URL_SAFE_NO_PAD.encode(&buf))
     }
 
     /// Decrypts a folder ID back to the IMAP folder name.
     /// Returns `BadRequest` if the ID is malformed or the GCM tag fails
     /// (invalid, tampered, or from a different session).
-    pub fn decrypt(&self, folder_id: &str) -> Result<String, AppError> {
+    pub fn decrypt(&self, folder_id: &FolderId) -> Result<String, AppError> {
         let bytes = URL_SAFE_NO_PAD
-            .decode(folder_id)
+            .decode(folder_id.as_str())
             .map_err(|_| AppError::BadRequest("Invalid folder ID".to_string()))?;
         // nonce(12) + ciphertext(>=1) + tag(16) = minimum 29 bytes
         if bytes.len() < 29 {
@@ -98,9 +145,9 @@ mod tests {
     fn tampered_ciphertext_is_rejected() {
         let key = [1u8; 32];
         let cipher = FolderCipher::new(&key);
-        let mut bytes = URL_SAFE_NO_PAD.decode(cipher.encrypt("INBOX")).unwrap();
+        let mut bytes = URL_SAFE_NO_PAD.decode(cipher.encrypt("INBOX").as_str()).unwrap();
         bytes[20] ^= 0xFF; // flip bits in ciphertext
-        let bad = URL_SAFE_NO_PAD.encode(&bytes);
+        let bad = FolderId(URL_SAFE_NO_PAD.encode(&bytes));
         assert!(cipher.decrypt(&bad).is_err());
     }
 
@@ -115,8 +162,8 @@ mod tests {
     #[test]
     fn too_short_input_is_rejected() {
         let cipher = FolderCipher::new(&[0u8; 32]);
-        assert!(cipher.decrypt("short").is_err());
-        assert!(cipher.decrypt("").is_err());
+        assert!(cipher.decrypt(&FolderId("short".to_string())).is_err());
+        assert!(cipher.decrypt(&FolderId(String::new())).is_err());
     }
 
     #[test]

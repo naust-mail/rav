@@ -8,6 +8,7 @@ use crate::auth::session::SessionState;
 use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
+use crate::folder_cipher::FolderId;
 use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::routes::messages::types::MessageSummary;
 
@@ -16,15 +17,19 @@ const FOLDER_PREVIEW_LIMIT: u32 = 20;
 
 /// Response envelope for `GET /api/folders`.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 struct FoldersResponse {
     folders: Vec<FolderEntry>,
 }
 
 /// A single folder in the response, including a preview of its most recent messages.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 struct FolderEntry {
     /// Opaque encrypted folder ID for use in subsequent API requests.
-    id: String,
+    id: FolderId,
     name: String,
     delimiter: Option<String>,
     attributes: Vec<String>,
@@ -154,7 +159,8 @@ pub async fn list_folders(
                         .unwrap_or_default();
                     MessageSummary {
                         uid: t.msg.uid,
-                        folder: cipher.encrypt(&t.msg.folder),
+                        folder_id: cipher.encrypt(&t.msg.folder),
+                        folder_name: t.msg.folder.clone(),
                         subject: t.msg.subject,
                         from_address: t.msg.from_address,
                         from_name: t.msg.from_name,

@@ -44,7 +44,10 @@ pub async fn validate_imap_credentials(
 
     match tokio::time::timeout(CONNECT_TIMEOUT, inner).await {
         Ok(result) => result,
-        Err(_) => AuthResult::ServerUnreachable(ConnectError::Timeout),
+        Err(_) => {
+            warn!(host, port, "IMAP connection attempt timed out");
+            AuthResult::ServerUnreachable(ConnectError::Timeout)
+        }
     }
 }
 

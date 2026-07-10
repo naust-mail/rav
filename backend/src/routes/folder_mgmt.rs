@@ -9,6 +9,7 @@ use crate::auth::session::SessionState;
 use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
+use crate::folder_cipher::FolderId;
 use crate::imap::client::{ImapClient, ImapCredentials};
 
 // ---------------------------------------------------------------------------
@@ -127,7 +128,7 @@ pub async fn rename_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(folder_id): Path<String>,
+    Path(folder_id): Path<FolderId>,
     Json(body): Json<RenameFolderRequest>,
 ) -> Result<Response, AppError> {
     let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
@@ -162,7 +163,7 @@ pub async fn delete_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(folder_id): Path<String>,
+    Path(folder_id): Path<FolderId>,
 ) -> Result<Response, AppError> {
     let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
 
@@ -194,7 +195,7 @@ pub async fn subscribe_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(folder_id): Path<String>,
+    Path(folder_id): Path<FolderId>,
     Json(body): Json<SubscribeRequest>,
 ) -> Result<Response, AppError> {
     let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;

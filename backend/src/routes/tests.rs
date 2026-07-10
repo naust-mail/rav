@@ -2546,7 +2546,7 @@
         let valid_id = cipher.encrypt("INBOX");
 
         // Flip a bit in the ciphertext area (bytes 12+ are ciphertext+tag).
-        let mut bytes = URL_SAFE_NO_PAD.decode(&valid_id).unwrap();
+        let mut bytes = URL_SAFE_NO_PAD.decode(valid_id.as_str()).unwrap();
         bytes[20] ^= 0xFF;
         let tampered_id = URL_SAFE_NO_PAD.encode(&bytes);
 
@@ -2661,13 +2661,16 @@
         let results = json["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
 
-        // The folder field must be opaque - not the raw IMAP folder name.
-        let result_folder = results[0]["folder"].as_str().unwrap();
-        assert_ne!(result_folder, "INBOX", "folder must be encrypted in search results");
+        // folder_id must be opaque - not the raw IMAP folder name.
+        let result_folder_id = results[0]["folder_id"].as_str().unwrap();
+        assert_ne!(result_folder_id, "INBOX", "folder_id must be encrypted in search results");
         let decrypted = crate::folder_cipher::FolderCipher::from_session_token(&token)
-            .decrypt(result_folder)
+            .decrypt(&crate::folder_cipher::FolderId::from(result_folder_id))
             .unwrap();
         assert_eq!(decrypted, "INBOX");
+
+        // folder_name is sent alongside it in plaintext, for display.
+        assert_eq!(results[0]["folder_name"], "INBOX");
     }
 
     #[tokio::test]

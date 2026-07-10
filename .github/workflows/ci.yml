@@ -41,6 +41,12 @@ jobs:
       - name: Test
         run: cargo test
 
+      - name: Check generated TypeScript types are current
+        run: |
+          cargo test --features ts-export
+          git diff --exit-code -- ../frontend/src/types/generated || \
+            (echo "::error::frontend/src/types/generated is stale - run 'cargo test --features ts-export' in backend/ and commit the result" && exit 1)
+
   frontend:
     name: Frontend (Next.js)
     runs-on: ubuntu-latest

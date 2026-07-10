@@ -21,19 +21,10 @@ export type PgpKeyRecord = PgpKeySummary & {
   private_key_enc: string;
 };
 
-/** PGP/MIME status detected in a received message. */
-export type PgpMessageStatus = {
-  kind: 'encrypted' | 'signed' | 'signed_and_encrypted';
-  /** Armored PGP ciphertext for encrypted messages (client decrypts). */
-  ciphertext: string | null;
-  /** Armored detached signature for signed messages (client verifies). */
-  signature: string | null;
-  /** micalg value from multipart/signed (e.g. "pgp-sha256"). */
-  micalg: string | null;
-  /** Base64-encoded raw bytes of the first signed MIME body part including its headers.
-   *  RFC 3156 signatures cover the complete body part, not just the text. */
-  signed_content: string | null;
-};
+// Generated from the Rust backend (backend/src/imap/types.rs) via ts-rs.
+// Regenerate with `cargo test --features ts-export` in backend/.
+export type { PgpMessageStatus } from "./generated/PgpMessageStatus";
+export type { PgpStatusKind } from "./generated/PgpStatusKind";
 
 /** PGP parameters included in an outbound send request. */
 export type PgpSendRequest = {

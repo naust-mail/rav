@@ -7,6 +7,8 @@ use crate::db::messages::CachedMessage;
 
 /// A tag record, mirroring the `tags` table.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct Tag {
     pub id: String,
     pub name: String,
@@ -18,6 +20,8 @@ pub struct Tag {
 
 /// Lightweight tag info returned alongside messages.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct MessageTag {
     pub id: String,
     pub name: String,

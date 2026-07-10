@@ -96,7 +96,7 @@ describe("SearchResults motion transitions", () => {
     mockUiState.effectiveAnimationMode = "medium";
     mockUiState.searchQuery = "from:alice";
     mockUseSearch.mockReturnValue(mockSearchResult([
-      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
     ]));
 
     const { rerender } = render(<SearchResults />);
@@ -112,8 +112,8 @@ describe("SearchResults motion transitions", () => {
     mockUiState.effectiveAnimationMode = "medium";
     mockUiState.searchQuery = "from:alice";
     mockUseSearch.mockReturnValue(mockSearchResult([
-      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
-      { uid: 11, folder: "INBOX", from_name: "Bob", from_address: "bob@example.com", subject: "World", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      { uid: 11, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Bob", from_address: "bob@example.com", subject: "World", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
     ]));
 
     render(<SearchResults />);
@@ -126,7 +126,7 @@ describe("SearchResults motion transitions", () => {
     mockUiState.effectiveAnimationMode = "off";
     mockUiState.searchQuery = "from:alice";
     mockUseSearch.mockReturnValue(mockSearchResult([
-      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+      { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
     ]));
 
     render(<SearchResults />);
@@ -152,7 +152,7 @@ describe("SearchResults motion transitions", () => {
     mockUiState.setSearchQuery.mockClear();
     mockUiState.setSearchActive.mockClear();
     mockUseSearch.mockReturnValue(mockSearchResult([
-      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
+      { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
     ]));
 
     render(<SearchResults />);
@@ -169,7 +169,7 @@ describe("SearchResults motion transitions", () => {
     mockUiState.setSearchQuery.mockClear();
     mockUiState.setSearchActive.mockClear();
     mockUseSearch.mockReturnValue(mockSearchResult([
-      { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
+      { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: true },
     ]));
 
     render(<SearchResults />);
@@ -201,7 +201,7 @@ describe("SearchResults motion transitions", () => {
 
       const results = Array.from({ length: 10 }, (_, i) => ({
         uid: i + 1,
-        folder: "INBOX",
+        folder_id: "encrypted-inbox-token", folder_name: "INBOX",
         from_name: `User ${i + 1}`,
         from_address: `user${i + 1}@test.com`,
         subject: `Subject ${i + 1}`,
@@ -282,7 +282,7 @@ describe("SearchResults motion transitions", () => {
       const viewportHeight = 100;
 
       mockUseSearch.mockReturnValue(mockSearchResult([
-        { uid: 10, folder: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
+        { uid: 10, folder_id: "encrypted-inbox-token", folder_name: "INBOX", from_name: "Alice", from_address: "alice@example.com", subject: "Hello", snippet: "Snippet", date: "2026-03-14T00:00:00Z", flags: [], has_attachments: false },
       ]));
 
       Element.prototype.getBoundingClientRect = function (
@@ -350,7 +350,7 @@ describe("SearchResults motion transitions", () => {
       const results = [
         {
           uid: 10,
-          folder: "INBOX",
+          folder_id: "encrypted-inbox-token", folder_name: "INBOX",
           from_name: "Inbox Message",
           from_address: "inbox@test.com",
           subject: "Inbox Subject",
@@ -361,7 +361,7 @@ describe("SearchResults motion transitions", () => {
         },
         {
           uid: 10,
-          folder: "Sent",
+          folder_id: "encrypted-sent-token", folder_name: "Sent",
           from_name: "Sent Message",
           from_address: "sent@test.com",
           subject: "Sent Subject",

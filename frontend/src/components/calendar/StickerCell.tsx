@@ -18,6 +18,11 @@ export function StickerCell({ stickerId, catalog, faded = false }: StickerCellPr
   if (!def) return null;
 
   return (
+    // Sticker assets are pre-resized/re-encoded to WebP at their actual max
+    // render size (see frontend/scripts/optimize-stickers.mjs) - next/image
+    // would add no benefit here (static export has no server to run its
+    // optimizer) and animated stickers need src to stay a plain file path.
+    // eslint-disable-next-line @next/next/no-img-element
     <img
       src={`/stickers/${def.file}`}
       alt={def.label}

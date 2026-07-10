@@ -1,0 +1,8 @@
+# ts-rs (feature "ts-export") writes generated TypeScript bindings here when
+# running `cargo test --features ts-export`. Relative to this crate's root.
+[env]
+TS_RS_EXPORT_DIR = { value = "../frontend/src/types/generated", relative = true }
+# serde_json serializes i64/u64/i128/u128 as plain JSON numbers, not strings,
+# and JSON.parse never produces a bigint - ts-rs's own default of "bigint"
+# here would generate a type that lies about the actual runtime shape.
+TS_RS_LARGE_INT = "number"

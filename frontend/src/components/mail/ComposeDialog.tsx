@@ -241,8 +241,6 @@ export function ComposeDialog() {
       bcc,
       subject,
       body,
-      quotedHtml,
-      quotedText,
       isHtml,
       draftId,
       setDraftId,
@@ -456,7 +454,7 @@ export function ComposeDialog() {
       setPgpSending(false);
       setPgpPassphrase("");
     }
-  }, [pgpMode, pgpKeys, body, quotedText, to, cc, bcc, closeCompose, displayPrefs, doSend, doEncryptAndSend]);
+  }, [pgpMode, pgpKeys, body, quotedText, to, cc, bcc, closeCompose, displayPrefs, doSend, doEncryptAndSend, fromIdentityId, identities]);
 
   const handleSend = useCallback(() => {
     if (!to.trim() && !cc.trim() && !bcc.trim()) return;

@@ -11,17 +11,19 @@ import type { InfiniteData } from "@tanstack/react-query";
 import { apiGet, apiPatch, apiPost, apiDelete } from "@/lib/api";
 import { useWsStatus } from "@/lib/ws-context";
 import { useUiStore } from "@/stores/useUiStore";
+import { resolveFolderId } from "@/lib/folders";
 import type { MessagesResponse, MessageDetail, MessageHeader } from "@/types/message";
 
 const PER_PAGE = 50;
 
 export function useMessages(folder: string) {
+  const queryClient = useQueryClient();
   const { status } = useWsStatus();
   return useInfiniteQuery({
     queryKey: ["messages", folder],
     queryFn: ({ pageParam = 0 }) =>
       apiGet<MessagesResponse>(
-        `/folders/${encodeURIComponent(folder)}/messages?page=${pageParam}&per_page=${PER_PAGE}`,
+        `/folders/${encodeURIComponent(resolveFolderId(queryClient, folder))}/messages?page=${pageParam}&per_page=${PER_PAGE}`,
       ),
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {
@@ -35,11 +37,12 @@ export function useMessages(folder: string) {
 }
 
 export function useMessage(folder: string, uid: number) {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["message", folder, uid],
     queryFn: () =>
       apiGet<MessageDetail>(
-        `/messages/${encodeURIComponent(folder)}/${uid}`,
+        `/messages/${encodeURIComponent(resolveFolderId(queryClient, folder))}/${uid}`,
       ),
     enabled: !!folder && uid > 0,
     retry: (failureCount, error) => {
@@ -77,7 +80,7 @@ export function useUpdateFlags() {
       flags: string[];
       add: boolean;
     }) =>
-      apiPatch(`/messages/${encodeURIComponent(folder)}/${uid}/flags`, {
+      apiPatch(`/messages/${encodeURIComponent(resolveFolderId(queryClient, folder))}/${uid}/flags`, {
         flags,
         add,
       }),
@@ -102,8 +105,8 @@ export function useMoveMessage() {
       uid: number;
     }) =>
       apiPost("/messages/move", {
-        from_folder: fromFolder,
-        to_folder: toFolder,
+        from_folder: resolveFolderId(queryClient, fromFolder),
+        to_folder: resolveFolderId(queryClient, toFolder),
         uid,
       }),
     onMutate: async ({ fromFolder, toFolder, uid }) => {
@@ -163,7 +166,8 @@ export function useMoveMessage() {
       if (movedMsg && prevTo) {
         const entry: MessageHeader = {
           ...movedMsg,
-          folder: toFolder,
+          folder_id: resolveFolderId(queryClient, toFolder),
+          folder_name: toFolder,
         };
         queryClient.setQueryData<InfiniteData<MessagesResponse>>(
           ["messages", toFolder],
@@ -206,7 +210,7 @@ export function useDeleteMessage() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ folder, uid }: { folder: string; uid: number }) =>
-      apiDelete(`/messages/${encodeURIComponent(folder)}/${uid}`),
+      apiDelete(`/messages/${encodeURIComponent(resolveFolderId(queryClient, folder))}/${uid}`),
     onMutate: async ({ folder, uid }) => {
       // Auto-advance: if the deleted message is selected, select the next (or previous) message.
       const { selectedMessageUid, selectMessage } = useUiStore.getState();

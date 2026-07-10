@@ -17,7 +17,6 @@ import {
   Settings,
 } from "lucide-react";
 import { useIsFetching } from "@tanstack/react-query";
-import { useIsMobile } from "@/hooks/useIsMobile";
 import { useFolders, useRenameFolder } from "@/hooks/useFolders";
 import { useQuota } from "@/hooks/useQuota";
 import { useMoveMessage } from "@/hooks/useMessages";
@@ -614,7 +613,6 @@ function MailboxSpace({
 export function FolderTree() {
   const { data, isLoading, isError, refetch } = useFolders();
   const { data: quota } = useQuota();
-  const activeFolder = useUiStore((s) => s.activeFolder);
   const setViewMode = useUiStore((s) => s.setViewMode);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);

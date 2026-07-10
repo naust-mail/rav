@@ -142,6 +142,10 @@ export function MessageList() {
   const originalMessage = useMessageByMessageId(pendingInReplyToId);
 
   // Step 1: message detail arrives - save to ref, extract UUID + reply context.
+  // The eslint-disable-line comments below are NOT stale - the lint step's
+  // "unused eslint-disable directive" report for react-hooks/set-state-in-effect
+  // on this block is a false positive. Removing them makes the linter fail
+  // for real. Do not delete them based on that report.
   useEffect(() => {
     if (!pendingDraft || !messageDetail.data) return;
     const detail = messageDetail.data;
@@ -171,6 +175,8 @@ export function MessageList() {
   }, [pendingDraft, messageDetail.data, openDraft]);
 
   // Step 2: wait for attachments + original message (if reply), then open compose.
+  // Same false-positive "unused eslint-disable directive" note as step 1 above
+  // applies to the eslint-disable-line comments in this block.
   useEffect(() => {
     if (!pendingDraftUuid || draftAttachments.isPending) return;
     // If waiting on the original message for quote reconstruction, hold off.
@@ -516,7 +522,7 @@ export function MessageList() {
                       density={density}
                       onClick={(e) => {
                         if (isDraftMessage) {
-                          setPendingDraft({ folder: message.folder, uid: message.uid });
+                          setPendingDraft({ folder: message.folder_name, uid: message.uid });
                         } else {
                           handleClick(message.uid, e);
                         }

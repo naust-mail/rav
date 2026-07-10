@@ -123,11 +123,13 @@ vi.mock("@/hooks/useMessages", async () => {
 
 import { MessageList } from "../MessageList";
 import { MessageListItem } from "../MessageListItem";
+import type { FolderId } from "@/types/folder";
 
 function buildMessage(uid: number) {
   return {
     uid,
-    folder: "INBOX",
+    folder_id: "encrypted-inbox-token" as FolderId,
+    folder_name: "INBOX",
     subject: `Subject ${uid}`,
     from_address: "sender@example.com",
     from_name: `Sender ${uid}`,

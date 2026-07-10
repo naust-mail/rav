@@ -4,10 +4,10 @@ import { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight, ChevronUp, Paperclip } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
-import type { MessageHeader } from "@/types/message";
+import type { ThreadMessage } from "@/types/message";
 
 interface ThreadViewProps {
-  thread: MessageHeader[];
+  thread: ThreadMessage[];
   currentUid: number;
 }
 
@@ -143,7 +143,7 @@ export function ThreadView({ thread, currentUid }: ThreadViewProps) {
 
           return (
             <button
-              key={`${msg.folder}-${msg.uid}`}
+              key={`${msg.folder_name}-${msg.uid}`}
               ref={isCurrent ? currentRef : undefined}
               type="button"
               onClick={() => {

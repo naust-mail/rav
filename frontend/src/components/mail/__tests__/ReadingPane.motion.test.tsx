@@ -113,7 +113,8 @@ function setMessage(uid: number) {
   mockUseMessage.mockReturnValue({
     data: {
       uid,
-      folder: "INBOX",
+      folder_id: "encrypted-inbox-token",
+      folder_name: "INBOX",
       subject: `Subject ${uid}`,
       from_address: "sender@example.com",
       from_name: "Sender",

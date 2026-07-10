@@ -12,6 +12,7 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::email_theme;
 use crate::error::AppError;
+use crate::folder_cipher::FolderId;
 use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::realtime::events::{EventBus, MailEvent};
 use crate::search::engine::{IndexableMessage, SearchEngine, UserIndex};
@@ -94,7 +95,7 @@ pub async fn list_messages(
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
     Extension(event_bus): Extension<Arc<EventBus>>,
-    Path(folder_id): Path<String>,
+    Path(folder_id): Path<FolderId>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
@@ -267,7 +268,8 @@ pub async fn list_messages(
                 .unwrap_or_default();
             MessageSummary {
                 uid: t.msg.uid,
-                folder: cipher.encrypt(&t.msg.folder),
+                folder_id: cipher.encrypt(&t.msg.folder),
+                folder_name: t.msg.folder.clone(),
                 subject: t.msg.subject,
                 from_address: t.msg.from_address,
                 from_name: t.msg.from_name,
@@ -513,7 +515,7 @@ pub async fn get_message(
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
     link_proxy: Option<Extension<Arc<crate::link_proxy::LinkProxySecret>>>,
-    Path((folder_id, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(FolderId, u32)>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
@@ -725,7 +727,8 @@ pub async fn get_message(
         .into_iter()
         .map(|m| ThreadMessage {
             uid: m.uid,
-            folder: resp_cipher.encrypt(&m.folder),
+            folder_id: resp_cipher.encrypt(&m.folder),
+            folder_name: m.folder.clone(),
             message_id: m.message_id,
             in_reply_to: m.in_reply_to,
             subject: m.subject,
@@ -766,7 +769,8 @@ pub async fn get_message(
 
     Ok(Json(MessageDetailResponse {
         uid: msg.uid,
-        folder: resp_cipher.encrypt(&msg.folder),
+        folder_id: resp_cipher.encrypt(&msg.folder),
+        folder_name: msg.folder.clone(),
         subject: msg.subject,
         from_address: msg.from_address,
         from_name: msg.from_name,
@@ -799,7 +803,7 @@ pub async fn update_flags(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder_id, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(FolderId, u32)>,
     Json(body): Json<UpdateFlagsRequest>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
@@ -923,7 +927,7 @@ pub async fn download_attachment(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder_id, uid, attachment_id)): Path<(String, u32, String)>,
+    Path((folder_id, uid, attachment_id)): Path<(FolderId, u32, String)>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
@@ -1002,7 +1006,7 @@ pub async fn delete_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path((folder_id, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(FolderId, u32)>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;
@@ -1034,7 +1038,7 @@ pub async fn mark_all_read(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Path(folder_id): Path<String>,
+    Path(folder_id): Path<FolderId>,
 ) -> Result<Response, AppError> {
     let folder = cipher_for(&session).decrypt(&folder_id)?;
     let creds = build_creds(&session, &config)?;

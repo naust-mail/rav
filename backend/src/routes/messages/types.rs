@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::folder_cipher::FolderId;
+
 pub use crate::imap::types::PgpMessageStatus;
 
 pub use crate::email_theme::EmailTheme;
@@ -11,6 +13,8 @@ pub fn default_per_page() -> u32 {
 
 /// Query parameters for `GET /api/folders/:folder/messages`.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct ListMessagesQuery {
     #[serde(default)]
     pub(crate) page: u32,
@@ -20,6 +24,8 @@ pub(crate) struct ListMessagesQuery {
 
 /// Request body for `PATCH /api/messages/:folder/:uid/flags`.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct UpdateFlagsRequest {
     pub(crate) flags: Vec<String>,
     pub(crate) add: bool,
@@ -27,14 +33,18 @@ pub(crate) struct UpdateFlagsRequest {
 
 /// Request body for `POST /api/messages/move`.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct MoveMessageRequest {
-    pub(crate) from_folder: String,
-    pub(crate) to_folder: String,
+    pub(crate) from_folder: FolderId,
+    pub(crate) to_folder: FolderId,
     pub(crate) uid: u32,
 }
 
 /// Response envelope for `GET /api/folders/:folder/messages`.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct ListMessagesResponse {
     pub(crate) messages: Vec<MessageSummary>,
     pub(crate) total_count: u32,
@@ -46,9 +56,18 @@ pub(crate) struct ListMessagesResponse {
 /// A message summary in the list response. Represents the latest message in a
 /// thread, with per-thread aggregate counts for UI grouping.
 #[derive(Serialize, Clone)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct MessageSummary {
     pub uid: u32,
-    pub folder: String,
+    /// Opaque, single-use token for this exact response. Pass back verbatim
+    /// in the next request touching this message (flags, delete, tags,
+    /// attachments). Never compare or cache it - a fresh value is minted on
+    /// every response, even for two messages in the same folder.
+    pub folder_id: FolderId,
+    /// Plaintext, stable folder name. Use for display, comparisons, and
+    /// cache keys - never send this back to the server as a path/body value.
+    pub folder_name: String,
     pub subject: String,
     pub from_address: String,
     pub from_name: String,
@@ -68,6 +87,8 @@ pub struct MessageSummary {
 
 /// An email address entry for the detail response.
 #[derive(Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct AddressEntry {
     pub(crate) name: Option<String>,
     pub(crate) address: String,
@@ -93,9 +114,14 @@ pub(crate) fn parse_flags(flags_csv: &str) -> Vec<String> {
 
 /// Response for `GET /api/messages/:folder/:uid`.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct MessageDetailResponse {
     pub(crate) uid: u32,
-    pub(crate) folder: String,
+    /// Opaque, single-use token - see `MessageSummary::folder_id`.
+    pub(crate) folder_id: FolderId,
+    /// Plaintext, stable folder name - see `MessageSummary::folder_name`.
+    pub(crate) folder_name: String,
     pub(crate) subject: String,
     pub(crate) from_address: String,
     pub(crate) from_name: String,
@@ -115,9 +141,14 @@ pub(crate) struct MessageDetailResponse {
 
 /// A message summary within a thread.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct ThreadMessage {
     pub(crate) uid: u32,
-    pub(crate) folder: String,
+    /// Opaque, single-use token - see `MessageSummary::folder_id`.
+    pub(crate) folder_id: FolderId,
+    /// Plaintext, stable folder name - see `MessageSummary::folder_name`.
+    pub(crate) folder_name: String,
     pub(crate) message_id: Option<String>,
     pub(crate) in_reply_to: Option<String>,
     pub(crate) subject: String,
@@ -134,6 +165,8 @@ pub(crate) struct ThreadMessage {
 
 /// Attachment metadata (without the binary data).
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub(crate) struct AttachmentMeta {
     pub(crate) id: String,
     pub(crate) filename: Option<String>,

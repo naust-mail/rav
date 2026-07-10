@@ -113,7 +113,7 @@ export const MessageListItem = memo(function MessageListItem({
   const toggleStar = (e: React.MouseEvent) => {
     e.stopPropagation();
     updateFlags.mutate({
-      folder: message.folder,
+      folder: message.folder_name,
       uid: message.uid,
       flags: ["\\Flagged"],
       add: !isFlagged,
@@ -123,7 +123,7 @@ export const MessageListItem = memo(function MessageListItem({
   const toggleRead = (e: React.MouseEvent) => {
     e.stopPropagation();
     updateFlags.mutate({
-      folder: message.folder,
+      folder: message.folder_name,
       uid: message.uid,
       flags: ["\\Seen"],
       add: isUnread, // if unread, add \Seen; if read, remove \Seen
@@ -143,14 +143,14 @@ export const MessageListItem = memo(function MessageListItem({
         "application/json",
         JSON.stringify({
           uid: message.uid,
-          folder: message.folder,
+          folder: message.folder_name,
           subject: message.subject,
         }),
       );
       e.dataTransfer.effectAllowed = "move";
       setIsDragging(true);
     },
-    [message.uid, message.folder, message.subject],
+    [message.uid, message.folder_name, message.subject],
   );
 
   const handleDragEnd = useCallback(() => {

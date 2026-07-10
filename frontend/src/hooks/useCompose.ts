@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PgpSendRequest } from "@/types/pgp";
+import type { FolderId } from "@/types/folder";
 import { apiPost, apiGet, apiPostFormData, apiDelete } from "@/lib/api";
 
 type SendParams = {
@@ -169,7 +170,8 @@ export function useDeleteDraft() {
 export type ReplyDraftRef = {
   uuid: string;
   imap_uid: number | null;
-  draft_folder: string;
+  /** Opaque, single-use token - see `FolderId`. Use directly, right away. */
+  draft_folder_id: FolderId;
 };
 
 /**

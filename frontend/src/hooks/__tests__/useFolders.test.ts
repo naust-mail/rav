@@ -6,6 +6,7 @@ import type { InfiniteData } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement, type ReactNode } from "react";
 import type { MessagesResponse } from "@/types/message";
+import type { FolderId } from "@/types/folder";
 
 const { mockApiGet } = vi.hoisted(() => ({
   mockApiGet: vi.fn(),
@@ -35,7 +36,8 @@ function createWrapper() {
 
 const mockMessage = {
   uid: 1,
-  folder: "INBOX",
+  folder_id: "encrypted-inbox-token" as FolderId,
+  folder_name: "INBOX",
   subject: "Hello",
   from_address: "a@b.com",
   from_name: "Alice",
@@ -102,7 +104,7 @@ describe("useFolders", () => {
 
     // Pre-populate the cache as if a real messages fetch already ran.
     const existing: InfiniteData<MessagesResponse> = {
-      pages: [{ messages: [{ ...mockMessage, subject: "Already cached" }], total_count: 5, page: 0, per_page: 50 }],
+      pages: [{ messages: [{ ...mockMessage, subject: "Already cached" }], total_count: 5, page: 0, per_page: 50, syncing: false }],
       pageParams: [0],
     };
     queryClient.setQueryData(["messages", "INBOX"], existing);

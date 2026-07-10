@@ -130,6 +130,16 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status_code();
+
+        // ServiceUnavailable is returned from many call sites (config checks,
+        // pooled IMAP/SMTP errors) that don't log before converting into this
+        // type, which left 503s showing up with no trace of why. Log here once,
+        // covering every current and future site instead of duplicating a
+        // warn! at each one.
+        if let AppError::ServiceUnavailable(msg) = &self {
+            tracing::warn!(message = %msg, "returning 503 Service Unavailable");
+        }
+
         let envelope = ErrorEnvelope {
             error: ErrorBody {
                 code: self.error_code().to_string(),

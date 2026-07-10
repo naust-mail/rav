@@ -77,7 +77,7 @@ pub async fn get_reply_draft_handler(
             Ok(Json(serde_json::json!({
                 "uuid": staging.uuid,
                 "imap_uid": staging.imap_uid,
-                "draft_folder": cipher.encrypt(&draft_folder_name),
+                "draft_folder_id": cipher.encrypt(&draft_folder_name),
             }))
             .into_response())
         }

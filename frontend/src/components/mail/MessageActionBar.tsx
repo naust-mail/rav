@@ -119,7 +119,7 @@ export function MessageActionBar() {
 
     const hasOrigHtml = !!(originalData.html && originalData.html.trim());
     const [draftDetail, attachmentsRes] = await Promise.all([
-      apiGet<MessageDetail>(`/messages/${encodeURIComponent(existing.draft_folder)}/${existing.imap_uid}`),
+      apiGet<MessageDetail>(`/messages/${encodeURIComponent(existing.draft_folder_id)}/${existing.imap_uid}`),
       apiGet<{ attachments: { id: string; filename: string; content_type: string; size: number }[] }>(
         `/drafts/${existing.uuid}/attachments`,
       ).catch(() => ({ attachments: [] })),

@@ -76,13 +76,13 @@ export function useKeyboardShortcuts() {
   const findCurrentSearchIndex = useCallback((): number => {
     if (selectedMessageUid === null) return -1;
     return searchResults.findIndex(
-      (r) => r.folder === activeFolder && r.uid === selectedMessageUid,
+      (r) => r.folder_name === activeFolder && r.uid === selectedMessageUid,
     );
   }, [searchResults, activeFolder, selectedMessageUid]);
 
   const selectSearchResult = useCallback(
     (result: SearchResultItem) => {
-      setActiveFolder(result.folder);
+      setActiveFolder(result.folder_name);
       selectMessage(result.uid);
       (document.activeElement as HTMLElement)?.blur?.();
       useUiStore.getState().setKeyboardNav(true);

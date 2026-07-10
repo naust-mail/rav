@@ -1,6 +1,6 @@
 [package]
 name = "rav-email-server"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 
 [dependencies]
@@ -43,10 +43,15 @@ sha1 = "0.10"
 webauthn-rs = { version = "0.5.5", features = ["resident-key-support"] }
 url = "2"
 ipnet = "2"
+ts-rs = { version = "12.0.1", optional = true }
 
 [features]
 default = ["stickers"]
 stickers = []
+# Enables #[derive(TS)] on wire-contract structs and pulls in the ts-rs
+# crate. Off by default: zero footprint in the release binary. Enabled only
+# when regenerating frontend/src/types/generated/ (`cargo test --features ts-export`).
+ts-export = ["dep:ts-rs"]
 
 [dev-dependencies]
 http-body-util = "0.1"

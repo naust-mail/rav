@@ -11,6 +11,7 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::db::tags::{MessageTag, Tag};
 use crate::error::AppError;
+use crate::folder_cipher::FolderId;
 use crate::routes::messages::types::{default_per_page, MessageSummary};
 
 // ---------------------------------------------------------------------------
@@ -18,35 +19,47 @@ use crate::routes::messages::types::{default_per_page, MessageSummary};
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct CreateTagBody {
     pub name: String,
     pub color: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct UpdateTagBody {
     pub name: String,
     pub color: String,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct TagMessageBody {
     pub message_uid: u32,
-    pub message_folder: String,
+    pub message_folder: FolderId,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct BulkTagBody {
     pub messages: Vec<TagMessageRef>,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct TagMessageRef {
     pub uid: u32,
-    pub folder: String,
+    pub folder: FolderId,
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct PaginationQuery {
     #[serde(default)]
     pub page: u32,
@@ -55,11 +68,15 @@ pub struct PaginationQuery {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct ListTagsResponse {
     pub tags: Vec<Tag>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct TagMessagesResponse {
     pub messages: Vec<MessageSummary>,
     pub total_count: u32,
@@ -68,6 +85,8 @@ pub struct TagMessagesResponse {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct MessageTagsResponse {
     pub tags: Vec<MessageTag>,
 }
@@ -84,7 +103,10 @@ fn build_summary(
     let unread = if m.flags.contains("\\Seen") { 0 } else { 1 };
     MessageSummary {
         uid: m.uid,
-        folder: m.folder,
+        // Placeholder - callers overwrite folder_id with an encrypted token
+        // before serializing (the plaintext must never reach the response).
+        folder_id: FolderId::default(),
+        folder_name: m.folder,
         subject: m.subject,
         from_address: m.from_address,
         from_name: m.from_name,
@@ -207,7 +229,7 @@ pub async fn tag_message_handler(
 pub async fn untag_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Path((id, folder_id, uid)): Path<(String, String, u32)>,
+    Path((id, folder_id, uid)): Path<(String, FolderId, u32)>,
 ) -> Result<Response, AppError> {
     let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
@@ -278,7 +300,7 @@ pub async fn list_tag_messages_handler(
                 .unwrap_or_default();
             let encrypted_folder = cipher.encrypt(&m.folder);
             let mut summary = build_summary(m, msg_tags);
-            summary.folder = encrypted_folder;
+            summary.folder_id = encrypted_folder;
             summary
         })
         .collect();
@@ -296,7 +318,7 @@ pub async fn list_tag_messages_handler(
 pub async fn get_message_tags_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Path((folder_id, uid)): Path<(String, u32)>,
+    Path((folder_id, uid)): Path<(FolderId, u32)>,
 ) -> Result<Response, AppError> {
     let folder = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
     let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)

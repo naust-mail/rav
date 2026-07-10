@@ -56,6 +56,8 @@ pub struct ImapMessageHeader {
 
 /// Whether a message is PGP encrypted, signed, or both.
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum PgpStatusKind {
     Encrypted,
@@ -66,6 +68,8 @@ pub enum PgpStatusKind {
 
 /// PGP status detected from the top-level MIME structure of a received message.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct PgpMessageStatus {
     pub kind: PgpStatusKind,
     /// Armored PGP ciphertext (for Encrypted kind). The client decrypts this.

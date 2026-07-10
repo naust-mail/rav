@@ -8,6 +8,7 @@ use crate::auth::session::SessionState;
 use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
+use crate::folder_cipher::FolderId;
 use crate::search::engine::{SearchEngine, SearchQuery};
 
 // ---------------------------------------------------------------------------
@@ -275,7 +276,7 @@ pub struct SearchParams {
     /// The search text (required, must not be empty).
     pub q: Option<String>,
     /// Optional folder filter (encrypted folder ID from the UI folder picker).
-    pub folder: Option<String>,
+    pub folder: Option<crate::folder_cipher::FolderId>,
     /// Optional from address filter.
     pub from: Option<String>,
     /// Optional to address filter.
@@ -315,6 +316,8 @@ fn default_limit() -> usize {
 
 /// Response envelope for `POST /api/search`.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct SearchResponse {
     pub results: Vec<SearchResultItem>,
     pub total_count: usize,
@@ -323,9 +326,14 @@ pub struct SearchResponse {
 
 /// A single search result item enriched with message metadata from SQLite.
 #[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct SearchResultItem {
     pub uid: u32,
-    pub folder: String,
+    /// Opaque, single-use token - see `MessageSummary::folder_id`.
+    pub folder_id: FolderId,
+    /// Plaintext, stable folder name - see `MessageSummary::folder_name`.
+    pub folder_name: String,
     pub score: f32,
     pub subject: String,
     pub from_address: String,
@@ -375,7 +383,7 @@ pub async fn search_messages(
 
     // params.folder is an encrypted folder ID from the UI folder picker; parsed.folder
     // is a plaintext name from the user-typed `in:INBOX` operator.
-    let ui_folder = params.folder.as_deref()
+    let ui_folder = params.folder.as_ref()
         .map(|id| cipher.decrypt(id))
         .transpose()?;
     let folder = ui_folder.or(parsed.folder);
@@ -423,7 +431,8 @@ pub async fn search_messages(
             seen.insert((msg.folder.clone(), msg.uid));
             SearchResultItem {
                 uid: msg.uid,
-                folder: cipher.encrypt(&msg.folder),
+                folder_id: cipher.encrypt(&msg.folder),
+                folder_name: msg.folder.clone(),
                 score: 1.0,
                 subject: msg.subject,
                 from_address: msg.from_address,
@@ -484,7 +493,8 @@ pub async fn search_messages(
             seen.insert((msg.folder.clone(), msg.uid));
             results.push(SearchResultItem {
                 uid: msg.uid,
-                folder: cipher.encrypt(&msg.folder),
+                folder_id: cipher.encrypt(&msg.folder),
+                folder_name: msg.folder.clone(),
                 score,
                 subject: msg.subject,
                 from_address: msg.from_address,

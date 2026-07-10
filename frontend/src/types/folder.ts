@@ -1,16 +1,7 @@
-import type { MessageHeader } from "@/types/message";
-
-export type Folder = {
-  name: string;
-  delimiter: string | null;
-  attributes: string[];
-  is_subscribed: boolean;
-  total_count: number;
-  unread_count: number;
-  /** Top 20 most recent messages, pre-seeded into the client cache on load. */
-  recent_messages: MessageHeader[];
-};
-
-export type FoldersResponse = {
-  folders: Folder[];
-};
+// Generated from the Rust backend (backend/src/routes/folders.rs,
+// backend/src/folder_cipher.rs) via ts-rs. Regenerate with
+// `cargo test --features ts-export` in backend/ - see backend/.cargo/config.toml
+// and .github/workflows/ci.yml for how staleness is caught in CI.
+export type { FolderId } from "./generated/FolderId";
+export type { FolderEntry as Folder } from "./generated/FolderEntry";
+export type { FoldersResponse } from "./generated/FoldersResponse";
