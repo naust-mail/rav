@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — Frontend build
 # ---------------------------------------------------------------------------
-FROM node:24-bookworm-slim AS frontend-build
+FROM node:26-bookworm-slim AS frontend-build
 
 ARG NEXT_PUBLIC_BASE_PATH
 ENV NEXT_PUBLIC_BASE_PATH=${NEXT_PUBLIC_BASE_PATH}
