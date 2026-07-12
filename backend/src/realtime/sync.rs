@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db;
+#[cfg(test)]
+use crate::db::folders::UpsertFolderParams;
+use crate::db::messages::{CacheMessageBodyParams, UpsertMessageParams};
 use crate::email_theme;
 use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::realtime::events::{EventBus, MailEvent};
@@ -14,6 +17,19 @@ use crate::search::engine::UserIndex;
 /// worker, reused here so both sides agree on one cadence.
 pub(crate) const SYNC_INTERVAL_SECS: u64 = 30;
 
+/// The app-wide services a sync cycle needs, bundled so `run_sync` and its
+/// helpers take one param instead of threading the same 6 dependencies
+/// through every call.
+#[derive(Clone, Copy)]
+pub(crate) struct SyncCtx<'a> {
+    pub user_hash: &'a str,
+    pub creds: &'a ImapCredentials,
+    pub imap_client: &'a dyn ImapClient,
+    pub event_bus: &'a EventBus,
+    pub search_engine: &'a SearchEngine,
+    pub db_pool_manager: &'a db::pool::DbPoolManager,
+}
+
 /// Reconcile all of a user's folders using a 3-tier strategy per folder:
 /// 1. STATUS pre-check (cheap, no SELECT)
 /// 2. CONDSTORE incremental fetch (only changed flags)
@@ -22,15 +38,8 @@ pub(crate) const SYNC_INTERVAL_SECS: u64 = 30;
 /// Called by `SyncWorkerManager`'s worker loop in response to a wake-up
 /// (IDLE new data, the periodic keepalive, or a stale-folder request) —
 /// this is the single place that owns writing the per-user cache.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_sync(
-    user_hash: &str,
-    creds: &ImapCredentials,
-    imap_client: &dyn ImapClient,
-    event_bus: &EventBus,
-    search_engine: &SearchEngine,
-    db_pool_manager: &db::pool::DbPoolManager,
-) -> Result<(), String> {
+pub(crate) async fn run_sync(ctx: SyncCtx<'_>) -> Result<(), String> {
+    let SyncCtx { user_hash, creds, imap_client, event_bus, search_engine, db_pool_manager } = ctx;
     // Collect folder metadata via a pooled connection.
     let folder_snapshots: Vec<FolderSnapshot> = db::pool::with_user_db(db_pool_manager, user_hash, |conn| {
         let cached_folders = db::folders::get_all_folders(conn)?;
@@ -105,9 +114,7 @@ pub(crate) async fn run_sync(
 
         // ── Tier 2: CONDSTORE incremental fetch ──────────────────────
         if status.highest_modseq > 0 && cached_modseq > 0 {
-            let folder_changed = sync_condstore(
-                user_hash, creds, imap_client, folder_name, cached_modseq, &status, event_bus, search_engine, db_pool_manager,
-            ).await?;
+            let folder_changed = sync_condstore(ctx, folder_name, cached_modseq, &status).await?;
             if folder_changed {
                 any_changes = true;
             }
@@ -115,9 +122,7 @@ pub(crate) async fn run_sync(
         }
 
         // ── Tier 3: Full fetch fallback ──────────────────────────────
-        let folder_changed = sync_full(
-            user_hash, creds, imap_client, folder_name, &status, event_bus, search_engine, db_pool_manager,
-        ).await?;
+        let folder_changed = sync_full(ctx, folder_name, &status).await?;
         if folder_changed {
             any_changes = true;
         }
@@ -206,16 +211,7 @@ async fn index_message_bodies(
             let raw_headers = body.raw_headers.clone();
             let uid = *uid;
             db::pool::with_user_db(db_pool_manager, user_hash, move |conn| {
-                db::messages::cache_message_body(
-                    conn,
-                    &folder,
-                    uid,
-                    text_html.as_deref(),
-                    text_plain.as_deref(),
-                    att_json.as_deref(),
-                    Some(&raw_headers),
-                    detected_theme,
-                )
+                db::messages::cache_message_body(conn, &folder, uid, CacheMessageBodyParams { html: text_html.as_deref(), text: text_plain.as_deref(), attachments_json: att_json.as_deref(), raw_headers: Some(&raw_headers), email_theme: detected_theme })
             })
             .await
             .map_err(|e| format!("DB error: {e}"))?;
@@ -292,13 +288,7 @@ async fn fetch_and_store_new(
                 let date = header.date.as_deref().unwrap_or("");
                 let flags_csv = header.flags.join(",");
 
-                if db::messages::upsert_message(
-                    conn, &folder_name, header.uid,
-                    header.message_id.as_deref(), header.in_reply_to.as_deref(),
-                    header.references.as_deref(), subject, from_address, from_name,
-                    &to_json, &cc_json, date, header.date_epoch, &flags_csv, header.size,
-                    header.has_attachments, "", header.reaction.as_deref(),
-                ).is_err() {
+                if db::messages::upsert_message(conn, &folder_name, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() }).is_err() {
                     continue;
                 }
 
@@ -358,18 +348,13 @@ struct FolderSnapshot {
 }
 
 /// CONDSTORE path: fetch only changed flags, detect deletions via count comparison.
-#[allow(clippy::too_many_arguments)]
 async fn sync_condstore(
-    user_hash: &str,
-    creds: &ImapCredentials,
-    imap_client: &dyn ImapClient,
+    ctx: SyncCtx<'_>,
     folder_name: &str,
     cached_modseq: u64,
     status: &crate::imap::types::FolderStatusExtended,
-    event_bus: &EventBus,
-    search_engine: &SearchEngine,
-    db_pool_manager: &db::pool::DbPoolManager,
 ) -> Result<bool, String> {
+    let SyncCtx { user_hash, creds, imap_client, event_bus, search_engine, db_pool_manager } = ctx;
     let mut folder_changed = false;
 
     // Fetch only messages whose flags changed since our cached modseq.
@@ -381,7 +366,7 @@ async fn sync_condstore(
                 error = %e,
                 "CONDSTORE fetch failed, falling back to full sync"
             );
-            return sync_full(user_hash, creds, imap_client, folder_name, status, event_bus, search_engine, db_pool_manager).await;
+            return sync_full(ctx, folder_name, status).await;
         }
     };
 
@@ -504,17 +489,12 @@ async fn sync_condstore(
 }
 
 /// Full fetch fallback: fetch all UIDs+FLAGS and reconcile (original behavior).
-#[allow(clippy::too_many_arguments)]
 async fn sync_full(
-    user_hash: &str,
-    creds: &ImapCredentials,
-    imap_client: &dyn ImapClient,
+    ctx: SyncCtx<'_>,
     folder_name: &str,
     status: &crate::imap::types::FolderStatusExtended,
-    event_bus: &EventBus,
-    search_engine: &SearchEngine,
-    db_pool_manager: &db::pool::DbPoolManager,
 ) -> Result<bool, String> {
+    let SyncCtx { user_hash, creds, imap_client, event_bus, search_engine, db_pool_manager } = ctx;
     let cached = db::pool::with_user_db(db_pool_manager, user_hash, {
         let folder_name = folder_name.to_string();
         move |conn| db::messages::get_all_uids_and_flags(conn, &folder_name)
@@ -670,7 +650,7 @@ mod tests {
             port: 993,
             tls: true,
             email: "alice@example.com".to_string(),
-            password: "hunter2".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
         }
     }
 
@@ -704,11 +684,8 @@ mod tests {
 
         let db_pool_manager = test_db_pool_manager(data_dir);
         db::pool::with_user_db(&db_pool_manager, &user_hash, move |conn| {
-            db::folders::upsert_folder(conn, "INBOX", None, None, "", true, 1, 0, 1, highest_modseq)?;
-            db::messages::upsert_message(
-                conn, "INBOX", 1, None, None, None, "Existing", "carol@example.com", "Carol",
-                "[]", "[]", "2024-01-01T00:00:00Z", 1, "", 512, false, "", None,
-            )?;
+            db::folders::upsert_folder(conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 1, unread_count: 0, uid_validity: 1, highest_modseq })?;
+            db::messages::upsert_message(conn, "INBOX", 1, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Existing", from_address: "carol@example.com", from_name: "Carol", to_json: "[]", cc_json: "[]", date: "2024-01-01T00:00:00Z", date_epoch: 1, flags_csv: "", size: 512, has_attachments: false, snippet: "", reaction: None })?;
             Ok(())
         })
         .await
@@ -737,7 +714,7 @@ mod tests {
         ]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
 
-        run_sync(&user_hash, &creds, imap_client.as_ref(), &event_bus, &search_engine, &db_pool_manager)
+        run_sync(SyncCtx { user_hash: &user_hash, creds: &creds, imap_client: imap_client.as_ref(), event_bus: &event_bus, search_engine: &search_engine, db_pool_manager: &db_pool_manager })
             .await
             .expect("sync should succeed");
 
@@ -787,7 +764,7 @@ mod tests {
             });
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
 
-        run_sync(&user_hash, &creds, imap_client.as_ref(), &event_bus, &search_engine, &db_pool_manager)
+        run_sync(SyncCtx { user_hash: &user_hash, creds: &creds, imap_client: imap_client.as_ref(), event_bus: &event_bus, search_engine: &search_engine, db_pool_manager: &db_pool_manager })
             .await
             .expect("sync should succeed");
 

@@ -12,6 +12,15 @@ pub type AccountId = String;
 
 pub type SessionState = AccountSession;
 
+/// A mail server address, reused for both the IMAP and SMTP side of an
+/// account's connection details.
+#[derive(Debug, Clone)]
+pub struct ServerEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub tls: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct AccountSession {
     pub account_id: AccountId,
@@ -95,20 +104,17 @@ impl SessionStore {
         browser_id
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn add_account_to_browser(
         &self,
         browser_id: &str,
         email: String,
         password: String,
         user_hash: String,
-        imap_host: String,
-        imap_port: u16,
-        imap_tls: bool,
-        smtp_host: String,
-        smtp_port: u16,
-        smtp_tls: bool,
+        imap: ServerEndpoint,
+        smtp: ServerEndpoint,
     ) -> (SessionId, AccountId) {
+        let ServerEndpoint { host: imap_host, port: imap_port, tls: imap_tls } = imap;
+        let ServerEndpoint { host: smtp_host, port: smtp_port, tls: smtp_tls } = smtp;
         let token = Self::generate_token();
         let account_id = Self::generate_id();
 
@@ -459,18 +465,7 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "alice@example.com".into(),
-            "password".into(),
-            "hash123".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "alice@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash123".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert_eq!(token.len(), 43);
         assert_eq!(account_id.len(), 22);
@@ -489,18 +484,7 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         let session = store
             .get_account_session(&browser_id, &account_id, &token)
@@ -514,18 +498,7 @@ mod tests {
         let browser1 = store.create_browser();
         let browser2 = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser1,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser1, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert!(
             store
@@ -540,18 +513,7 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (_, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         let wrong_token = SessionStore::generate_token();
         assert!(
@@ -567,18 +529,7 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert!(store.remove_account(&account_id));
         assert!(store.get(&token).is_none());
@@ -591,30 +542,8 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (token1, account1) = store.add_account_to_browser(
-            &browser_id,
-            "user1@example.com".into(),
-            "pass".into(),
-            "hash1".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
-        let (token2, account2) = store.add_account_to_browser(
-            &browser_id,
-            "user2@example.com".into(),
-            "pass".into(),
-            "hash2".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token1, account1) = store.add_account_to_browser(&browser_id, "user1@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash1".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
+        let (token2, account2) = store.add_account_to_browser(&browser_id, "user2@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash2".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert_eq!(store.get_browser_accounts(&browser_id).len(), 2);
 
@@ -632,18 +561,7 @@ mod tests {
         let store = short_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(100));
 
@@ -664,42 +582,9 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        store.add_account_to_browser(
-            &browser_id,
-            "user1@example.com".into(),
-            "pass1".into(),
-            "hash1".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
-        store.add_account_to_browser(
-            &browser_id,
-            "user2@example.com".into(),
-            "pass2".into(),
-            "hash2".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
-        store.add_account_to_browser(
-            &browser_id,
-            "user3@example.com".into(),
-            "pass3".into(),
-            "hash3".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        store.add_account_to_browser(&browser_id, "user1@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash1".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
+        store.add_account_to_browser(&browser_id, "user2@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash2".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
+        store.add_account_to_browser(&browser_id, "user3@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash3".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         let accounts = store.get_browser_accounts(&browser_id);
         assert_eq!(accounts.len(), 3);
@@ -716,30 +601,8 @@ mod tests {
         let browser1 = store.create_browser();
         let browser2 = store.create_browser();
 
-        store.add_account_to_browser(
-            &browser1,
-            "user1@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
-        store.add_account_to_browser(
-            &browser2,
-            "user2@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        store.add_account_to_browser(&browser1, "user1@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
+        store.add_account_to_browser(&browser2, "user2@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         let accounts1 = store.get_browser_accounts(&browser1);
         let accounts2 = store.get_browser_accounts(&browser2);
@@ -758,18 +621,7 @@ mod tests {
         let store = SessionStore::new(Duration::from_millis(150));
         let browser_id = store.create_browser();
 
-        let (token, _account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, _account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(80));
         assert!(store.get(&token).is_some());
@@ -780,7 +632,7 @@ mod tests {
 
     #[test]
     fn helper_creates_valid_session() {
-        let session = create_test_session("test@example.com", "pass", "hash");
+        let session = create_test_session("test@example.com", crate::test_support::FAKE_PASSWORD, "hash");
         assert_eq!(session.email, "test@example.com");
         assert_eq!(session.imap_host, "imap.test.com");
         assert_eq!(session.imap_port, 993);
@@ -789,18 +641,7 @@ mod tests {
     // --- Consistency tests ---
 
     fn add_test_account(store: &SessionStore, browser_id: &str, email: &str) -> (SessionId, AccountId) {
-        store.add_account_to_browser(
-            browser_id,
-            email.into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        )
+        store.add_account_to_browser(browser_id, email.into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true })
     }
 
     #[test]
@@ -937,34 +778,12 @@ mod tests {
         let mut other_browsers = Vec::new();
         for _ in 0..100 {
             let bid = store.create_browser();
-            store.add_account_to_browser(
-                &bid,
-                "other@example.com".into(),
-                "pass".into(),
-                "hash".into(),
-                "imap.example.com".into(),
-                993,
-                true,
-                "smtp.example.com".into(),
-                587,
-                true,
-            );
+            store.add_account_to_browser(&bid, "other@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
             other_browsers.push(bid);
         }
 
         let target_browser = store.create_browser();
-        let (token, account_id) = store.add_account_to_browser(
-            &target_browser,
-            "target@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&target_browser, "target@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         // Verify reverse index was populated
         assert!(store.account_to_browser.contains_key(&account_id));
@@ -993,30 +812,8 @@ mod tests {
         let store = long_lived_store();
         let browser_id = store.create_browser();
 
-        let (_, account1) = store.add_account_to_browser(
-            &browser_id,
-            "user1@example.com".into(),
-            "pass".into(),
-            "hash1".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
-        let (_, account2) = store.add_account_to_browser(
-            &browser_id,
-            "user2@example.com".into(),
-            "pass".into(),
-            "hash2".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_, account1) = store.add_account_to_browser(&browser_id, "user1@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash1".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
+        let (_, account2) = store.add_account_to_browser(&browser_id, "user2@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash2".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert!(store.account_to_browser.contains_key(&account1));
         assert!(store.account_to_browser.contains_key(&account2));
@@ -1032,18 +829,7 @@ mod tests {
         let store = short_lived_store();
         let browser_id = store.create_browser();
 
-        let (_, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         assert!(store.account_to_browser.contains_key(&account_id));
 
@@ -1062,18 +848,7 @@ mod tests {
         let store = short_lived_store();
         let browser_id = store.create_browser();
 
-        let (_token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(100));
 
@@ -1096,34 +871,12 @@ mod tests {
         let browser_id = store.create_browser();
 
         // First account -- will expire.
-        let (_token1, account1) = store.add_account_to_browser(
-            &browser_id,
-            "old@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_token1, account1) = store.add_account_to_browser(&browser_id, "old@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(100));
 
         // Second account -- added later, still alive after sleep.
-        let (_token2, account2) = store.add_account_to_browser(
-            &browser_id,
-            "new@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (_token2, account2) = store.add_account_to_browser(&browser_id, "new@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(60));
 
@@ -1149,18 +902,7 @@ mod tests {
         let store = short_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(100));
 
@@ -1182,18 +924,7 @@ mod tests {
         let store = short_lived_store();
         let browser_id = store.create_browser();
 
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            "user@example.com".into(),
-            "pass".into(),
-            "hash".into(),
-            "imap.example.com".into(),
-            993,
-            true,
-            "smtp.example.com".into(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, "user@example.com".into(), crate::test_support::FAKE_PASSWORD.into(), "hash".into(), ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true });
 
         thread::sleep(Duration::from_millis(100));
 

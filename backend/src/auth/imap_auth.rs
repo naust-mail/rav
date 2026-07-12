@@ -191,7 +191,7 @@ mod tests {
             19999,
             false,
             "user@test.com",
-            "pass",
+            crate::test_support::FAKE_PASSWORD,
             &default_connector(),
         )
         .await;
@@ -211,7 +211,7 @@ mod tests {
             19999,
             true,
             "user@test.com",
-            "pass",
+            crate::test_support::FAKE_PASSWORD,
             &default_connector(),
         )
         .await;

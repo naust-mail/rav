@@ -45,6 +45,8 @@ use tower_http::trace::TraceLayer;
 
 use crate::auth::csrf::csrf_protection;
 use crate::auth::middleware::auth_guard;
+#[cfg(test)]
+use crate::auth::session::ServerEndpoint;
 use crate::auth::session::SessionStore;
 use crate::config::AppConfig;
 use crate::imap::client::ImapClient;
@@ -150,6 +152,54 @@ pub struct AppServices {
     pub link_proxy_secret: Option<Arc<LinkProxySecret>>,
     pub draft_locks: Arc<drafts::DraftLocks>,
     pub db_pool_manager: Arc<crate::db::pool::DbPoolManager>,
+}
+
+/// Lets handlers take a single `AppServices` param instead of one `Extension<Arc<X>>`
+/// per service they need. All fields below are layered unconditionally on the
+/// outer router in `create_router` except `link_proxy_secret`, which is optional.
+impl<S> axum::extract::FromRequestParts<S> for AppServices
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        use axum::response::IntoResponse;
+
+        macro_rules! ext {
+            ($ty:ty) => {
+                Extension::<$ty>::from_request_parts(parts, state)
+                    .await
+                    .map(|Extension(v)| v)
+                    .map_err(IntoResponse::into_response)?
+            };
+        }
+
+        Ok(AppServices {
+            config: ext!(Arc<AppConfig>),
+            transport: ext!(Arc<MailTransport>),
+            store: ext!(Arc<SessionStore>),
+            imap_client: ext!(Arc<dyn ImapClient>),
+            smtp_client: ext!(Arc<dyn SmtpClient>),
+            http_client: ext!(Arc<reqwest::Client>),
+            search_engine: ext!(Arc<crate::search::engine::SearchEngine>),
+            event_bus: ext!(Arc<EventBus>),
+            idle_manager: ext!(Arc<IdleManager>),
+            sync_worker_manager: ext!(Arc<crate::realtime::worker::SyncWorkerManager>),
+            outbox_worker_manager: ext!(Arc<crate::realtime::outbox_worker::OutboxWorkerManager>),
+            mfa_crypto: ext!(Arc<MfaCrypto>),
+            passkey_service: ext!(Arc<PasskeyService>),
+            link_proxy_secret: Extension::<Arc<LinkProxySecret>>::from_request_parts(parts, state)
+                .await
+                .ok()
+                .map(|Extension(v)| v),
+            draft_locks: ext!(Arc<drafts::DraftLocks>),
+            db_pool_manager: ext!(Arc<crate::db::pool::DbPoolManager>),
+        })
+    }
 }
 
 pub fn create_router(svc: AppServices) -> Router {

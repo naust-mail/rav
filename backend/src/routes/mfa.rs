@@ -9,7 +9,7 @@ use base64::Engine;
 use serde::Deserialize;
 
 use crate::auth::imap_auth::{self, AuthResult};
-use crate::auth::session::{SessionState, SessionStore};
+use crate::auth::session::{ServerEndpoint, SessionState, SessionStore};
 use crate::auth::user_data;
 use crate::config::AppConfig;
 use crate::db;
@@ -395,18 +395,16 @@ pub async fn passkey_register_complete(
         move |conn| {
             db::mfa::insert_passkey(
                 conn,
-                &cred_id,
-                &passkey_json,
-                &prf_salt,
-                &encrypted_imap,
-                &imap_nonce,
-                &key_name,
-                &imap_host,
-                imap_port,
-                imap_tls,
-                &smtp_host,
-                smtp_port,
-                smtp_tls,
+                db::mfa::NewPasskey {
+                    credential_id: &cred_id,
+                    passkey_json: &passkey_json,
+                    prf_salt: &prf_salt,
+                    encrypted_imap: &encrypted_imap,
+                    imap_nonce: &imap_nonce,
+                    name: &key_name,
+                },
+                ServerEndpoint { host: imap_host, port: imap_port, tls: imap_tls },
+                ServerEndpoint { host: smtp_host, port: smtp_port, tls: smtp_tls },
             )
         }
     })
@@ -701,18 +699,7 @@ pub async fn passkey_login_complete(
         .clone()
         .unwrap_or_else(|| store.create_browser());
 
-    let (token, account_id) = store.add_account_to_browser(
-        &browser_id,
-        email.clone(),
-        imap_password,
-        user_hash,
-        row.imap_host.clone(),
-        row.imap_port,
-        row.imap_tls,
-        row.smtp_host.clone(),
-        row.smtp_port,
-        row.smtp_tls,
-    );
+    let (token, account_id) = store.add_account_to_browser(&browser_id, email.clone(), imap_password, user_hash, ServerEndpoint { host: row.imap_host.clone(), port: row.imap_port, tls: row.imap_tls }, ServerEndpoint { host: row.smtp_host.clone(), port: row.smtp_port, tls: row.smtp_tls });
 
     let max_age = session_hours * 3600;
     let secure = config.environment != "development";

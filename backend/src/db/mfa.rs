@@ -1,5 +1,8 @@
 use rusqlite::Connection;
 
+#[cfg(test)]
+use crate::auth::session::ServerEndpoint;
+
 /// Returns `true` if a TOTP credential is enrolled for this user.
 pub fn is_totp_enrolled(conn: &Connection) -> Result<bool, String> {
     let count: i64 = conn
@@ -172,22 +175,22 @@ pub struct PasskeyInfo {
     pub created_at: i64,
 }
 
+/// Parameters for [`insert_passkey`].
+pub struct NewPasskey<'a> {
+    pub credential_id: &'a str,
+    pub passkey_json: &'a str,
+    pub prf_salt: &'a [u8],
+    pub encrypted_imap: &'a [u8],
+    pub imap_nonce: &'a [u8],
+    pub name: &'a str,
+}
+
 /// Insert a new passkey credential.
-#[allow(clippy::too_many_arguments)]
 pub fn insert_passkey(
     conn: &Connection,
-    credential_id: &str,
-    passkey_json: &str,
-    prf_salt: &[u8],
-    encrypted_imap: &[u8],
-    imap_nonce: &[u8],
-    name: &str,
-    imap_host: &str,
-    imap_port: u16,
-    imap_tls: bool,
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_tls: bool,
+    p: NewPasskey,
+    imap: crate::auth::session::ServerEndpoint,
+    smtp: crate::auth::session::ServerEndpoint,
 ) -> Result<(), String> {
     conn.execute(
         "INSERT INTO mfa_passkeys
@@ -195,18 +198,18 @@ pub fn insert_passkey(
               name, imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
-            credential_id,
-            passkey_json,
-            prf_salt,
-            encrypted_imap,
-            imap_nonce,
-            name,
-            imap_host,
-            imap_port as i64,
-            imap_tls as i64,
-            smtp_host,
-            smtp_port as i64,
-            smtp_tls as i64,
+            p.credential_id,
+            p.passkey_json,
+            p.prf_salt,
+            p.encrypted_imap,
+            p.imap_nonce,
+            p.name,
+            imap.host,
+            imap.port as i64,
+            imap.tls as i64,
+            smtp.host,
+            smtp.port as i64,
+            smtp.tls as i64,
         ],
     )
     .map_err(|e| format!("DB error inserting passkey: {e}"))?;
@@ -370,18 +373,16 @@ mod tests {
     fn insert_test_passkey(conn: &Connection, credential_id: &str, name: &str) {
         insert_passkey(
             conn,
-            credential_id,
-            r#"{"test":"passkey"}"#,
-            &[0u8; 32],
-            &[0u8; 16],
-            &[0u8; 12],
-            name,
-            "imap.example.com",
-            993,
-            true,
-            "smtp.example.com",
-            587,
-            true,
+            NewPasskey {
+                credential_id,
+                passkey_json: r#"{"test":"passkey"}"#,
+                prf_salt: &[0u8; 32],
+                encrypted_imap: &[0u8; 16],
+                imap_nonce: &[0u8; 12],
+                name,
+            },
+            ServerEndpoint { host: "imap.example.com".to_string(), port: 993, tls: true },
+            ServerEndpoint { host: "smtp.example.com".to_string(), port: 587, tls: true },
         )
         .expect("insert_test_passkey should succeed");
     }

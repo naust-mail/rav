@@ -1,3 +1,5 @@
+#![forbid(clippy::too_many_arguments)]
+
 mod calendar;
 mod config;
 mod error;
@@ -14,6 +16,8 @@ mod auth;
 mod realtime;
 mod routes;
 mod search;
+#[cfg(test)]
+mod test_support;
 
 use std::sync::Arc;
 use std::time::Duration;

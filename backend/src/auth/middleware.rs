@@ -153,7 +153,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::auth::session::{AccountSession, SessionStore};
+    use crate::auth::session::{AccountSession, ServerEndpoint, SessionStore};
 
     fn guarded_router(store: Arc<SessionStore>) -> Router {
         let handler = |Extension(session): Extension<AccountSession>| async move {
@@ -186,18 +186,7 @@ mod tests {
 
     fn create_test_session(store: &SessionStore, email: &str, password: &str, user_hash: &str) -> TestSession {
         let browser_id = store.create_browser();
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            email.to_string(),
-            password.to_string(),
-            user_hash.to_string(),
-            "imap.example.com".to_string(),
-            993,
-            true,
-            "smtp.example.com".to_string(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, email.to_string(), password.to_string(), user_hash.to_string(), ServerEndpoint { host: "imap.example.com".to_string(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".to_string(), port: 587, tls: true });
         TestSession { browser_id, account_id, token }
     }
 
@@ -227,7 +216,7 @@ mod tests {
     #[tokio::test]
     async fn missing_browser_cookie_returns_401() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -246,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn missing_active_account_header_returns_401() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -264,7 +253,7 @@ mod tests {
     #[tokio::test]
     async fn missing_session_cookie_returns_account_expired() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -284,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_token_returns_account_expired() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -306,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn valid_session_returns_200_with_email() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -325,7 +314,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_browser_returns_account_expired() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let wrong_browser_id = store.create_browser();
         let router = guarded_router(Arc::clone(&store));
 
@@ -348,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn expired_session_returns_account_expired() {
         let store = Arc::new(SessionStore::new(Duration::from_millis(50)));
-        let session = create_test_session(store.as_ref(), "bob@example.com", "pass", "hash");
+        let session = create_test_session(store.as_ref(), "bob@example.com", crate::test_support::FAKE_PASSWORD, "hash");
 
         thread::sleep(Duration::from_millis(100));
 
@@ -370,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn cookies_among_multiple_cookies() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "multi@example.com", "pass", "hash");
+        let session = create_test_session(&store, "multi@example.com", crate::test_support::FAKE_PASSWORD, "hash");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -395,7 +384,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_cookie_name_returns_401() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "wrong@example.com", "pass", "hash");
+        let session = create_test_session(&store, "wrong@example.com", crate::test_support::FAKE_PASSWORD, "hash");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -415,8 +404,8 @@ mod tests {
     #[tokio::test]
     async fn wrong_account_in_header_returns_account_expired() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session1 = create_test_session(&store, "user1@example.com", "pass", "hash1");
-        let session2 = create_test_session(&store, "user2@example.com", "pass", "hash2");
+        let session1 = create_test_session(&store, "user1@example.com", crate::test_support::FAKE_PASSWORD, "hash1");
+        let session2 = create_test_session(&store, "user2@example.com", crate::test_support::FAKE_PASSWORD, "hash2");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -500,7 +489,7 @@ mod tests {
     #[tokio::test]
     async fn account_id_from_query_param_works() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session = create_test_session(&store, "alice@example.com", "hunter2", "abc123");
+        let session = create_test_session(&store, "alice@example.com", crate::test_support::FAKE_PASSWORD, "abc123");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()
@@ -518,8 +507,8 @@ mod tests {
     #[tokio::test]
     async fn header_takes_precedence_over_query_param() {
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
-        let session1 = create_test_session(&store, "user1@example.com", "pass", "hash1");
-        let session2 = create_test_session(&store, "user2@example.com", "pass", "hash2");
+        let session1 = create_test_session(&store, "user1@example.com", crate::test_support::FAKE_PASSWORD, "hash1");
+        let session2 = create_test_session(&store, "user2@example.com", crate::test_support::FAKE_PASSWORD, "hash2");
         let router = guarded_router(Arc::clone(&store));
 
         let req = Request::builder()

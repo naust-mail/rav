@@ -72,14 +72,13 @@ impl DbPoolManager {
             return Ok(entry.pool.clone());
         }
 
-        if pools.len() >= self.max_users {
-            if let Some(lru_key) = pools
+        if pools.len() >= self.max_users
+            && let Some(lru_key) = pools
                 .iter()
                 .min_by_key(|(_, entry)| entry.last_accessed)
                 .map(|(k, _)| k.clone())
-            {
-                pools.remove(&lru_key);
-            }
+        {
+            pools.remove(&lru_key);
         }
 
         let dir = Path::new(&self.data_dir).join(user_hash);

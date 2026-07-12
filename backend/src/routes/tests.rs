@@ -1,4 +1,6 @@
     use super::*;
+    use crate::db::folders::UpsertFolderParams;
+    use crate::db::messages::UpsertMessageParams;
     use crate::mfa::passkey::PasskeyService;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -309,18 +311,7 @@
         email: &str,
     ) -> (String, String, String) {
         let browser_id = store.create_browser();
-        let (token, account_id) = store.add_account_to_browser(
-            &browser_id,
-            email.to_string(),
-            "password".to_string(),
-            crate::auth::user_data::hash_email(email),
-            "imap.example.com".to_string(),
-            993,
-            true,
-            "smtp.example.com".to_string(),
-            587,
-            true,
-        );
+        let (token, account_id) = store.add_account_to_browser(&browser_id, email.to_string(), crate::test_support::FAKE_PASSWORD.to_string(), crate::auth::user_data::hash_email(email), ServerEndpoint { host: "imap.example.com".to_string(), port: 993, tls: true }, ServerEndpoint { host: "smtp.example.com".to_string(), port: 587, tls: true });
         (browser_id, account_id, token)
     }
 
@@ -508,9 +499,10 @@
                     .method("POST")
                     .uri("/api/auth/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"email":"test@test.com","password":"pass"}"#,
-                    ))
+                    .body(Body::from(format!(
+                        r#"{{"email":"test@test.com","password":"{}"}}"#,
+                        crate::test_support::FAKE_PASSWORD
+                    )))
                     .unwrap(),
             )
             .await
@@ -536,9 +528,10 @@
                     .uri("/api/auth/login")
                     .header("content-type", "application/json")
                     .header("x-requested-with", "XMLHttpRequest")
-                    .body(Body::from(
-                        r#"{"email":"test@test.com","password":"pass"}"#,
-                    ))
+                    .body(Body::from(format!(
+                        r#"{{"email":"test@test.com","password":"{}"}}"#,
+                        crate::test_support::FAKE_PASSWORD
+                    )))
                     .unwrap(),
             )
             .await
@@ -573,7 +566,10 @@
                     .uri("/api/auth/login")
                     .header("content-type", "application/json")
                     .header("x-requested-with", "XMLHttpRequest")
-                    .body(Body::from(r#"{"email":"","password":"pass"}"#))
+                    .body(Body::from(format!(
+                        r#"{{"email":"","password":"{}"}}"#,
+                        crate::test_support::FAKE_PASSWORD
+                    )))
                     .unwrap(),
             )
             .await
@@ -638,9 +634,10 @@
                     .uri("/api/auth/login")
                     .header("content-type", "application/json")
                     .header("x-requested-with", "XMLHttpRequest")
-                    .body(Body::from(
-                        r#"{"email":"test@test.com","password":"pass"}"#,
-                    ))
+                    .body(Body::from(format!(
+                        r#"{{"email":"test@test.com","password":"{}"}}"#,
+                        crate::test_support::FAKE_PASSWORD
+                    )))
                     .unwrap(),
             )
             .await
@@ -868,11 +865,8 @@
 
         // Seed a folder and a message before the request so they appear in recent_messages.
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
-        crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0).unwrap();
-        crate::db::messages::upsert_message(
-            &conn, "INBOX", 1, None, None, None, "Hello world", "a@b.com", "Alice",
-            "[]", "[]", "2024-01-01", 0, "", 0, false, "", None,
-        ).unwrap();
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 }).unwrap();
+        crate::db::messages::upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Hello world", from_address: "a@b.com", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None }).unwrap();
         drop(conn);
 
         let mock = MockImapClient::new().with_folders(vec![ImapFolder {
@@ -1176,12 +1170,9 @@
             data_dir.path().to_str().unwrap(),
             &user_hash,
         );
-        crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
-        crate::db::messages::upsert_message(
-            &conn, "INBOX", 1, None, None, None, "Test", "a@b.com", "A", "[]", "[]",
-            "2024-01-01", 0, "", 0, false, "", None,
-        )
+        crate::db::messages::upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Test", from_address: "a@b.com", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
         drop(conn);
 
@@ -1303,12 +1294,9 @@
             data_dir.path().to_str().unwrap(),
             &user_hash,
         );
-        crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
-        crate::db::messages::upsert_message(
-            &conn, "INBOX", 42, None, None, None, "Test", "a@b.com", "A", "[]", "[]",
-            "2024-01-01", 0, "", 0, false, "", None,
-        )
+        crate::db::messages::upsert_message(&conn, "INBOX", 42, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Test", from_address: "a@b.com", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
         drop(conn);
 
@@ -1354,12 +1342,9 @@
             data_dir.path().to_str().unwrap(),
             &user_hash,
         );
-        crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
-        crate::db::messages::upsert_message(
-            &conn, "INBOX", 7, None, None, None, "Test", "a@b.com", "A", "[]", "[]",
-            "2024-01-01", 0, "", 0, false, "", None,
-        )
+        crate::db::messages::upsert_message(&conn, "INBOX", 7, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Test", from_address: "a@b.com", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
         drop(conn);
 
@@ -1401,17 +1386,11 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
-        crate::db::folders::upsert_folder(&conn, folder, None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: folder, delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
-        crate::db::messages::upsert_message(
-            &conn, folder, 1, None, None, None, "Test 1", "a@b.com", "A", "[]", "[]",
-            "2024-01-01", 0, "", 0, false, "", None,
-        )
+        crate::db::messages::upsert_message(&conn, folder, 1, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Test 1", from_address: "a@b.com", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
-        crate::db::messages::upsert_message(
-            &conn, folder, 2, None, None, None, "Test 2", "a@b.com", "A", "[]", "[]",
-            "2024-01-01", 0, "", 0, false, "", None,
-        )
+        crate::db::messages::upsert_message(&conn, folder, 2, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Test 2", from_address: "a@b.com", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 0, flags_csv: "", size: 0, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
         drop(conn);
 
@@ -1564,7 +1543,7 @@
         let archive_id = cipher.encrypt("Archive");
 
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
-        crate::db::folders::upsert_folder(&conn, "Archive", None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "Archive", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
         drop(conn);
 
@@ -1605,7 +1584,7 @@
         let archive_id = cipher.encrypt("Archive");
 
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
-        crate::db::folders::upsert_folder(&conn, "Archive", None, None, "", true, 0, 0, 0, 0)
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "Archive", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })
             .unwrap();
         drop(conn);
 
@@ -3001,9 +2980,17 @@
 
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
         crate::db::mfa::insert_passkey(
-            &conn, "cred-solo", r#"{"test":true}"#, &[0u8; 32],
-            &[0u8; 16], &[0u8; 12], "Solo Key",
-            "imap.example.com", 993, true, "smtp.example.com", 587, true,
+            &conn,
+            crate::db::mfa::NewPasskey {
+                credential_id: "cred-solo",
+                passkey_json: r#"{"test":true}"#,
+                prf_salt: &[0u8; 32],
+                encrypted_imap: &[0u8; 16],
+                imap_nonce: &[0u8; 12],
+                name: "Solo Key",
+            },
+            ServerEndpoint { host: "imap.example.com".to_string(), port: 993, tls: true },
+            ServerEndpoint { host: "smtp.example.com".to_string(), port: 587, tls: true },
         ).unwrap();
         crate::db::mfa::set_passkey_only(&conn, true).unwrap();
         drop(conn);
@@ -3273,11 +3260,8 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
-        crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0).unwrap();
-        crate::db::messages::upsert_message(
-            &conn, "INBOX", 1, None, None, None, "Budget Report", "finance@example.com", "Finance",
-            "[]", "[]", "2024-01-01", 1_704_067_200, "", 1024, false, "", None,
-        )
+        crate::db::folders::upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 }).unwrap();
+        crate::db::messages::upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Budget Report", from_address: "finance@example.com", from_name: "Finance", to_json: "[]", cc_json: "[]", date: "2024-01-01", date_epoch: 1_704_067_200, flags_csv: "", size: 1024, has_attachments: false, snippet: "", reaction: None })
         .unwrap();
         drop(conn);
 

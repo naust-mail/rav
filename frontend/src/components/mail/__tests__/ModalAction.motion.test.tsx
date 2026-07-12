@@ -166,6 +166,8 @@ vi.mock("@/stores/useComposeStore", () => {
 
 vi.mock("@/hooks/useCompose", () => ({
   useSendMessage: () => mockSendMessage,
+  useEnqueueOutbox: () => mockSendMessage,
+  useCancelOutbox: () => ({ isPending: false, mutate: vi.fn() }),
   useSaveDraft: () => ({ isPending: false, mutate: vi.fn() }),
   useUploadAttachment: () => ({ isPending: false, mutate: vi.fn() }),
   useDeleteAttachment: () => ({ mutate: vi.fn() }),

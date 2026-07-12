@@ -89,7 +89,7 @@ mod tests {
             port: 587,
             tls: true,
             email: "user@example.com".to_string(),
-            password: "hunter2".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
             tls_params: None,
         }
     }
@@ -195,7 +195,7 @@ mod tests {
             port: 587,
             tls: true,
             email: "user@invalid.host.test".to_string(),
-            password: "password".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
             tls_params: None,
         };
         let msg = test_message();

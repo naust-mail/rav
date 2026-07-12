@@ -15,35 +15,36 @@ pub struct CachedFolder {
     pub highest_modseq: u64,
 }
 
+/// Parameters for [`upsert_folder`].
+pub struct UpsertFolderParams<'a> {
+    pub name: &'a str,
+    pub delimiter: Option<&'a str>,
+    pub parent: Option<&'a str>,
+    pub flags_csv: &'a str,
+    pub is_subscribed: bool,
+    pub total_count: u32,
+    pub unread_count: u32,
+    pub uid_validity: u32,
+    pub highest_modseq: u64,
+}
+
 /// Insert or replace a folder row in the `folders` table.
-#[allow(clippy::too_many_arguments)]
-pub fn upsert_folder(
-    conn: &Connection,
-    folder_name: &str,
-    delimiter: Option<&str>,
-    parent: Option<&str>,
-    flags_csv: &str,
-    is_subscribed: bool,
-    total_count: u32,
-    unread_count: u32,
-    uid_validity: u32,
-    highest_modseq: u64,
-) -> Result<(), String> {
+pub fn upsert_folder(conn: &Connection, p: UpsertFolderParams) -> Result<(), String> {
     conn.execute(
         "INSERT OR REPLACE INTO folders
             (name, delimiter, parent, flags, is_subscribed,
              total_count, unread_count, uid_validity, highest_modseq, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
         params![
-            folder_name,
-            delimiter,
-            parent,
-            flags_csv,
-            is_subscribed as i32,
-            total_count,
-            unread_count,
-            uid_validity,
-            highest_modseq as i64,
+            p.name,
+            p.delimiter,
+            p.parent,
+            p.flags_csv,
+            p.is_subscribed as i32,
+            p.total_count,
+            p.unread_count,
+            p.uid_validity,
+            p.highest_modseq as i64,
         ],
     )
     .map_err(|e| format!("Failed to upsert folder: {e}"))?;
@@ -364,9 +365,9 @@ mod tests {
     fn test_upsert_and_get_folders() {
         let conn = open_test_db();
 
-        upsert_folder(&conn, "INBOX", Some("/"), None, "\\HasNoChildren", true, 42, 5, 100, 200)
+        upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: Some("/"), parent: None, flags_csv: "\\HasNoChildren", is_subscribed: true, total_count: 42, unread_count: 5, uid_validity: 100, highest_modseq: 200 })
             .unwrap();
-        upsert_folder(&conn, "Sent", Some("/"), None, "\\Sent", true, 10, 0, 101, 300)
+        upsert_folder(&conn, UpsertFolderParams { name: "Sent", delimiter: Some("/"), parent: None, flags_csv: "\\Sent", is_subscribed: true, total_count: 10, unread_count: 0, uid_validity: 101, highest_modseq: 300 })
             .unwrap();
 
         let folders = get_all_folders(&conn).unwrap();
@@ -386,11 +387,11 @@ mod tests {
     fn test_upsert_updates_existing_folder() {
         let conn = open_test_db();
 
-        upsert_folder(&conn, "INBOX", Some("/"), None, "\\HasNoChildren", true, 10, 2, 100, 50)
+        upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: Some("/"), parent: None, flags_csv: "\\HasNoChildren", is_subscribed: true, total_count: 10, unread_count: 2, uid_validity: 100, highest_modseq: 50 })
             .unwrap();
 
         // Upsert again with different counts.
-        upsert_folder(&conn, "INBOX", Some("/"), None, "\\HasNoChildren", true, 99, 33, 100, 75)
+        upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: Some("/"), parent: None, flags_csv: "\\HasNoChildren", is_subscribed: true, total_count: 99, unread_count: 33, uid_validity: 100, highest_modseq: 75 })
             .unwrap();
 
         let folders = get_all_folders(&conn).unwrap();
@@ -404,9 +405,9 @@ mod tests {
     fn test_remove_stale_folders() {
         let conn = open_test_db();
 
-        upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0).unwrap();
-        upsert_folder(&conn, "Sent", None, None, "", true, 0, 0, 0, 0).unwrap();
-        upsert_folder(&conn, "Trash", None, None, "", true, 0, 0, 0, 0).unwrap();
+        upsert_folder(&conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 }).unwrap();
+        upsert_folder(&conn, UpsertFolderParams { name: "Sent", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 }).unwrap();
+        upsert_folder(&conn, UpsertFolderParams { name: "Trash", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 }).unwrap();
 
         // Keep only INBOX and Sent; Trash should be removed.
         let current = vec!["INBOX".to_string(), "Sent".to_string()];

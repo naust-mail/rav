@@ -236,9 +236,6 @@ async fn run_idle_session(
     }
 }
 
-/// Apply vacation responder and filter rules to messages with uid > max_uid_before in INBOX.
-/// Runs as a background task - any error is logged and silently dropped.
-#[allow(clippy::too_many_arguments)]
 /// Owned copy of `db::filters::MessageContext`'s fields, used to carry a
 /// message's filter-matching context into a `with_user_db` closure (which
 /// must be `'static`, so it can't hold borrows into `new_messages`).
@@ -253,18 +250,24 @@ struct OwnedMessageContext {
     is_reply: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn process_new_messages(
-    user_hash: &str,
-    config: &AppConfig,
-    creds: &ImapCredentials,
-    smtp_client: &Arc<dyn SmtpClient>,
-    imap_client: &Arc<dyn ImapClient>,
-    transport: &MailTransport,
-    event_bus: &EventBus,
-    db_pool_manager: &db::pool::DbPoolManager,
-    max_uid_before: u32,
-) {
+/// App-wide services and this user's IMAP credentials, needed to process
+/// newly-arrived messages (vacation responder + filter rules) in the
+/// background after a sync cycle notices new mail.
+pub(crate) struct MessageProcessingCtx<'a> {
+    pub user_hash: &'a str,
+    pub config: &'a AppConfig,
+    pub creds: &'a ImapCredentials,
+    pub smtp_client: &'a Arc<dyn SmtpClient>,
+    pub imap_client: &'a Arc<dyn ImapClient>,
+    pub transport: &'a MailTransport,
+    pub event_bus: &'a EventBus,
+    pub db_pool_manager: &'a db::pool::DbPoolManager,
+}
+
+/// Apply vacation responder and filter rules to messages with uid > max_uid_before in INBOX.
+/// Runs as a background task - any error is logged and silently dropped.
+pub(crate) async fn process_new_messages(ctx: MessageProcessingCtx<'_>, max_uid_before: u32) {
+    let MessageProcessingCtx { user_hash, config, creds, smtp_client, imap_client, transport, event_bus, db_pool_manager } = ctx;
     struct InitialData {
         new_messages: Vec<db::messages::CachedMessage>,
         vacation: db::vacation::VacationResponder,

@@ -52,7 +52,6 @@ pub struct SyncWorkerManager {
 }
 
 impl SyncWorkerManager {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<AppConfig>,
         imap_client: Arc<dyn ImapClient>,
@@ -92,18 +91,17 @@ impl SyncWorkerManager {
 
         let worker_user_hash = user_hash.clone();
         let worker_bell = bell.clone();
-        let config = self.config.clone();
-        let imap_client = self.imap_client.clone();
-        let event_bus = self.event_bus.clone();
-        let search_engine = self.search_engine.clone();
-        let smtp_client = self.smtp_client.clone();
-        let transport = self.transport.clone();
-        let db_pool_manager = self.db_pool_manager.clone();
+        let deps = WorkerDeps {
+            config: self.config.clone(),
+            imap_client: self.imap_client.clone(),
+            event_bus: self.event_bus.clone(),
+            search_engine: self.search_engine.clone(),
+            smtp_client: self.smtp_client.clone(),
+            transport: self.transport.clone(),
+            db_pool_manager: self.db_pool_manager.clone(),
+        };
         let handle = tokio::spawn(async move {
-            worker_loop(
-                worker_user_hash, creds, config, imap_client, event_bus,
-                search_engine, smtp_client, transport, db_pool_manager, worker_bell,
-            ).await;
+            worker_loop(worker_user_hash, creds, deps, worker_bell).await;
         });
         self.tasks.insert(user_hash, handle);
 
@@ -111,10 +109,10 @@ impl SyncWorkerManager {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn worker_loop(
-    user_hash: String,
-    creds: ImapCredentials,
+/// Long-lived services a sync worker's cycle needs, bundled so `worker_loop`
+/// takes one param instead of threading each `Arc` through separately.
+#[derive(Clone)]
+struct WorkerDeps {
     config: Arc<AppConfig>,
     imap_client: Arc<dyn ImapClient>,
     event_bus: Arc<EventBus>,
@@ -122,8 +120,10 @@ async fn worker_loop(
     smtp_client: Arc<dyn SmtpClient>,
     transport: Arc<MailTransport>,
     db_pool_manager: Arc<db::pool::DbPoolManager>,
-    bell: Arc<Notify>,
-) {
+}
+
+async fn worker_loop(user_hash: String, creds: ImapCredentials, deps: WorkerDeps, bell: Arc<Notify>) {
+    let WorkerDeps { config, imap_client, event_bus, search_engine, smtp_client, transport, db_pool_manager } = deps;
     loop {
         tokio::select! {
             _ = bell.notified() => {}
@@ -137,7 +137,14 @@ async fn worker_loop(
 
         match tokio::time::timeout(
             Duration::from_secs(SYNC_CYCLE_TIMEOUT_SECS),
-            run_sync(&user_hash, &creds, imap_client.as_ref(), &event_bus, &search_engine, &db_pool_manager),
+            run_sync(crate::realtime::sync::SyncCtx {
+                user_hash: &user_hash,
+                creds: &creds,
+                imap_client: imap_client.as_ref(),
+                event_bus: &event_bus,
+                search_engine: &search_engine,
+                db_pool_manager: &db_pool_manager,
+            }),
         ).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -160,8 +167,17 @@ async fn worker_loop(
             let bg_db_pool_manager = db_pool_manager.clone();
             tokio::spawn(async move {
                 idle::process_new_messages(
-                    &bg_user_hash, &bg_config, &bg_creds, &bg_smtp, &bg_imap, &bg_transport,
-                    &bg_event_bus, &bg_db_pool_manager, max_uid_before,
+                    idle::MessageProcessingCtx {
+                        user_hash: &bg_user_hash,
+                        config: &bg_config,
+                        creds: &bg_creds,
+                        smtp_client: &bg_smtp,
+                        imap_client: &bg_imap,
+                        transport: &bg_transport,
+                        event_bus: &bg_event_bus,
+                        db_pool_manager: &bg_db_pool_manager,
+                    },
+                    max_uid_before,
                 ).await;
             });
         }

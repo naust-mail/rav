@@ -74,7 +74,7 @@ mod tests {
         SessionState {
             account_id: "acc-1".to_string(),
             email: "alice@example.com".to_string(),
-            password: "password".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
             user_hash: crate::auth::user_data::hash_email("alice@example.com"),
             imap_host: "imap.example.com".to_string(),
             imap_port: 993,

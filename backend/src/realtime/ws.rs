@@ -3,11 +3,10 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::WebSocketUpgrade;
 use axum::response::{IntoResponse, Response};
-use axum::Extension;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::auth::session::{AccountSession, SessionStore};
+use crate::auth::session::AccountSession;
 use crate::imap::client::ImapCredentials;
 use crate::mail_transport::MailTransport;
 use crate::realtime::events::EventBus;
@@ -26,16 +25,19 @@ fn extract_browser_id(cookie_header: &str) -> Option<String> {
     None
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: axum::http::HeaderMap,
-    Extension(store): Extension<Arc<SessionStore>>,
-    Extension(transport): Extension<Arc<MailTransport>>,
-    Extension(event_bus): Extension<Arc<EventBus>>,
-    Extension(idle_manager): Extension<Arc<IdleManager>>,
-    Extension(sync_worker_manager): Extension<Arc<super::worker::SyncWorkerManager>>,
+    services: crate::routes::AppServices,
 ) -> Response {
+    let crate::routes::AppServices {
+        store,
+        transport,
+        event_bus,
+        idle_manager,
+        sync_worker_manager,
+        ..
+    } = services;
     let browser_id = headers
         .get_all("cookie")
         .iter()

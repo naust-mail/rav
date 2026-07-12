@@ -7,7 +7,7 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 
 use crate::auth::imap_auth::{self, AuthResult};
-use crate::auth::session::{SessionState, SessionStore};
+use crate::auth::session::{ServerEndpoint, SessionState, SessionStore};
 use crate::auth::user_data;
 use crate::config::AppConfig;
 use crate::db;
@@ -563,18 +563,7 @@ async fn create_login_session(
         "login: creating session"
     );
 
-    let (token, account_id) = store.add_account_to_browser(
-        &browser_id,
-        body.email.clone(),
-        body.password,
-        user_hash,
-        server.imap_host.clone(),
-        server.imap_port,
-        server.imap_tls,
-        server.smtp_host.clone(),
-        server.smtp_port,
-        server.smtp_tls,
-    );
+    let (token, account_id) = store.add_account_to_browser(&browser_id, body.email.clone(), body.password, user_hash, ServerEndpoint { host: server.imap_host.clone(), port: server.imap_port, tls: server.imap_tls }, ServerEndpoint { host: server.smtp_host.clone(), port: server.smtp_port, tls: server.smtp_tls });
 
     let max_age = session_hours * 3600;
     let secure = config.environment != "development";
@@ -905,7 +894,7 @@ mod tests {
     fn login_request(overrides: Option<(&str, u16, bool)>) -> LoginRequest {
         LoginRequest {
             email: "user@example.com".to_string(),
-            password: "secret".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
             remember: false,
             imap_host: overrides.map(|(h, _, _)| h.to_string()),
             imap_port: overrides.map(|(_, p, _)| p),

@@ -402,14 +402,16 @@ pub async fn search_messages(
         db::messages::search_messages_sqlite(
             conn,
             &text_clone,
-            folder_clone.as_deref(),
-            from_clone.as_deref(),
-            to_clone.as_deref(),
-            date_from,
-            date_to,
-            has_attachment,
-            is_read,
-            is_flagged,
+            db::messages::SearchFilters {
+                folder: folder_clone.as_deref(),
+                from: from_clone.as_deref(),
+                to: to_clone.as_deref(),
+                date_from,
+                date_to,
+                has_attachment,
+                is_read,
+                is_flagged,
+            },
             limit,
         )
     })

@@ -114,17 +114,17 @@ impl OutboxWorkerManager {
 
                 let worker_user_hash = user_hash.clone();
                 let worker_bell = bell.clone();
-                let config = self.config.clone();
-                let imap_client = self.imap_client.clone();
-                let smtp_client = self.smtp_client.clone();
-                let transport = self.transport.clone();
-                let event_bus = self.event_bus.clone();
-                let db_pool_manager = self.db_pool_manager.clone();
+                let creds = SendCredentials { user_hash: worker_user_hash, email, password };
+                let deps = OutboxDeps {
+                    config: self.config.clone(),
+                    imap_client: self.imap_client.clone(),
+                    smtp_client: self.smtp_client.clone(),
+                    transport: self.transport.clone(),
+                    event_bus: self.event_bus.clone(),
+                    db_pool_manager: self.db_pool_manager.clone(),
+                };
                 let handle = tokio::spawn(async move {
-                    worker_loop(
-                        worker_user_hash, email, password, config, imap_client, smtp_client,
-                        transport, event_bus, db_pool_manager, worker_bell,
-                    ).await;
+                    worker_loop(creds, deps, worker_bell).await;
                 });
 
                 match entry {
@@ -138,19 +138,22 @@ impl OutboxWorkerManager {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn worker_loop(
-    user_hash: String,
-    email: String,
-    password: String,
+/// Long-lived services an outbox worker's cycle needs, bundled so
+/// `worker_loop` and `process_entry` take one param instead of threading
+/// each `Arc` through separately.
+#[derive(Clone)]
+struct OutboxDeps {
     config: Arc<AppConfig>,
     imap_client: Arc<dyn ImapClient>,
     smtp_client: Arc<dyn SmtpClient>,
     transport: Arc<MailTransport>,
     event_bus: Arc<EventBus>,
     db_pool_manager: Arc<db::pool::DbPoolManager>,
-    bell: Arc<Notify>,
-) {
+}
+
+async fn worker_loop(creds: SendCredentials, deps: OutboxDeps, bell: Arc<Notify>) {
+    let user_hash = creds.user_hash.clone();
+    let db_pool_manager = deps.db_pool_manager.clone();
     loop {
         let due_result = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
             db::outbox::list_due(conn, &now_iso())
@@ -169,10 +172,7 @@ async fn worker_loop(
         tracing::debug!(user_hash = %user_hash, due_count = due.len(), "Outbox worker: tick");
 
         for entry in due {
-            process_entry(
-                &entry, &user_hash, &email, &password, &config, &imap_client,
-                &smtp_client, &transport, &event_bus, &db_pool_manager,
-            ).await;
+            process_entry(&entry, &creds, &deps).await;
         }
 
         let next_deadline_result = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
@@ -213,19 +213,9 @@ async fn worker_loop(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn process_entry(
-    entry: &OutboxEntry,
-    user_hash: &str,
-    email: &str,
-    password: &str,
-    config: &AppConfig,
-    imap_client: &Arc<dyn ImapClient>,
-    smtp_client: &Arc<dyn SmtpClient>,
-    transport: &MailTransport,
-    event_bus: &EventBus,
-    db_pool_manager: &db::pool::DbPoolManager,
-) {
+async fn process_entry(entry: &OutboxEntry, creds: &SendCredentials, deps: &OutboxDeps) {
+    let user_hash = creds.user_hash.as_str();
+    let OutboxDeps { config, imap_client, smtp_client, transport, event_bus, db_pool_manager } = deps;
     tracing::debug!(id = %entry.id, user_hash = %user_hash, attempt = entry.attempt_count + 1, "Outbox worker: attempting send");
 
     let mark_sending_result = db::pool::with_user_db(db_pool_manager, user_hash, {
@@ -250,11 +240,6 @@ async fn process_entry(
         None => None,
     };
 
-    let creds = SendCredentials {
-        user_hash: user_hash.to_string(),
-        email: email.to_string(),
-        password: password.to_string(),
-    };
     let job = SendJob {
         to: entry.to_addrs.clone(),
         cc: entry.cc_addrs.clone(),
@@ -269,7 +254,7 @@ async fn process_entry(
         pgp,
     };
 
-    match send::perform_send(config, transport, smtp_client, imap_client, db_pool_manager, &creds, job).await {
+    match send::perform_send(config, transport, smtp_client, imap_client, db_pool_manager, creds, job).await {
         Ok(_message_id) => {
             let _ = db::pool::with_user_db(db_pool_manager, user_hash, {
                 let id = entry.id.clone();

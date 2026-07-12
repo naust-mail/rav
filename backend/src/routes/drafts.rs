@@ -15,6 +15,8 @@ use crate::error::AppError;
 use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::realtime::events::{EventBus, MailEvent};
 
+use super::AppServices;
+
 /// Serializes concurrent save/delete requests for the same draft UUID.
 ///
 /// Without this, two overlapping saves (autosave timer racing a manual
@@ -144,18 +146,15 @@ pub async fn get_reply_draft_handler(
 /// `Message-ID` in the RFC822 so the draft can be identified when reopened from IMAP.
 pub async fn save_draft_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
-    Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Extension(event_bus): Extension<Arc<EventBus>>,
-    Extension(draft_locks): Extension<Arc<DraftLocks>>,
-    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
+    services: AppServices,
     AxumPath(uuid): AxumPath<String>,
     Json(req): Json<SaveDraftRequest>,
 ) -> Result<Response, AppError> {
     let user_hash = session.user_hash.clone();
+    let draft_locks = services.draft_locks.clone();
     draft_locks
         .with_lock(&user_hash, &uuid.clone(), || {
-            save_draft_locked(session, config, imap_client, event_bus, db_pool_manager, uuid, req)
+            save_draft_locked(session, services, uuid, req)
         })
         .await
 }
@@ -165,16 +164,13 @@ struct DraftPreState {
     drafts_folder: String,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn save_draft_locked(
     session: SessionState,
-    config: Arc<AppConfig>,
-    imap_client: Arc<dyn ImapClient>,
-    event_bus: Arc<EventBus>,
-    db_pool_manager: Arc<db::pool::DbPoolManager>,
+    services: AppServices,
     uuid: String,
     req: SaveDraftRequest,
 ) -> Result<Response, AppError> {
+    let AppServices { config, imap_client, event_bus, db_pool_manager, .. } = services;
     let Some(imap_host) = config.imap_host.as_deref() else {
         return Err(AppError::InternalError("IMAP not configured".to_string()));
     };

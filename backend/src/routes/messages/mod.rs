@@ -10,12 +10,13 @@ use types::*;
 use crate::auth::session::SessionState;
 use crate::config::AppConfig;
 use crate::db;
+use crate::db::folders::UpsertFolderParams;
+use crate::db::messages::{CacheMessageBodyParams, UpsertMessageParams};
 use crate::email_theme;
 use crate::error::AppError;
 use crate::folder_cipher::FolderId;
 use crate::imap::client::{ImapClient, ImapCredentials};
 use crate::realtime::events::{EventBus, MailEvent};
-use crate::realtime::worker::SyncWorkerManager;
 use crate::search::engine::{IndexableMessage, SearchEngine, UserIndex};
 
 // ---------------------------------------------------------------------------
@@ -84,12 +85,6 @@ fn cipher_for(session: &SessionState) -> crate::folder_cipher::FolderCipher {
 /// How many seconds a folder's message cache is considered fresh.
 const FOLDER_MESSAGES_TTL_SECS: u32 = 30;
 
-/// `GET /api/folders/:folder/messages?page=0&per_page=50`
-///
-/// Returns paginated messages using a cache-first strategy:
-/// 1. If the folder was synced within `FOLDER_MESSAGES_TTL_SECS`, serve from cache.
-/// 2. Otherwise do a lightweight IMAP SELECT to check for new messages and sync
-///    only what's new.
 /// Result of the pre-IMAP cache check in `list_messages`.
 struct InitialFolderCheck {
     folder_fresh: bool,
@@ -110,18 +105,27 @@ enum SyncOutcome {
     NoSyncNeeded,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `GET /api/folders/:folder/messages?page=0&per_page=50`
+///
+/// Returns paginated messages using a cache-first strategy:
+/// 1. If the folder was synced within `FOLDER_MESSAGES_TTL_SECS`, serve from cache.
+/// 2. Otherwise do a lightweight IMAP SELECT to check for new messages and sync
+///    only what's new.
 pub async fn list_messages(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
-    Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Extension(search_engine): Extension<Arc<SearchEngine>>,
-    Extension(event_bus): Extension<Arc<EventBus>>,
-    Extension(sync_worker_manager): Extension<Arc<SyncWorkerManager>>,
-    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
+    services: super::AppServices,
     Path(folder_id): Path<FolderId>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Response, AppError> {
+    let super::AppServices {
+        config,
+        imap_client,
+        search_engine,
+        event_bus,
+        sync_worker_manager,
+        db_pool_manager,
+        ..
+    } = services;
     let folder = cipher_for(&session).decrypt(&folder_id)?;
     let mut syncing = false;
 
@@ -146,7 +150,7 @@ pub async fn list_messages(
 
             // Ensure the folder exists in the folders table (for FK constraint).
             if cached_folder.is_none() {
-                db::folders::upsert_folder(conn, &folder, None, None, "", true, 0, 0, 0, 0)?;
+                db::folders::upsert_folder(conn, UpsertFolderParams { name: &folder, delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 0, highest_modseq: 0 })?;
             }
 
             let cached_count = db::messages::count_messages(conn, &folder)?;
@@ -383,13 +387,7 @@ fn upsert_and_index_headers(
         let date = header.date.as_deref().unwrap_or("");
         let flags_csv = header.flags.join(",");
 
-        db::messages::upsert_message(
-            conn, folder, header.uid,
-            header.message_id.as_deref(), header.in_reply_to.as_deref(),
-            header.references.as_deref(), subject, from_address, from_name,
-            &to_json, &cc_json, date, header.date_epoch, &flags_csv, header.size,
-            header.has_attachments, "", header.reaction.as_deref(),
-        )
+        db::messages::upsert_message(conn, folder, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() })
         .map_err(|e| format!("Database error: {e}"))?;
 
         // Populate denormalized known_addresses table.
@@ -449,10 +447,10 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
         creds, folder, imap_client, db_pool_manager, user_hash,
         search_engine, event_bus, uid_range, uid_validity, exists,
     } = params;
-    let result = sync_remaining_headers_inner(
-        creds, folder.clone(), imap_client, db_pool_manager, user_hash.clone(),
-        search_engine, uid_range, uid_validity, exists,
-    )
+    let result = sync_remaining_headers_inner(BackgroundSyncParams {
+        creds, folder: folder.clone(), imap_client, db_pool_manager, user_hash: user_hash.clone(),
+        search_engine, event_bus: event_bus.clone(), uid_range, uid_validity, exists,
+    })
     .await;
 
     match result {
@@ -466,18 +464,10 @@ async fn sync_remaining_headers(params: BackgroundSyncParams) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn sync_remaining_headers_inner(
-    creds: ImapCredentials,
-    folder: String,
-    imap_client: Arc<dyn ImapClient>,
-    db_pool_manager: Arc<db::pool::DbPoolManager>,
-    user_hash: String,
-    search_engine: Arc<SearchEngine>,
-    uid_range: String,
-    uid_validity: u32,
-    exists: u32,
-) -> Result<(), String> {
+async fn sync_remaining_headers_inner(params: BackgroundSyncParams) -> Result<(), String> {
+    let BackgroundSyncParams {
+        creds, folder, imap_client, db_pool_manager, user_hash, search_engine, uid_range, uid_validity, exists, ..
+    } = params;
     tracing::info!(folder = %folder, uid_range = %uid_range, "Background sync: fetching remaining headers");
 
     let headers = imap_client
@@ -502,13 +492,7 @@ async fn sync_remaining_headers_inner(
                 let date = header.date.as_deref().unwrap_or("");
                 let flags_csv = header.flags.join(",");
 
-                db::messages::upsert_message(
-                    conn, &folder, header.uid,
-                    header.message_id.as_deref(), header.in_reply_to.as_deref(),
-                    header.references.as_deref(), subject, from_address, from_name,
-                    &to_json, &cc_json, date, header.date_epoch, &flags_csv, header.size,
-                    header.has_attachments, "", header.reaction.as_deref(),
-                )
+                db::messages::upsert_message(conn, &folder, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() })
                 .map_err(|e| format!("Database error: {e}"))?;
 
                 // Populate denormalized known_addresses table.
@@ -667,7 +651,7 @@ pub async fn get_message(
     // Check SQLite cache first. If it's usable, resolve fully here (sync-only,
     // no IMAP round-trip needed).
     enum CachedBodyOutcome {
-        Ready(BodyData),
+        Ready(Box<BodyData>),
         NeedsFetch,
     }
 
@@ -701,21 +685,21 @@ pub async fn get_message(
                 (theme, cached.html, cached.text)
             };
 
-            Ok(CachedBodyOutcome::Ready(BodyData {
+            Ok(CachedBodyOutcome::Ready(Box::new(BodyData {
                 body_html: html,
                 body_text: text,
                 attachments,
                 raw_headers: cached.raw_headers.unwrap_or_default(),
                 email_theme,
                 pgp_status: None,
-            }))
+            })))
         })
         .await
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?
     };
 
     let BodyData { body_html, body_text, attachments, raw_headers, email_theme, pgp_status } = match outcome {
-        CachedBodyOutcome::Ready(data) => data,
+        CachedBodyOutcome::Ready(data) => *data,
         CachedBodyOutcome::NeedsFetch => {
             // Fetch from IMAP.
             let body = imap_client
@@ -795,16 +779,7 @@ pub async fn get_message(
                 let text_plain = body.text_plain.clone();
                 let raw_headers = body.raw_headers.clone();
                 db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
-                    db::messages::cache_message_body(
-                        conn,
-                        &folder,
-                        uid,
-                        resolved_html.as_deref(),
-                        text_plain.as_deref(),
-                        att_json.as_deref(),
-                        Some(&raw_headers),
-                        detected_theme,
-                    )
+                    db::messages::cache_message_body(conn, &folder, uid, CacheMessageBodyParams { html: resolved_html.as_deref(), text: text_plain.as_deref(), attachments_json: att_json.as_deref(), raw_headers: Some(&raw_headers), email_theme: detected_theme })
                 })
                 .await
                 .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;

@@ -1,6 +1,9 @@
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
+#[cfg(test)]
+use crate::db::folders::UpsertFolderParams;
+
 // mail_parser is used for RFC2822 date parsing in parse_date_epoch.
 
 /// A cached email message header, mirroring the query-visible columns of the
@@ -84,29 +87,33 @@ pub fn compute_thread_id(
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Parameters for [`upsert_message`].
+pub struct UpsertMessageParams<'a> {
+    pub message_id: Option<&'a str>,
+    pub in_reply_to: Option<&'a str>,
+    pub references_header: Option<&'a str>,
+    pub subject: &'a str,
+    pub from_address: &'a str,
+    pub from_name: &'a str,
+    pub to_json: &'a str,
+    pub cc_json: &'a str,
+    pub date: &'a str,
+    pub date_epoch: i64,
+    pub flags_csv: &'a str,
+    pub size: u32,
+    pub has_attachments: bool,
+    pub snippet: &'a str,
+    pub reaction: Option<&'a str>,
+}
+
 /// Insert or replace a message header row.
-#[allow(clippy::too_many_arguments)]
 pub fn upsert_message(
     conn: &Connection,
     folder: &str,
     uid: u32,
-    message_id: Option<&str>,
-    in_reply_to: Option<&str>,
-    references_header: Option<&str>,
-    subject: &str,
-    from_address: &str,
-    from_name: &str,
-    to_json: &str,
-    cc_json: &str,
-    date: &str,
-    date_epoch: i64,
-    flags_csv: &str,
-    size: u32,
-    has_attachments: bool,
-    snippet: &str,
-    reaction: Option<&str>,
+    p: UpsertMessageParams,
 ) -> Result<(), String> {
-    let thread_id = compute_thread_id(message_id, in_reply_to, references_header);
+    let thread_id = compute_thread_id(p.message_id, p.in_reply_to, p.references_header);
     conn.execute(
         "INSERT OR REPLACE INTO messages
             (uid, folder, message_id, in_reply_to, references_header,
@@ -116,21 +123,21 @@ pub fn upsert_message(
         params![
             uid,
             folder,
-            message_id,
-            in_reply_to,
-            references_header,
-            subject,
-            from_address,
-            from_name,
-            to_json,
-            cc_json,
-            date,
-            flags_csv,
-            size,
-            has_attachments as i32,
-            snippet,
-            date_epoch,
-            reaction,
+            p.message_id,
+            p.in_reply_to,
+            p.references_header,
+            p.subject,
+            p.from_address,
+            p.from_name,
+            p.to_json,
+            p.cc_json,
+            p.date,
+            p.flags_csv,
+            p.size,
+            p.has_attachments as i32,
+            p.snippet,
+            p.date_epoch,
+            p.reaction,
             thread_id,
         ],
     )
@@ -380,25 +387,29 @@ pub fn update_message_flags(
     Ok(())
 }
 
+/// Parameters for [`cache_message_body`].
+pub struct CacheMessageBodyParams<'a> {
+    pub html: Option<&'a str>,
+    pub text: Option<&'a str>,
+    pub attachments_json: Option<&'a str>,
+    pub raw_headers: Option<&'a str>,
+    pub email_theme: Option<i32>,
+}
+
 /// Cache a message body (HTML and/or plain text) along with attachment
 /// metadata (as a JSON string) and the raw RFC-822 headers.
-#[allow(clippy::too_many_arguments)]
 pub fn cache_message_body(
     conn: &Connection,
     folder: &str,
     uid: u32,
-    html: Option<&str>,
-    text: Option<&str>,
-    attachments_json: Option<&str>,
-    raw_headers: Option<&str>,
-    email_theme: Option<i32>,
+    p: CacheMessageBodyParams,
 ) -> Result<(), String> {
     conn.execute(
         "UPDATE messages
          SET body_html = ?1, body_text = ?2, body_cached = 1,
              attachments_json = ?3, raw_headers = ?4, email_theme = ?5
          WHERE folder = ?6 AND uid = ?7",
-        params![html, text, attachments_json, raw_headers, email_theme, folder, uid],
+        params![p.html, p.text, p.attachments_json, p.raw_headers, p.email_theme, folder, uid],
     )
     .map_err(|e| format!("Failed to cache message body: {e}"))?;
     Ok(())
@@ -738,23 +749,29 @@ pub fn get_full_thread(
     Ok(all_messages)
 }
 
+/// Filter criteria for [`search_messages_sqlite`].
+#[derive(Default)]
+pub struct SearchFilters<'a> {
+    pub folder: Option<&'a str>,
+    pub from: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub has_attachment: Option<bool>,
+    pub is_read: Option<bool>,
+    pub is_flagged: Option<bool>,
+}
+
 /// Search the SQLite message cache using LIKE for text matches across
 /// subject, from_name, from_address, and to_addresses.
 /// This provides comprehensive results independent of the tantivy index state.
-#[allow(clippy::too_many_arguments)]
 pub fn search_messages_sqlite(
     conn: &Connection,
     text: &str,
-    folder: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-    date_from: Option<i64>,
-    date_to: Option<i64>,
-    has_attachment: Option<bool>,
-    is_read: Option<bool>,
-    is_flagged: Option<bool>,
+    filters: SearchFilters,
     limit: usize,
 ) -> Result<Vec<CachedMessage>, String> {
+    let SearchFilters { folder, from, to, date_from, date_to, has_attachment, is_read, is_flagged } = filters;
     let mut conditions = Vec::new();
     let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut idx = 1u32;
@@ -873,31 +890,12 @@ mod tests {
 
     /// Helper: insert a folder so that the foreign key constraint is satisfied.
     fn ensure_folder(conn: &Connection, name: &str) {
-        upsert_folder(conn, name, Some("/"), None, "", true, 0, 0, 1, 0).unwrap();
+        upsert_folder(conn, UpsertFolderParams { name, delimiter: Some("/"), parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 1, highest_modseq: 0 }).unwrap();
     }
 
     /// Helper: insert a sample message.
     fn insert_sample(conn: &Connection, folder: &str, uid: u32, date: &str) {
-        upsert_message(
-            conn,
-            folder,
-            uid,
-            Some(&format!("<msg-{uid}@example.com>")),
-            None,
-            None,
-            &format!("Subject {uid}"),
-            "alice@example.com",
-            "Alice",
-            "[]",
-            "[]",
-            date,
-            parse_date_epoch(date),
-            "\\Seen",
-            1024,
-            false,
-            "snippet",
-            None,
-        )
+        upsert_message(conn, folder, uid, UpsertMessageParams { message_id: Some(&format!("<msg-{uid}@example.com>")), in_reply_to: None, references_header: None, subject: &format!("Subject {uid}"), from_address: "alice@example.com", from_name: "Alice", to_json: "[]", cc_json: "[]", date, date_epoch: parse_date_epoch(date), flags_csv: "\\Seen", size: 1024, has_attachments: false, snippet: "snippet", reaction: None })
         .unwrap();
     }
 
@@ -951,11 +949,7 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         let sentinel_epoch: i64 = 9_999_999_999;
-        upsert_message(
-            &conn, "INBOX", 1, Some("<x@ex>"), None, None,
-            "Test", "a@ex", "A", "[]", "[]",
-            "2024-01-01T10:00:00Z", sentinel_epoch, "", 100, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<x@ex>"), in_reply_to: None, references_header: None, subject: "Test", from_address: "a@ex", from_name: "A", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: sentinel_epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         let msgs = get_messages(&conn, "INBOX", 0, 10).unwrap();
         assert_eq!(msgs[0].date_epoch, sentinel_epoch);
@@ -969,14 +963,8 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         let epoch: i64 = 1_700_000_000;
-        upsert_message(
-            &conn, "INBOX", 1, Some("<a@ex>"), None, None,
-            "First", "a@ex", "A", "[]", "[]", "", epoch, "", 100, false, "", None,
-        ).unwrap();
-        upsert_message(
-            &conn, "INBOX", 2, Some("<b@ex>"), None, None,
-            "Second", "b@ex", "B", "[]", "[]", "", epoch, "", 100, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<a@ex>"), in_reply_to: None, references_header: None, subject: "First", from_address: "a@ex", from_name: "A", to_json: "[]", cc_json: "[]", date: "", date_epoch: epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<b@ex>"), in_reply_to: None, references_header: None, subject: "Second", from_address: "b@ex", from_name: "B", to_json: "[]", cc_json: "[]", date: "", date_epoch: epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         let threads = get_threaded_messages(&conn, "INBOX", 0, 10).unwrap();
         assert_eq!(threads.len(), 2);
@@ -1058,13 +1046,7 @@ mod tests {
         ensure_folder(&conn, "INBOX");
         insert_sample(&conn, "INBOX", 1, "2024-01-01T10:00:00Z");
 
-        cache_message_body(
-            &conn, "INBOX", 1,
-            Some("<h1>Hello</h1>"), Some("Hello"),
-            Some(r#"[{"id":"0","filename":"test.pdf","content_type":"application/pdf","size":1024,"content_id":null}]"#),
-            Some("From: alice@example.com"),
-            Some(0),
-        )
+        cache_message_body(&conn, "INBOX", 1, CacheMessageBodyParams { html: Some("<h1>Hello</h1>"), text: Some("Hello"), attachments_json: Some(r#"[{"id":"0","filename":"test.pdf","content_type":"application/pdf","size":1024,"content_id":null}]"#), raw_headers: Some("From: alice@example.com"), email_theme: Some(0) })
             .unwrap();
 
         let body = get_cached_body(&conn, "INBOX", 1).unwrap();
@@ -1088,11 +1070,7 @@ mod tests {
         let body = get_cached_body(&conn, "INBOX", 1).unwrap();
         assert!(body.is_none());
 
-        cache_message_body(
-            &conn, "INBOX", 1,
-            Some("<h1>Test</h1>"), Some("Test"),
-            None, None, Some(0),
-        ).unwrap();
+        cache_message_body(&conn, "INBOX", 1, CacheMessageBodyParams { html: Some("<h1>Test</h1>"), text: Some("Test"), attachments_json: None, raw_headers: None, email_theme: Some(0) }).unwrap();
 
         update_email_theme(&conn, "INBOX", 1, 1).unwrap();
 
@@ -1120,22 +1098,10 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         // Original message.
-        upsert_message(
-            &conn, "INBOX", 1,
-            Some("<thread-1@example.com>"), None, None,
-            "Hello", "alice@example.com", "Alice", "[]", "[]",
-            "2024-01-01T10:00:00Z", 0, "", 100, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<thread-1@example.com>"), in_reply_to: None, references_header: None, subject: "Hello", from_address: "alice@example.com", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         // Reply referencing original via in_reply_to.
-        upsert_message(
-            &conn, "INBOX", 2,
-            Some("<reply-1@example.com>"),
-            Some("<thread-1@example.com>"),
-            None,
-            "Re: Hello", "bob@example.com", "Bob", "[]", "[]",
-            "2024-01-02T10:00:00Z", 0, "", 200, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<reply-1@example.com>"), in_reply_to: Some("<thread-1@example.com>"), references_header: None, subject: "Re: Hello", from_address: "bob@example.com", from_name: "Bob", to_json: "[]", cc_json: "[]", date: "2024-01-02T10:00:00Z", date_epoch: 0, flags_csv: "", size: 200, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         let thread = get_thread_messages(&conn, "<thread-1@example.com>").unwrap();
         assert_eq!(thread.len(), 2);
@@ -1150,22 +1116,10 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         // Original message.
-        upsert_message(
-            &conn, "INBOX", 1,
-            Some("<orig@example.com>"), None, None,
-            "Hello", "alice@example.com", "Alice", "[]", "[]",
-            "2024-01-01T10:00:00Z", 0, "", 100, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<orig@example.com>"), in_reply_to: None, references_header: None, subject: "Hello", from_address: "alice@example.com", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         // A message that references the original only via references_header.
-        upsert_message(
-            &conn, "INBOX", 3,
-            Some("<deep-reply@example.com>"),
-            Some("<mid@example.com>"),
-            Some("<orig@example.com> <mid@example.com>"),
-            "Re: Re: Hello", "carol@example.com", "Carol", "[]", "[]",
-            "2024-01-03T10:00:00Z", 0, "", 300, false, "", None,
-        ).unwrap();
+        upsert_message(&conn, "INBOX", 3, UpsertMessageParams { message_id: Some("<deep-reply@example.com>"), in_reply_to: Some("<mid@example.com>"), references_header: Some("<orig@example.com> <mid@example.com>"), subject: "Re: Re: Hello", from_address: "carol@example.com", from_name: "Carol", to_json: "[]", cc_json: "[]", date: "2024-01-03T10:00:00Z", date_epoch: 0, flags_csv: "", size: 300, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         let thread = get_thread_messages(&conn, "<orig@example.com>").unwrap();
         assert_eq!(thread.len(), 2);
@@ -1179,17 +1133,11 @@ mod tests {
         ensure_folder(&conn, "INBOX");
 
         // Message 1: original
-        upsert_message(&conn, "INBOX", 1, Some("<a@ex>"), None, None,
-            "Hello", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z",
-            parse_date_epoch("2024-01-01T10:00:00Z"), "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<a@ex>"), in_reply_to: None, references_header: None, subject: "Hello", from_address: "alice@ex", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: parse_date_epoch("2024-01-01T10:00:00Z"), flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
         // Message 2: reply to 1
-        upsert_message(&conn, "INBOX", 2, Some("<b@ex>"), Some("<a@ex>"), Some("<a@ex>"),
-            "Re: Hello", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z",
-            parse_date_epoch("2024-01-02T10:00:00Z"), "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<b@ex>"), in_reply_to: Some("<a@ex>"), references_header: Some("<a@ex>"), subject: "Re: Hello", from_address: "bob@ex", from_name: "Bob", to_json: "[]", cc_json: "[]", date: "2024-01-02T10:00:00Z", date_epoch: parse_date_epoch("2024-01-02T10:00:00Z"), flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
         // Message 3: reply to 2, references both
-        upsert_message(&conn, "INBOX", 3, Some("<c@ex>"), Some("<b@ex>"), Some("<a@ex> <b@ex>"),
-            "Re: Re: Hello", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z",
-            parse_date_epoch("2024-01-03T10:00:00Z"), "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 3, UpsertMessageParams { message_id: Some("<c@ex>"), in_reply_to: Some("<b@ex>"), references_header: Some("<a@ex> <b@ex>"), subject: "Re: Re: Hello", from_address: "carol@ex", from_name: "Carol", to_json: "[]", cc_json: "[]", date: "2024-01-03T10:00:00Z", date_epoch: parse_date_epoch("2024-01-03T10:00:00Z"), flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         // Starting from message 2, should find the entire thread (1, 2, 3).
         let thread = get_full_thread(&conn, "<b@ex>", Some("<a@ex>")).unwrap();
@@ -1204,12 +1152,9 @@ mod tests {
         let conn = open_test_db();
         ensure_folder(&conn, "INBOX");
 
-        upsert_message(&conn, "INBOX", 1, Some("<root@ex>"), None, None,
-            "Start", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", 0, "", 100, false, "", None).unwrap();
-        upsert_message(&conn, "INBOX", 2, Some("<mid@ex>"), Some("<root@ex>"), Some("<root@ex>"),
-            "Re: Start", "bob@ex", "Bob", "[]", "[]", "2024-01-02T10:00:00Z", 0, "", 100, false, "", None).unwrap();
-        upsert_message(&conn, "INBOX", 3, Some("<leaf@ex>"), Some("<mid@ex>"), Some("<root@ex> <mid@ex>"),
-            "Re: Re: Start", "carol@ex", "Carol", "[]", "[]", "2024-01-03T10:00:00Z", 0, "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<root@ex>"), in_reply_to: None, references_header: None, subject: "Start", from_address: "alice@ex", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<mid@ex>"), in_reply_to: Some("<root@ex>"), references_header: Some("<root@ex>"), subject: "Re: Start", from_address: "bob@ex", from_name: "Bob", to_json: "[]", cc_json: "[]", date: "2024-01-02T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
+        upsert_message(&conn, "INBOX", 3, UpsertMessageParams { message_id: Some("<leaf@ex>"), in_reply_to: Some("<mid@ex>"), references_header: Some("<root@ex> <mid@ex>"), subject: "Re: Re: Start", from_address: "carol@ex", from_name: "Carol", to_json: "[]", cc_json: "[]", date: "2024-01-03T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         // Starting from the leaf message, should still find entire thread.
         let thread = get_full_thread(&conn, "<leaf@ex>", Some("<root@ex> <mid@ex>")).unwrap();
@@ -1221,8 +1166,7 @@ mod tests {
         let conn = open_test_db();
         ensure_folder(&conn, "INBOX");
 
-        upsert_message(&conn, "INBOX", 1, Some("<solo@ex>"), None, None,
-            "Solo", "alice@ex", "Alice", "[]", "[]", "2024-01-01T10:00:00Z", 0, "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<solo@ex>"), in_reply_to: None, references_header: None, subject: "Solo", from_address: "alice@ex", from_name: "Alice", to_json: "[]", cc_json: "[]", date: "2024-01-01T10:00:00Z", date_epoch: 0, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
 
         let thread = get_full_thread(&conn, "<solo@ex>", None).unwrap();
         assert_eq!(thread.len(), 1);
@@ -1234,10 +1178,8 @@ mod tests {
         let conn = open_test_db();
         ensure_folder(&conn, "INBOX");
         let epoch: i64 = 1_700_000_000;
-        upsert_message(&conn, "INBOX", 1, Some("<a@ex>"), None, None,
-            "First", "a@ex", "A", "[]", "[]", "", epoch, "", 100, false, "", None).unwrap();
-        upsert_message(&conn, "INBOX", 2, Some("<b@ex>"), None, None,
-            "Second", "b@ex", "B", "[]", "[]", "", epoch, "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<a@ex>"), in_reply_to: None, references_header: None, subject: "First", from_address: "a@ex", from_name: "A", to_json: "[]", cc_json: "[]", date: "", date_epoch: epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<b@ex>"), in_reply_to: None, references_header: None, subject: "Second", from_address: "b@ex", from_name: "B", to_json: "[]", cc_json: "[]", date: "", date_epoch: epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
         let msgs = get_messages(&conn, "INBOX", 0, 10).unwrap();
         assert_eq!(msgs[0].uid, 2);
         assert_eq!(msgs[1].uid, 1);
@@ -1250,12 +1192,8 @@ mod tests {
         let conn = open_test_db();
         ensure_folder(&conn, "INBOX");
         let good_epoch = parse_date_epoch("2024-06-01T00:00:00Z");
-        upsert_message(&conn, "INBOX", 1, Some("<root@ex>"), None, None,
-            "Root", "a@ex", "A", "[]", "[]", "INVALID DATE", good_epoch,
-            "", 100, false, "", None).unwrap();
-        upsert_message(&conn, "INBOX", 2, Some("<reply@ex>"), Some("<root@ex>"), Some("<root@ex>"),
-            "Reply", "b@ex", "B", "[]", "[]", "INVALID DATE", good_epoch + 3600,
-            "", 100, false, "", None).unwrap();
+        upsert_message(&conn, "INBOX", 1, UpsertMessageParams { message_id: Some("<root@ex>"), in_reply_to: None, references_header: None, subject: "Root", from_address: "a@ex", from_name: "A", to_json: "[]", cc_json: "[]", date: "INVALID DATE", date_epoch: good_epoch, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
+        upsert_message(&conn, "INBOX", 2, UpsertMessageParams { message_id: Some("<reply@ex>"), in_reply_to: Some("<root@ex>"), references_header: Some("<root@ex>"), subject: "Reply", from_address: "b@ex", from_name: "B", to_json: "[]", cc_json: "[]", date: "INVALID DATE", date_epoch: good_epoch + 3600, flags_csv: "", size: 100, has_attachments: false, snippet: "", reaction: None }).unwrap();
         let thread = get_full_thread(&conn, "<reply@ex>", Some("<root@ex>")).unwrap();
         assert_eq!(thread.len(), 2);
         assert_eq!(thread[0].uid, 1); // root first (lower epoch)

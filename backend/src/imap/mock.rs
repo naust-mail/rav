@@ -464,7 +464,7 @@ mod tests {
             port: 993,
             tls: true,
             email: "user@example.com".to_string(),
-            password: "hunter2".to_string(),
+            password: crate::test_support::FAKE_PASSWORD.to_string(),
         }
     }
 

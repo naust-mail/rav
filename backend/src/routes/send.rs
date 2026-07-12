@@ -71,7 +71,6 @@ pub(crate) fn resolve_pgp_params(pgp_req: &PgpSendRequest) -> Result<PgpSendPara
 /// IMAP copy, staging row, and attachment files. Used both by the
 /// immediate-send handler and the outbox worker's deferred send — the two
 /// only differ in where the credentials and job data come from.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn perform_send(
     config: &AppConfig,
     transport: &MailTransport,
@@ -190,7 +189,7 @@ pub(crate) async fn perform_send(
 
     // Clean up draft and attachment files after successful send.
     if let Some(ref draft_id) = job.draft_id {
-        cleanup_draft(config, db_pool_manager, &creds.user_hash, &creds.email, &creds.password, draft_id, imap_client).await;
+        cleanup_draft(config, db_pool_manager, creds, draft_id, imap_client).await;
     }
 
     Ok(message_id)
@@ -357,16 +356,14 @@ struct DraftCleanupPreState {
 }
 
 /// Clean up draft record and attachment files from disk after successful send.
-#[allow(clippy::too_many_arguments)]
 async fn cleanup_draft(
     config: &AppConfig,
     db_pool_manager: &db::pool::DbPoolManager,
-    user_hash: &str,
-    email: &str,
-    password: &str,
+    creds: &SendCredentials,
     draft_id: &str,
     imap_client: &Arc<dyn ImapClient>,
 ) {
+    let user_hash = creds.user_hash.as_str();
     let pre = db::pool::with_user_db(db_pool_manager, user_hash, {
         let draft_id = draft_id.to_string();
         move |conn| {
@@ -396,8 +393,8 @@ async fn cleanup_draft(
                 host: imap_host.to_string(),
                 port: config.imap_port,
                 tls: config.tls_enabled,
-                email: email.to_string(),
-                password: password.to_string(),
+                email: creds.email.clone(),
+                password: creds.password.clone(),
             };
             if let Err(e) = imap_client.expunge_message(&imap_creds, &drafts_folder, uid).await {
                 tracing::warn!(error = %e, uid = uid, "Failed to expunge draft from IMAP after send");
