@@ -41,6 +41,51 @@ pub(crate) struct MoveMessageRequest {
     pub(crate) uid: u32,
 }
 
+/// Request body for `PATCH /api/messages/:folder/flags/bulk`.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
+pub(crate) struct BulkUpdateFlagsRequest {
+    pub(crate) uids: Vec<u32>,
+    pub(crate) flags: Vec<String>,
+    pub(crate) add: bool,
+}
+
+/// Request body for `POST /api/messages/move/bulk`.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
+pub(crate) struct BulkMoveMessagesRequest {
+    pub(crate) from_folder: FolderId,
+    pub(crate) to_folder: FolderId,
+    pub(crate) uids: Vec<u32>,
+}
+
+/// Request body for `POST /api/messages/:folder/delete/bulk`.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
+pub(crate) struct BulkDeleteMessagesRequest {
+    pub(crate) uids: Vec<u32>,
+}
+
+/// Response for `PATCH /api/messages/:folder/flags/bulk`,
+/// `POST /api/messages/move/bulk`, and `POST /api/messages/:folder/delete/bulk`.
+///
+/// A 200 here means the request was processed, not that every UID matched a
+/// message. IMAP UID commands silently skip UIDs that don't exist in the
+/// mailbox rather than erroring, and our local cache mirrors that: any
+/// requested UID with no matching row (already deleted elsewhere, stale
+/// client state, a bad ID) is reported back here instead of being ignored.
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
+pub(crate) struct BulkMessageOpResponse {
+    /// UIDs from the request that did not correspond to a cached message in
+    /// the folder. Empty when every UID was found.
+    pub(crate) failed_uids: Vec<u32>,
+}
+
 /// Response envelope for `GET /api/folders/:folder/messages`.
 #[derive(Serialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useMemo } from "react";
 import { AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 import {
   Mail,
   MailOpen,
@@ -15,9 +16,9 @@ import {
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/useUiStore";
 import {
-  useUpdateFlags,
-  useMoveMessage,
-  useDeleteMessage,
+  useBulkUpdateFlags,
+  useBulkMoveMessages,
+  useBulkDeleteMessages,
 } from "@/hooks/useMessages";
 import { useFolders } from "@/hooks/useFolders";
 import { useClickOutside } from "@/hooks/useClickOutside";
@@ -25,15 +26,18 @@ import { useTags, useBulkAddTag } from "@/hooks/useTags";
 import { createFadeSlideVariants } from "@/lib/motion/variants";
 import { AnimatedDiv } from "@/lib/motion/AnimatedDiv";
 import { ActionTooltip, ActionTooltipProvider } from "./ActionTooltip";
+import type { BulkMessageOpResponse } from "@/types/generated/BulkMessageOpResponse";
 
 export function BulkActionBar() {
   const selectedUids = useUiStore((s) => s.selectedMessageUids);
   const activeFolder = useUiStore((s) => s.activeFolder);
   const clearBulkSelection = useUiStore((s) => s.clearBulkSelection);
+  const selectedMessageUid = useUiStore((s) => s.selectedMessageUid);
+  const selectMessage = useUiStore((s) => s.selectMessage);
 
-  const updateFlags = useUpdateFlags();
-  const moveMessage = useMoveMessage();
-  const deleteMessage = useDeleteMessage();
+  const bulkUpdateFlags = useBulkUpdateFlags();
+  const bulkMoveMessages = useBulkMoveMessages();
+  const bulkDeleteMessages = useBulkDeleteMessages();
 
   const [isBusy, setIsBusy] = useState(false);
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
@@ -56,71 +60,84 @@ export function BulkActionBar() {
   useClickOutside(tagMenuRef, closeTagMenu, tagMenuOpen);
 
   const runBulkAction = useCallback(
-    async (
-      action: (uid: number) => Promise<unknown>,
-    ) => {
+    async (action: () => Promise<BulkMessageOpResponse>) => {
       setIsBusy(true);
       try {
-        await Promise.allSettled(selectedUids.map(action));
+        const result = await action();
+        if (result.failed_uids.length > 0) {
+          toast.warning(
+            result.failed_uids.length === 1
+              ? "1 message could not be found and was skipped"
+              : `${result.failed_uids.length} messages could not be found and were skipped`,
+          );
+        }
       } finally {
         setIsBusy(false);
         clearBulkSelection();
       }
     },
-    [selectedUids, clearBulkSelection],
+    [clearBulkSelection],
   );
 
   const handleMarkRead = useCallback(() => {
-    runBulkAction((uid) =>
-      updateFlags.mutateAsync({
+    runBulkAction(() =>
+      bulkUpdateFlags.mutateAsync({
         folder: activeFolder,
-        uid,
+        uids: selectedUids,
         flags: ["\\Seen"],
         add: true,
       }),
     );
-  }, [runBulkAction, updateFlags, activeFolder]);
+  }, [runBulkAction, bulkUpdateFlags, activeFolder, selectedUids]);
 
   const handleMarkUnread = useCallback(() => {
-    runBulkAction((uid) =>
-      updateFlags.mutateAsync({
+    runBulkAction(() =>
+      bulkUpdateFlags.mutateAsync({
         folder: activeFolder,
-        uid,
+        uids: selectedUids,
         flags: ["\\Seen"],
         add: false,
       }),
     );
-  }, [runBulkAction, updateFlags, activeFolder]);
+  }, [runBulkAction, bulkUpdateFlags, activeFolder, selectedUids]);
 
   const handleStar = useCallback(() => {
-    runBulkAction((uid) =>
-      updateFlags.mutateAsync({
+    runBulkAction(() =>
+      bulkUpdateFlags.mutateAsync({
         folder: activeFolder,
-        uid,
+        uids: selectedUids,
         flags: ["\\Flagged"],
         add: true,
       }),
     );
-  }, [runBulkAction, updateFlags, activeFolder]);
+  }, [runBulkAction, bulkUpdateFlags, activeFolder, selectedUids]);
 
   const handleDelete = useCallback(() => {
-    runBulkAction((uid) =>
-      deleteMessage.mutateAsync({ folder: activeFolder, uid }),
+    // If the message currently open in the reading pane is part of this
+    // bulk action, close it - it won't exist in this folder anymore.
+    if (selectedMessageUid !== null && selectedUids.includes(selectedMessageUid)) {
+      selectMessage(null);
+    }
+    runBulkAction(() =>
+      bulkDeleteMessages.mutateAsync({ folder: activeFolder, uids: selectedUids }),
     );
-  }, [runBulkAction, deleteMessage, activeFolder]);
+  }, [runBulkAction, bulkDeleteMessages, activeFolder, selectedUids, selectedMessageUid, selectMessage]);
 
   const handleMoveTo = useCallback(
     (targetFolder: string) => {
       setMoveMenuOpen(false);
-      runBulkAction((uid) =>
-        moveMessage.mutateAsync({
+      if (selectedMessageUid !== null && selectedUids.includes(selectedMessageUid)) {
+        selectMessage(null);
+      }
+      runBulkAction(() =>
+        bulkMoveMessages.mutateAsync({
           fromFolder: activeFolder,
           toFolder: targetFolder,
-          uid,
+          uids: selectedUids,
         }),
       );
     },
-    [runBulkAction, moveMessage, activeFolder],
+    [runBulkAction, bulkMoveMessages, activeFolder, selectedUids, selectedMessageUid, selectMessage],
   );
 
   const handleBulkTag = useCallback(

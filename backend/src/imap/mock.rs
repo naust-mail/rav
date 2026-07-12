@@ -224,6 +224,57 @@ impl ImapClient for MockImapClient {
         Ok(())
     }
 
+    async fn add_flags_bulk(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+        _uids: &[u32],
+        _flags: &[&str],
+    ) -> Result<(), ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(())
+    }
+
+    async fn remove_flags_bulk(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+        _uids: &[u32],
+        _flags: &[&str],
+    ) -> Result<(), ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(())
+    }
+
+    async fn move_message_bulk(
+        &self,
+        _creds: &ImapCredentials,
+        _from_folder: &str,
+        _uids: &[u32],
+        _to_folder: &str,
+    ) -> Result<(), ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(())
+    }
+
+    async fn expunge_message_bulk(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+        _uids: &[u32],
+    ) -> Result<(), ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(())
+    }
+
     async fn append_message(
         &self,
         _creds: &ImapCredentials,

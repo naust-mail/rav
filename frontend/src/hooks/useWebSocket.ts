@@ -7,12 +7,15 @@ import { useAuthStore } from "@/stores/useAuthStore";
 export type WsStatus = "connected" | "connecting" | "disconnected";
 
 export interface MailEvent {
-  type: "NewMessages" | "FlagsChanged" | "FolderUpdated";
+  type: "FolderStateChanged" | "NewMail" | "FlagsChanged" | "FolderUpdated" | "OutboxStateChanged";
   data?: {
     folder?: string;
     count?: number;
     latest_sender?: string;
     latest_subject?: string;
+    id?: string;
+    state?: string;
+    fail_reason?: string;
   };
 }
 
@@ -95,7 +98,8 @@ export function useWebSocket(onEvent?: (event: MailEvent) => void) {
           onEventRef.current?.(mailEvent);
 
           switch (mailEvent.type) {
-            case "NewMessages":
+            case "FolderStateChanged":
+            case "NewMail":
               if (mailEvent.data?.folder) {
                 scheduleInvalidation(mailEvent.data.folder);
               }
@@ -112,6 +116,9 @@ export function useWebSocket(onEvent?: (event: MailEvent) => void) {
                 scheduleInvalidation(mailEvent.data.folder);
               }
               scheduleInvalidation("folders");
+              break;
+            case "OutboxStateChanged":
+              queryClient.invalidateQueries({ queryKey: ["outbox"] });
               break;
           }
         } catch {

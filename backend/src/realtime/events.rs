@@ -8,8 +8,22 @@ use tokio::sync::{broadcast, RwLock};
 #[serde(tag = "type", content = "data")]
 #[allow(dead_code)]
 pub enum MailEvent {
-    /// New messages arrived in a folder.
-    NewMessages {
+    /// New messages were written to the cache for a folder. Cache-only
+    /// signal (fired by `run_sync` as soon as it fetches+stores new
+    /// headers) - not filtered/vacation-processed yet, so not suitable
+    /// for user-facing notifications. Frontend uses this purely to
+    /// invalidate its query cache.
+    FolderStateChanged {
+        folder: String,
+        count: u32,
+        latest_sender: Option<String>,
+        latest_subject: Option<String>,
+    },
+    /// New mail actually landed in INBOX for the user to see, after
+    /// filter rules and the vacation responder have run. Only covers
+    /// messages that survived filtering (weren't moved/deleted by a
+    /// rule) - this is what drives desktop/toast notifications.
+    NewMail {
         folder: String,
         count: u32,
         latest_sender: Option<String>,
@@ -19,6 +33,14 @@ pub enum MailEvent {
     FlagsChanged { folder: String },
     /// Folder list or counts changed. `folder` is set when a specific folder was synced.
     FolderUpdated { folder: Option<String> },
+    /// An outbox entry moved to a new state (scheduled -> sending -> sent | failed).
+    /// `sent` entries are deleted right after this fires, so the frontend
+    /// treats `sent` as "remove from the outbox list", not a fetchable state.
+    OutboxStateChanged {
+        id: String,
+        state: String,
+        fail_reason: Option<String>,
+    },
 }
 
 /// Fan-out event bus: per-user broadcast channels.
@@ -98,7 +120,7 @@ mod tests {
         let bus = Arc::new(EventBus::new());
         let mut rx: tokio::sync::broadcast::Receiver<MailEvent> = bus.subscribe("user1").await;
 
-        bus.publish("user1", MailEvent::NewMessages {
+        bus.publish("user1", MailEvent::FolderStateChanged {
             folder: "INBOX".to_string(),
             count: 1,
             latest_sender: Some("alice@example.com".to_string()),
@@ -107,7 +129,7 @@ mod tests {
 
         let event: MailEvent = rx.recv().await.unwrap();
         match event {
-            MailEvent::NewMessages { folder, count, .. } => {
+            MailEvent::FolderStateChanged { folder, count, .. } => {
                 assert_eq!(folder, "INBOX");
                 assert_eq!(count, 1);
             }

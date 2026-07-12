@@ -52,14 +52,14 @@ pub async fn list_folders(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
-    // Open the per-user database.
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
     // If the folder cache was updated recently, skip the IMAP round-trip.
-    let cache_fresh = db::folders::is_folder_cache_fresh(&conn, FOLDER_LIST_TTL_SECS)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let cache_fresh = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::folders::is_folder_cache_fresh(conn, FOLDER_LIST_TTL_SECS)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     if !cache_fresh {
         let imap_host = config
@@ -81,65 +81,75 @@ pub async fn list_folders(
             .await
             .map_err(|e| AppError::ServiceUnavailable(format!("IMAP error: {e}")))?;
 
-        // Sync each folder into SQLite cache.
-        // Use INSERT OR IGNORE to create new folders without triggering CASCADE on
-        // existing ones, then UPDATE the metadata fields separately.
-        for folder in &imap_folders {
-            let flags_csv = folder.attributes.join(",");
-            db::folders::insert_folder_if_new(
-                &conn,
-                &folder.name,
-                folder.delimiter.as_deref(),
-                &flags_csv,
-            )
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-        }
+        db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+            // Sync each folder into SQLite cache.
+            // Use INSERT OR IGNORE to create new folders without triggering CASCADE on
+            // existing ones, then UPDATE the metadata fields separately.
+            for folder in &imap_folders {
+                let flags_csv = folder.attributes.join(",");
+                db::folders::insert_folder_if_new(
+                    conn,
+                    &folder.name,
+                    folder.delimiter.as_deref(),
+                    &flags_csv,
+                )?;
+            }
 
-        // Remove stale folders that no longer exist on the server.
-        let current_names: Vec<String> = imap_folders.iter().map(|f| f.name.clone()).collect();
-        db::folders::remove_stale_folders(&conn, &current_names)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+            // Remove stale folders that no longer exist on the server.
+            let current_names: Vec<String> = imap_folders.iter().map(|f| f.name.clone()).collect();
+            db::folders::remove_stale_folders(conn, &current_names)?;
 
-        // Touch updated_at on all folders so the cache TTL resets.
-        db::folders::touch_all_folders(&conn)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+            // Touch updated_at on all folders so the cache TTL resets.
+            db::folders::touch_all_folders(conn)?;
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
     }
 
-    // Refresh unread counts from cached messages — but skip folders whose
-    // messages cache has been invalidated (messages_updated_at IS NULL).
-    // Those folders have a manually adjusted unread_count (via adjust_unread_count)
-    // that should be preserved until the folder's messages are resynced from IMAP.
-    let all_folders = db::folders::get_all_folders(&conn)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-    for f in &all_folders {
-        let invalidated = db::folders::is_folder_messages_invalidated(&conn, &f.name)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-        if !invalidated {
-            db::folders::refresh_unread_count(&conn, &f.name)
-                .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-        }
+    struct FoldersPage {
+        cached: Vec<db::folders::CachedFolder>,
+        folder_previews: Vec<(String, Vec<db::messages::ThreadedMessage>)>,
+        tags_map: std::collections::HashMap<(u32, String), Vec<db::tags::MessageTag>>,
     }
 
-    // Read back from cache to get the refreshed counts.
-    let cached = db::folders::get_all_folders(&conn)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let FoldersPage { cached, folder_previews, tags_map } = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        // Refresh unread counts from cached messages — but skip folders whose
+        // messages cache has been invalidated (messages_updated_at IS NULL).
+        // Those folders have a manually adjusted unread_count (via adjust_unread_count)
+        // that should be preserved until the folder's messages are resynced from IMAP.
+        let all_folders = db::folders::get_all_folders(conn)?;
+        for f in &all_folders {
+            let invalidated = db::folders::is_folder_messages_invalidated(conn, &f.name)?;
+            if !invalidated {
+                db::folders::refresh_unread_count(conn, &f.name)?;
+            }
+        }
+
+        // Read back from cache to get the refreshed counts.
+        let cached = db::folders::get_all_folders(conn)?;
+
+        // Fetch threaded message previews for every folder, then batch-fetch their tags.
+        let mut folder_previews: Vec<(String, Vec<db::messages::ThreadedMessage>)> = Vec::new();
+        for f in &cached {
+            let previews = db::messages::get_threaded_messages(conn, &f.name, 0, FOLDER_PREVIEW_LIMIT)?;
+            folder_previews.push((f.name.clone(), previews));
+        }
+
+        // One tags lookup covering all preview messages across all folders.
+        let all_refs: Vec<(u32, &str)> = folder_previews
+            .iter()
+            .flat_map(|(_, msgs)| msgs.iter().map(|t| (t.msg.uid, t.msg.folder.as_str())))
+            .collect();
+        let tags_map = db::tags::get_tags_for_messages(conn, &all_refs).unwrap_or_default();
+
+        Ok(FoldersPage { cached, folder_previews, tags_map })
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
-
-    // Fetch threaded message previews for every folder, then batch-fetch their tags.
-    let mut folder_previews: Vec<(String, Vec<db::messages::ThreadedMessage>)> = Vec::new();
-    for f in &cached {
-        let previews = db::messages::get_threaded_messages(&conn, &f.name, 0, FOLDER_PREVIEW_LIMIT)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-        folder_previews.push((f.name.clone(), previews));
-    }
-
-    // One tags lookup covering all preview messages across all folders.
-    let all_refs: Vec<(u32, &str)> = folder_previews
-        .iter()
-        .flat_map(|(_, msgs)| msgs.iter().map(|t| (t.msg.uid, t.msg.folder.as_str())))
-        .collect();
-    let tags_map = db::tags::get_tags_for_messages(&conn, &all_refs).unwrap_or_default();
 
     let folders: Vec<FolderEntry> = cached
         .into_iter()

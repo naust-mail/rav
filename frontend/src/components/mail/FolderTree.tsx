@@ -28,6 +28,7 @@ import { CreateFolderDialog } from "@/components/mail/CreateFolderDialog";
 import { AccountSwitcher } from "@/components/accounts/AccountSwitcher";
 import { cn } from "@/lib/utils";
 import { TagSection } from "@/components/mail/TagSection";
+import { OutboxFolderRow } from "@/components/shared/OutboxFolderRow";
 import type { Folder as FolderType } from "@/types/folder";
 
 // ---------------------------------------------------------------------------
@@ -656,6 +657,10 @@ export function FolderTree() {
             </Button>
           </div>
         )}
+
+        <div className="px-1 pt-1">
+          <OutboxFolderRow />
+        </div>
 
         {data && (
           <div className="flex flex-col gap-0.5 px-1 py-1">

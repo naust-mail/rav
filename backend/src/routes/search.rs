@@ -5,7 +5,6 @@ use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::session::SessionState;
-use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
 use crate::folder_cipher::FolderId;
@@ -356,8 +355,8 @@ pub struct SearchResultItem {
 /// Tantivy (for body text). Results are merged and deduplicated.
 pub async fn search_messages(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
     Extension(search_engine): Extension<Arc<SearchEngine>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(params): Json<SearchParams>,
 ) -> Result<Response, AppError> {
     let cipher = crate::folder_cipher::FolderCipher::new(&session.folder_key);
@@ -395,18 +394,13 @@ pub async fn search_messages(
     let is_read = params.is_read.or(parsed.is_read);
     let is_flagged = params.is_flagged.or(parsed.is_flagged);
 
-    // Run SQLite queries in spawn_blocking to avoid blocking the Tokio executor.
-    let data_dir = config.data_dir.clone();
-    let user_hash = session.user_hash.clone();
     let text_clone = parsed.text.clone();
     let folder_clone = folder.clone();
     let from_clone = from.clone();
     let to_clone = to.clone();
-    let sqlite_results = tokio::task::spawn_blocking(move || {
-        let conn = db::pool::open_user_db(&data_dir, &user_hash)
-            .map_err(|e| format!("Database error: {e}"))?;
+    let sqlite_results = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
         db::messages::search_messages_sqlite(
-            &conn,
+            conn,
             &text_clone,
             folder_clone.as_deref(),
             from_clone.as_deref(),
@@ -420,7 +414,6 @@ pub async fn search_messages(
         )
     })
     .await
-    .map_err(|e| AppError::InternalError(format!("Task error: {e}")))?
     .map_err(|e| AppError::InternalError(format!("Search error: {e}")))?;
 
     // Collect SQLite results as SearchResultItems.
@@ -464,26 +457,21 @@ pub async fn search_messages(
             offset: params.offset,
         })
     {
-        // Resolve Tantivy UIDs via SQLite in spawn_blocking.
-        let data_dir2 = config.data_dir.clone();
-        let user_hash2 = session.user_hash.clone();
+        // Resolve Tantivy UIDs via SQLite.
         let remaining = limit.saturating_sub(results.len());
-        let tantivy_enriched = tokio::task::spawn_blocking(move || {
-            let conn = db::pool::open_user_db(&data_dir2, &user_hash2)
-                .map_err(|e| format!("Database error: {e}"))?;
+        let tantivy_enriched = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
             let mut items = Vec::new();
             for sr in &tantivy_results {
                 if items.len() >= remaining {
                     break;
                 }
-                if let Ok(Some(msg)) = db::messages::get_single_message(&conn, &sr.folder, sr.uid) {
+                if let Ok(Some(msg)) = db::messages::get_single_message(conn, &sr.folder, sr.uid) {
                     items.push((sr.score, sr.snippet.clone(), msg));
                 }
             }
-            Ok::<_, String>(items)
+            Ok(items)
         })
         .await
-        .map_err(|e| AppError::InternalError(format!("Task error: {e}")))?
         .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
         for (score, snippet, msg) in tantivy_enriched {

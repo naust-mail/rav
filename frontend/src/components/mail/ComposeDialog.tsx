@@ -29,7 +29,8 @@ import {
   injectSignature,
 } from "@/stores/useComposeStore";
 import {
-  useSendMessage,
+  useEnqueueOutbox,
+  useCancelOutbox,
   useSaveDraft,
   useUploadAttachment,
   useDeleteAttachment,
@@ -99,7 +100,8 @@ export function ComposeDialog() {
     setPgpMode,
   } = useComposeStore();
 
-  const sendMutation = useSendMessage();
+  const enqueueMutation = useEnqueueOutbox();
+  const cancelMutation = useCancelOutbox();
   const pgpCapable = useServerCapability("pgp");
   const { data: pgpKeys } = usePgpKeys();
   const hasPgpKeys = pgpCapable && (pgpKeys?.length ?? 0) > 0;
@@ -190,6 +192,12 @@ export function ComposeDialog() {
   // Save draft function. When force=true, skip the hash guard (used for explicit save/close).
   const saveDraft = useCallback(
     (force = false) => {
+      // Skip a redundant autosave tick if one is already in flight - the
+      // server serializes saves per UUID anyway, so this just avoids an
+      // extra IMAP round trip. Forced saves (close/Cmd+S) always go through,
+      // since those are the last chance to persist final edits.
+      if (!force && saveDraftMutation.isPending) return;
+
       const hash = computeHash();
       // Don't save if nothing changed (unless forced) or compose is empty
       if (!force && hash === lastSavedHashRef.current) return;
@@ -269,6 +277,12 @@ export function ComposeDialog() {
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Enqueues the message on the server-side outbox (POST /api/outbox) and
+  // shows the undo toast. The server owns the actual send timing - undo
+  // deletes the queued entry - so a closed tab or crashed browser can no
+  // longer silently drop a send the way the old client setTimeout did.
+  // Compose fields aren't cleared until the undo window passes, so
+  // clicking Undo reopens the dialog with the original content intact.
   const doSend = useCallback((pgpParams?: PgpSendRequest | null) => {
     let plainText: string;
     let sendHtml: string | null;
@@ -284,7 +298,7 @@ export function ComposeDialog() {
       plainText = body + (quotedText ? "\n" + quotedText : "");
       sendHtml = null;
     }
-    sendMutation.mutate(
+    enqueueMutation.mutate(
       {
         to,
         cc,
@@ -299,12 +313,37 @@ export function ComposeDialog() {
         pgp: pgpParams ?? undefined,
       },
       {
-        onSuccess: () => {
-          toast.success("Message sent");
-          reset();
+        onSuccess: (data) => {
+          const delayMs = (displayPrefs?.undo_send_delay ?? 5) * 1000;
+          if (delayMs === 0) {
+            toast.success("Message sent");
+            reset();
+            return;
+          }
+          const label = pgpParams?.mode === "encrypt"
+            ? "Sending encrypted message..."
+            : pgpParams?.mode === "sign"
+              ? "Sending signed message..."
+              : "Sending message...";
+          const clearTimer = setTimeout(() => {
+            toast.dismiss(`outbox-${data.id}`);
+            reset();
+          }, delayMs);
+          toast(label, {
+            id: `outbox-${data.id}`,
+            duration: delayMs + 500,
+            action: {
+              label: "Undo",
+              onClick: () => {
+                clearTimeout(clearTimer);
+                cancelMutation.mutate(data.id);
+                useComposeStore.setState({ isOpen: true });
+              },
+            },
+          });
         },
         onError: (error) => {
-          toast.error(`Failed to send: ${error.message}`);
+          toast.error(`Failed to queue send: ${error.message}`);
         },
       }
     );
@@ -321,7 +360,9 @@ export function ComposeDialog() {
     references,
     draftId,
     fromIdentityId,
-    sendMutation,
+    displayPrefs,
+    enqueueMutation,
+    cancelMutation,
     reset,
   ]);
 
@@ -340,27 +381,8 @@ export function ComposeDialog() {
     });
     const pgpParams: PgpSendRequest = { mode: "encrypt", signature: null, ciphertext, micalg: "pgp-sha256" };
     closeCompose();
-    const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
-    if (delay === 0) {
-      doSend(pgpParams);
-      return;
-    }
-    const timer = setTimeout(() => {
-      toast.dismiss("undo-send");
-      doSend(pgpParams);
-    }, delay);
-    toast("Sending encrypted message...", {
-      id: "undo-send",
-      duration: delay + 500,
-      action: {
-        label: "Undo",
-        onClick: () => {
-          clearTimeout(timer);
-          useComposeStore.setState({ isOpen: true });
-        },
-      },
-    });
-  }, [body, quotedText, closeCompose, displayPrefs, doSend]);
+    doSend(pgpParams);
+  }, [body, quotedText, closeCompose, doSend]);
 
   const handleMissingKeysConfirm = useCallback(async () => {
     if (!missingKeysPending) return;
@@ -397,26 +419,7 @@ export function ComposeDialog() {
         pgpParams = { mode: "sign", signature, ciphertext: null, micalg };
 
         closeCompose();
-        const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
-        if (delay === 0) {
-          doSend(pgpParams);
-          return;
-        }
-        const timer = setTimeout(() => {
-          toast.dismiss("undo-send");
-          doSend(pgpParams);
-        }, delay);
-        toast("Sending signed message...", {
-          id: "undo-send",
-          duration: delay + 500,
-          action: {
-            label: "Undo",
-            onClick: () => {
-              clearTimeout(timer);
-              useComposeStore.setState({ isOpen: true });
-            },
-          },
-        });
+        doSend(pgpParams);
       } else {
         // Encrypt: look up recipient public keys via WKD.
         const senderEmail = identities?.find((i) => i.id === fromIdentityId)?.email ?? "";
@@ -454,7 +457,7 @@ export function ComposeDialog() {
       setPgpSending(false);
       setPgpPassphrase("");
     }
-  }, [pgpMode, pgpKeys, body, quotedText, to, cc, bcc, closeCompose, displayPrefs, doSend, doEncryptAndSend, fromIdentityId, identities]);
+  }, [pgpMode, pgpKeys, body, quotedText, to, cc, bcc, closeCompose, doSend, doEncryptAndSend, fromIdentityId, identities]);
 
   const handleSend = useCallback(() => {
     if (!to.trim() && !cc.trim() && !bcc.trim()) return;
@@ -466,31 +469,8 @@ export function ComposeDialog() {
     }
 
     closeCompose();
-
-    const delay = (displayPrefs?.undo_send_delay ?? 5) * 1000;
-
-    if (delay === 0) {
-      doSend();
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      toast.dismiss("undo-send");
-      doSend();
-    }, delay);
-
-    toast("Sending message...", {
-      id: "undo-send",
-      duration: delay + 500,
-      action: {
-        label: "Undo",
-        onClick: () => {
-          clearTimeout(timer);
-          useComposeStore.setState({ isOpen: true });
-        },
-      },
-    });
-  }, [to, cc, bcc, closeCompose, doSend, displayPrefs?.undo_send_delay, pgpMode, hasPgpKeys]);
+    doSend();
+  }, [to, cc, bcc, closeCompose, doSend, pgpMode, hasPgpKeys]);
 
   const handleDiscard = useCallback(() => {
     if (hasContent()) {
@@ -1115,7 +1095,7 @@ export function ComposeDialog() {
                 <button
                   onClick={handleSend}
                   disabled={
-                    sendMutation.isPending ||
+                    enqueueMutation.isPending ||
                     (!to.trim() && !cc.trim() && !bcc.trim())
                   }
                   className={cn(
@@ -1127,7 +1107,7 @@ export function ComposeDialog() {
                   {shouldAnimate ? (
                     <AnimatePresence mode="wait" initial={false}>
                       <motion.span
-                        key={sendMutation.isPending ? "pending" : "idle"}
+                        key={enqueueMutation.isPending ? "pending" : "idle"}
                         data-testid="compose-send-feedback-transition"
                         data-motion-props={serializedSendFeedbackMotionProps}
                         initial="initial"
@@ -1136,7 +1116,7 @@ export function ComposeDialog() {
                         variants={sendFeedbackMotionProps}
                         className="inline-flex items-center gap-2"
                       >
-                        {sendMutation.isPending ? (
+                        {enqueueMutation.isPending ? (
                           <>
                             <Loader2 className="size-4 animate-spin" />
                             Sending...
@@ -1149,7 +1129,7 @@ export function ComposeDialog() {
                         )}
                       </motion.span>
                     </AnimatePresence>
-                  ) : sendMutation.isPending ? (
+                  ) : enqueueMutation.isPending ? (
                     <>
                       <Loader2 className="size-4 animate-spin" />
                       Sending...

@@ -110,6 +110,42 @@ pub trait ImapClient: Send + Sync {
         uid: u32,
     ) -> Result<(), ImapError>;
 
+    /// Add flags to multiple messages in one IMAP command.
+    async fn add_flags_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+        flags: &[&str],
+    ) -> Result<(), ImapError>;
+
+    /// Remove flags from multiple messages in one IMAP command.
+    async fn remove_flags_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+        flags: &[&str],
+    ) -> Result<(), ImapError>;
+
+    /// Move multiple messages from one folder to another in one IMAP command.
+    async fn move_message_bulk(
+        &self,
+        creds: &ImapCredentials,
+        from_folder: &str,
+        uids: &[u32],
+        to_folder: &str,
+    ) -> Result<(), ImapError>;
+
+    /// Permanently remove multiple messages that have the `\Deleted` flag,
+    /// in one IMAP command.
+    async fn expunge_message_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+    ) -> Result<(), ImapError>;
+
     /// Append a raw RFC822 message to a folder.
     ///
     /// If `message_id` is provided, the folder is selected after the append and a UID SEARCH
@@ -827,6 +863,165 @@ impl ImapClient for RealImapClient {
         // Try UID EXPUNGE for precision; fall back to EXPUNGE.
         let uid_expunge_ok = {
             match session.uid_expunge(&uid_str).await {
+                Ok(stream) => {
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(r) = stream.next().await {
+                        r.map_err(map_imap_error)?;
+                    }
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+        if !uid_expunge_ok {
+            let stream = session.expunge().await.map_err(map_imap_error)?;
+            let mut stream = std::pin::pin!(stream);
+            while let Some(r) = stream.next().await {
+                r.map_err(map_imap_error)?;
+            }
+        }
+
+        self.cache.release(creds, session);
+        Ok(())
+    }
+
+    async fn add_flags_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+        flags: &[&str],
+    ) -> Result<(), ImapError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        session.select(folder).await.map_err(map_imap_error)?;
+
+        let uid_set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let flags_str = format!("+FLAGS ({})", flags.join(" "));
+        {
+            let mut store_stream = session
+                .uid_store(&uid_set, &flags_str)
+                .await
+                .map_err(map_imap_error)?;
+            while let Some(result) = store_stream.next().await {
+                result.map_err(map_imap_error)?;
+            }
+        }
+
+        self.cache.release(creds, session);
+        Ok(())
+    }
+
+    async fn remove_flags_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+        flags: &[&str],
+    ) -> Result<(), ImapError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        session.select(folder).await.map_err(map_imap_error)?;
+
+        let uid_set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let flags_str = format!("-FLAGS ({})", flags.join(" "));
+        {
+            let mut store_stream = session
+                .uid_store(&uid_set, &flags_str)
+                .await
+                .map_err(map_imap_error)?;
+            while let Some(result) = store_stream.next().await {
+                result.map_err(map_imap_error)?;
+            }
+        }
+
+        self.cache.release(creds, session);
+        Ok(())
+    }
+
+    async fn move_message_bulk(
+        &self,
+        creds: &ImapCredentials,
+        from_folder: &str,
+        uids: &[u32],
+        to_folder: &str,
+    ) -> Result<(), ImapError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        session.select(from_folder).await.map_err(map_imap_error)?;
+
+        let uid_set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+
+        // Try UID MOVE first; fall back to COPY + DELETE + EXPUNGE if the
+        // server does not support the MOVE extension.
+        match session.uid_mv(&uid_set, to_folder).await {
+            Ok(()) => {}
+            Err(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) => {
+                session
+                    .uid_copy(&uid_set, to_folder)
+                    .await
+                    .map_err(map_imap_error)?;
+
+                {
+                    let mut store_stream = session
+                        .uid_store(&uid_set, "+FLAGS (\\Deleted)")
+                        .await
+                        .map_err(map_imap_error)?;
+                    while let Some(r) = store_stream.next().await {
+                        r.map_err(map_imap_error)?;
+                    }
+                }
+
+                {
+                    let expunge_stream =
+                        session.expunge().await.map_err(map_imap_error)?;
+                    let mut expunge_stream = std::pin::pin!(expunge_stream);
+                    while let Some(r) = expunge_stream.next().await {
+                        r.map_err(map_imap_error)?;
+                    }
+                }
+            }
+            Err(e) => return Err(map_imap_error(e)),
+        }
+
+        self.cache.release(creds, session);
+        Ok(())
+    }
+
+    async fn expunge_message_bulk(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uids: &[u32],
+    ) -> Result<(), ImapError> {
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+        session.select(folder).await.map_err(map_imap_error)?;
+
+        let uid_set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+
+        // Mark the messages as \Deleted.
+        {
+            let mut store_stream = session
+                .uid_store(&uid_set, "+FLAGS (\\Deleted)")
+                .await
+                .map_err(map_imap_error)?;
+            while let Some(r) = store_stream.next().await {
+                r.map_err(map_imap_error)?;
+            }
+        }
+
+        // Try UID EXPUNGE for precision; fall back to EXPUNGE.
+        let uid_expunge_ok = {
+            match session.uid_expunge(&uid_set).await {
                 Ok(stream) => {
                     let mut stream = std::pin::pin!(stream);
                     while let Some(r) = stream.next().await {

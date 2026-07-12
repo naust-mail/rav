@@ -70,6 +70,9 @@ mod tests {
             pgp_enabled: true,
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         });
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
         let transport = Arc::new(crate::mail_transport::MailTransport {
@@ -81,24 +84,57 @@ mod tests {
         let passkey_service = Arc::new(
             PasskeyService::from_config(&config).expect("test passkey_service"),
         );
+        let imap_client: Arc<dyn crate::imap::client::ImapClient> =
+            Arc::new(crate::imap::client::mock::MockImapClient::new());
+        let smtp_client: Arc<dyn crate::smtp::client::SmtpClient> =
+            Arc::new(crate::smtp::client::mock::MockSmtpClient::new());
+        let search_engine = Arc::new(crate::search::engine::SearchEngine::new(
+            std::path::PathBuf::from("/tmp/rav-test"),
+        ));
+        let event_bus = Arc::new(crate::realtime::events::EventBus::new());
+        let db_pool_manager = Arc::new(crate::db::pool::DbPoolManager::new(
+            "/tmp/rav-test".to_string(),
+            4,
+            Duration::from_secs(600),
+            500,
+        ));
+        let sync_worker_manager = Arc::new(crate::realtime::worker::SyncWorkerManager::new(
+            config.clone(),
+            imap_client.clone(),
+            event_bus.clone(),
+            search_engine.clone(),
+            smtp_client.clone(),
+            transport.clone(),
+            db_pool_manager.clone(),
+        ));
+        let outbox_worker_manager = Arc::new(crate::realtime::outbox_worker::OutboxWorkerManager::new(
+            config.clone(),
+            imap_client.clone(),
+            smtp_client.clone(),
+            transport.clone(),
+            event_bus.clone(),
+            db_pool_manager.clone(),
+        ));
         let app = create_router(AppServices {
             config,
             transport,
             store,
-            imap_client: Arc::new(crate::imap::client::mock::MockImapClient::new()),
-            smtp_client: Arc::new(crate::smtp::client::mock::MockSmtpClient::new()),
+            imap_client,
+            smtp_client,
             http_client: Arc::new(reqwest::Client::new()),
-            search_engine: Arc::new(crate::search::engine::SearchEngine::new(
-                std::path::PathBuf::from("/tmp/rav-test"),
-            )),
-            event_bus: Arc::new(crate::realtime::events::EventBus::new()),
+            search_engine,
+            event_bus,
             idle_manager: Arc::new(crate::realtime::idle::IdleManager::new()),
+            sync_worker_manager,
+            outbox_worker_manager,
+            db_pool_manager,
             mfa_crypto: Arc::new(
                 crate::mfa::crypto::MfaCrypto::from_data_dir("/tmp/rav-test-mfa")
                     .expect("test mfa_crypto"),
             ),
             passkey_service,
             link_proxy_secret: None,
+            draft_locks: Arc::new(crate::routes::drafts::DraftLocks::new()),
         });
 
         let response = app

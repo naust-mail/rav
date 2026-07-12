@@ -180,12 +180,14 @@ fn require_pgp(config: &AppConfig) -> Result<(), AppError> {
 pub async fn list_keys(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
     require_pgp(&config)?;
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let keys = db::pgp::list_keys(&conn).map_err(AppError::InternalError)?;
+    let keys = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::pgp::list_keys(conn)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
     Ok(Json(serde_json::json!({ "keys": keys })).into_response())
 }
 
@@ -193,6 +195,7 @@ pub async fn list_keys(
 pub async fn store_key(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(req): Json<StoreKeyRequest>,
 ) -> Result<Response, AppError> {
     require_pgp(&config)?;
@@ -200,22 +203,21 @@ pub async fn store_key(
         return Err(AppError::BadRequest("id and fingerprint are required".to_string()));
     }
 
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
+    let key = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::pgp::upsert_key(
+            conn,
+            &req.id,
+            req.identity_id,
+            &req.fingerprint,
+            &req.public_key,
+            &req.private_key_enc,
+        )?;
 
-    db::pgp::upsert_key(
-        &conn,
-        &req.id,
-        req.identity_id,
-        &req.fingerprint,
-        &req.public_key,
-        &req.private_key_enc,
-    )
+        db::pgp::get_key(conn, &req.id)?
+            .ok_or_else(|| "Failed to read back stored key".to_string())
+    })
+    .await
     .map_err(AppError::InternalError)?;
-
-    let key = db::pgp::get_key(&conn, &req.id)
-        .map_err(AppError::InternalError)?
-        .ok_or_else(|| AppError::InternalError("Failed to read back stored key".to_string()))?;
 
     Ok((axum::http::StatusCode::CREATED, Json(key)).into_response())
 }
@@ -224,13 +226,17 @@ pub async fn store_key(
 pub async fn get_key(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     require_pgp(&config)?;
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
+    let key = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::pgp::get_key(conn, &id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
-    match db::pgp::get_key(&conn, &id).map_err(AppError::InternalError)? {
+    match key {
         Some(key) => Ok(Json(key).into_response()),
         None => Err(AppError::NotFound("PGP key not found".to_string())),
     }
@@ -240,13 +246,17 @@ pub async fn get_key(
 pub async fn delete_key(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     require_pgp(&config)?;
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
+    let deleted = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::pgp::delete_key(conn, &id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
-    if db::pgp::delete_key(&conn, &id).map_err(AppError::InternalError)? {
+    if deleted {
         Ok(Json(serde_json::json!({ "status": "deleted" })).into_response())
     } else {
         Err(AppError::NotFound("PGP key not found".to_string()))
@@ -257,14 +267,18 @@ pub async fn delete_key(
 pub async fn assign_identity(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
     Json(req): Json<AssignIdentityRequest>,
 ) -> Result<Response, AppError> {
     require_pgp(&config)?;
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
+    let updated = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::pgp::assign_identity(conn, &id, req.identity_id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
-    if db::pgp::assign_identity(&conn, &id, req.identity_id).map_err(AppError::InternalError)? {
+    if updated {
         Ok(Json(serde_json::json!({ "status": "updated" })).into_response())
     } else {
         Err(AppError::NotFound("PGP key not found".to_string()))

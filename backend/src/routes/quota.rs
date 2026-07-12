@@ -28,6 +28,7 @@ pub async fn get_quota(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
     let imap_host = config
         .imap_host
@@ -52,13 +53,9 @@ pub async fn get_quota(
         },
         None => {
             // No IMAP QUOTA — sum RFC822.SIZE across all folders.
-            // Run SQLite access in spawn_blocking to avoid blocking the executor.
-            let data_dir = config.data_dir.clone();
-            let user_hash = session.user_hash.clone();
-            let folders: Vec<String> = tokio::task::spawn_blocking(move || {
-                let conn = db::pool::open_user_db(&data_dir, &user_hash)?;
-                Ok::<_, String>(
-                    db::folders::get_all_folders(&conn)
+            let folders: Vec<String> = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+                Ok(
+                    db::folders::get_all_folders(conn)
                         .unwrap_or_default()
                         .into_iter()
                         .map(|f| f.name)
@@ -66,7 +63,6 @@ pub async fn get_quota(
                 )
             })
             .await
-            .map_err(|e| AppError::InternalError(format!("Task error: {e}")))?
             .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
             // Fetch sizes with a 90s overall timeout.

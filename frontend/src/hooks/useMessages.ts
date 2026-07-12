@@ -13,6 +13,7 @@ import { useWsStatus } from "@/lib/ws-context";
 import { useUiStore } from "@/stores/useUiStore";
 import { resolveFolderId } from "@/lib/folders";
 import type { MessagesResponse, MessageDetail, MessageHeader } from "@/types/message";
+import type { BulkMessageOpResponse } from "@/types/generated/BulkMessageOpResponse";
 
 const PER_PAGE = 50;
 
@@ -252,6 +253,74 @@ export function useDeleteMessage() {
       }
     },
     onSettled: (_, _err, { folder }) => {
+      queryClient.invalidateQueries({ queryKey: ["messages", folder] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}
+
+/** Update flags on multiple messages in one request instead of one per message. */
+export function useBulkUpdateFlags() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      folder,
+      uids,
+      flags,
+      add,
+    }: {
+      folder: string;
+      uids: number[];
+      flags: string[];
+      add: boolean;
+    }) =>
+      apiPatch<BulkMessageOpResponse>(`/messages/${encodeURIComponent(resolveFolderId(queryClient, folder))}/flags/bulk`, {
+        uids,
+        flags,
+        add,
+      }),
+    onSuccess: (_, { folder }) => {
+      queryClient.invalidateQueries({ queryKey: ["messages", folder] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}
+
+/** Move multiple messages from one folder to another in one request instead of one per message. */
+export function useBulkMoveMessages() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      fromFolder,
+      toFolder,
+      uids,
+    }: {
+      fromFolder: string;
+      toFolder: string;
+      uids: number[];
+    }) =>
+      apiPost<BulkMessageOpResponse>("/messages/move/bulk", {
+        from_folder: resolveFolderId(queryClient, fromFolder),
+        to_folder: resolveFolderId(queryClient, toFolder),
+        uids,
+      }),
+    onSettled: (_data, _err, { fromFolder, toFolder }) => {
+      queryClient.invalidateQueries({ queryKey: ["messages", fromFolder] });
+      queryClient.invalidateQueries({ queryKey: ["messages", toFolder] });
+      queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}
+
+/** Permanently delete multiple messages in one request instead of one per message. */
+export function useBulkDeleteMessages() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ folder, uids }: { folder: string; uids: number[] }) =>
+      apiPost<BulkMessageOpResponse>(`/messages/${encodeURIComponent(resolveFolderId(queryClient, folder))}/delete/bulk`, {
+        uids,
+      }),
+    onSettled: (_data, _err, { folder }) => {
       queryClient.invalidateQueries({ queryKey: ["messages", folder] });
       queryClient.invalidateQueries({ queryKey: ["folders"] });
     },

@@ -8,13 +8,10 @@ use futures::{SinkExt, StreamExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::auth::session::{AccountSession, SessionStore};
-use crate::config::AppConfig;
-use crate::imap::client::{ImapClient, ImapCredentials};
+use crate::imap::client::ImapCredentials;
 use crate::mail_transport::MailTransport;
 use crate::realtime::events::EventBus;
 use crate::realtime::idle::IdleManager;
-use crate::search::engine::SearchEngine;
-use crate::smtp::client::SmtpClient;
 
 fn extract_browser_id(cookie_header: &str) -> Option<String> {
     for segment in cookie_header.split(';') {
@@ -34,13 +31,10 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     headers: axum::http::HeaderMap,
     Extension(store): Extension<Arc<SessionStore>>,
-    Extension(config): Extension<Arc<AppConfig>>,
     Extension(transport): Extension<Arc<MailTransport>>,
     Extension(event_bus): Extension<Arc<EventBus>>,
     Extension(idle_manager): Extension<Arc<IdleManager>>,
-    Extension(imap_client): Extension<Arc<dyn ImapClient>>,
-    Extension(smtp_client): Extension<Arc<dyn SmtpClient>>,
-    Extension(search_engine): Extension<Arc<SearchEngine>>,
+    Extension(sync_worker_manager): Extension<Arc<super::worker::SyncWorkerManager>>,
 ) -> Response {
     let browser_id = headers
         .get_all("cookie")
@@ -70,28 +64,21 @@ pub async fn ws_handler(
         handle_socket_multi_account(
             socket,
             accounts,
-            config,
             transport,
             event_bus,
             idle_manager,
-            imap_client,
-            smtp_client,
-            search_engine,
+            sync_worker_manager,
         )
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_socket_multi_account(
     socket: WebSocket,
     accounts: Vec<AccountSession>,
-    config: Arc<AppConfig>,
     transport: Arc<MailTransport>,
     event_bus: Arc<EventBus>,
     idle_manager: Arc<IdleManager>,
-    imap_client: Arc<dyn ImapClient>,
-    smtp_client: Arc<dyn SmtpClient>,
-    search_engine: Arc<SearchEngine>,
+    sync_worker_manager: Arc<super::worker::SyncWorkerManager>,
 ) {
     tracing::info!(account_count = accounts.len(), "WebSocket connected");
 
@@ -136,23 +123,30 @@ async fn handle_socket_multi_account(
                 user_hash.clone(),
                 "INBOX".to_string(),
                 creds.clone(),
-                event_bus.clone(),
-                config.clone(),
                 transport.clone(),
-                smtp_client.clone(),
-                imap_client.clone(),
+                sync_worker_manager.clone(),
             )
             .await;
 
-        let handle = tokio::spawn(super::sync::sync_loop(
-            user_hash,
-            creds,
-            config.clone(),
-            imap_client.clone(),
-            event_bus.clone(),
-            search_engine.clone(),
-        ));
-        sync_handles.push(handle);
+        let bell = sync_worker_manager.ensure_worker(user_hash, creds);
+
+        // Keep poking the worker every SYNC_INTERVAL_SECS for as long as this
+        // connection is open — the worker itself has no opinion on cadence,
+        // it just reacts to wake-ups. Aborted on disconnect below; the worker
+        // keeps running for other tabs/callers and self-terminates if nobody
+        // rings its bell for a while.
+        let keepalive_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(
+                std::time::Duration::from_secs(super::sync::SYNC_INTERVAL_SECS),
+            );
+            // Skip the first immediate tick — IDLE + initial list_messages handles that.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                bell.notify_one();
+            }
+        });
+        sync_handles.push(keepalive_handle);
     }
 
     drop(event_tx);

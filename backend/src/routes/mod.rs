@@ -16,6 +16,7 @@ pub mod identities;
 pub mod link_proxy;
 pub mod messages;
 pub mod notification_preferences;
+pub mod outbox;
 pub mod quota;
 pub mod search;
 pub mod pgp;
@@ -142,9 +143,13 @@ pub struct AppServices {
     pub search_engine: Arc<crate::search::engine::SearchEngine>,
     pub event_bus: Arc<EventBus>,
     pub idle_manager: Arc<IdleManager>,
+    pub sync_worker_manager: Arc<crate::realtime::worker::SyncWorkerManager>,
+    pub outbox_worker_manager: Arc<crate::realtime::outbox_worker::OutboxWorkerManager>,
     pub mfa_crypto: Arc<MfaCrypto>,
     pub passkey_service: Arc<PasskeyService>,
     pub link_proxy_secret: Option<Arc<LinkProxySecret>>,
+    pub draft_locks: Arc<drafts::DraftLocks>,
+    pub db_pool_manager: Arc<crate::db::pool::DbPoolManager>,
 }
 
 pub fn create_router(svc: AppServices) -> Router {
@@ -158,9 +163,13 @@ pub fn create_router(svc: AppServices) -> Router {
         search_engine,
         event_bus,
         idle_manager,
+        sync_worker_manager,
+        outbox_worker_manager,
         mfa_crypto,
         passkey_service,
         link_proxy_secret,
+        draft_locks,
+        db_pool_manager,
     } = svc;
     let key_extractor = RealIpKeyExtractor {
         trusted: parse_trusted_proxies(&config.trusted_proxies),
@@ -238,14 +247,26 @@ pub fn create_router(svc: AppServices) -> Router {
             patch(messages::update_flags),
         )
         .route(
+            "/messages/{folder}/flags/bulk",
+            patch(messages::bulk_update_flags),
+        )
+        .route(
             "/messages/{folder}/{uid}/attachments/{attachment_id}",
             get(messages::download_attachment),
         )
         .route("/messages/move", post(messages::move_message_handler))
+        .route("/messages/move/bulk", post(messages::bulk_move_messages))
         .route("/messages/send", post(send::send_message_handler))
+        .route("/outbox", get(outbox::list_handler).post(outbox::enqueue_handler))
+        .route("/outbox/{id}", delete(outbox::delete_handler))
+        .route("/outbox/{id}/retry", post(outbox::retry_handler))
         .route(
             "/messages/{folder}/{uid}",
             delete(messages::delete_message_handler),
+        )
+        .route(
+            "/messages/{folder}/delete/bulk",
+            post(messages::bulk_delete_messages),
         )
         .route("/drafts/reply-for", post(drafts::get_reply_draft_handler))
         .route("/drafts/{uuid}", post(drafts::save_draft_handler))
@@ -435,6 +456,8 @@ pub fn create_router(svc: AppServices) -> Router {
 
     let mut router = router
         .layer(Extension(idle_manager))
+        .layer(Extension(sync_worker_manager))
+        .layer(Extension(outbox_worker_manager))
         .layer(Extension(event_bus))
         .layer(Extension(smtp_client))
         .layer(Extension(http_client))
@@ -444,6 +467,8 @@ pub fn create_router(svc: AppServices) -> Router {
         .layer(Extension(transport))
         .layer(Extension(mfa_crypto))
         .layer(Extension(passkey_service))
+        .layer(Extension(draft_locks))
+        .layer(Extension(db_pool_manager))
         .layer(Extension(config.clone()))
         .layer(TraceLayer::new_for_http());
 

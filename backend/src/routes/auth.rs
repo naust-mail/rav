@@ -204,11 +204,23 @@ fn extract_session_cookies(headers: &axum::http::HeaderMap) -> Vec<(String, Stri
 ///
 /// On success, creates a session, provisions the user's data directory,
 /// and returns session cookies.
+/// Outcome of the pre-IMAP TOTP gate check in `login`.
+enum MfaGate {
+    /// No MFA to enforce (unenrolled, or the user directory doesn't exist yet) - proceed with the normal flow.
+    Skip,
+    PasskeyOnly,
+    NeedsCode,
+    LockedOut,
+    SecretMissing,
+    Ready { secret: String, code: String },
+}
+
 pub async fn login(
     Extension(store): Extension<Arc<SessionStore>>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
     Extension(mfa_crypto): Extension<Arc<MfaCrypto>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(body): Json<LoginRequest>,
 ) -> Response {
     if body.email.trim().is_empty() || body.password.trim().is_empty() {
@@ -235,104 +247,130 @@ pub async fn login(
     // per-user storage (directory + SQLite + 26 migrations) before credentials
     // are verified, which would be an unauthenticated disk-exhaustion vector.
     let user_dir = std::path::Path::new(&config.data_dir).join(&user_hash);
-    if user_dir.exists() {
-        // Check TOTP enrollment before touching IMAP so that the
-        // "MFA required" response does not confirm password validity.
-        if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &user_hash) {
-        // Passkey-only accounts cannot log in with a password.
-        if db::mfa::get_mfa_settings(&conn)
-            .map(|s| s.passkey_only)
-            .unwrap_or(false)
-        {
-            return unauthorized_response();
-        }
-
-        if db::mfa::is_totp_enrolled(&conn).unwrap_or(false) {
-            match &body.totp_code {
-                None => {
-                    // Tell the client to show the TOTP field and re-submit.
-                    return (
-                        StatusCode::OK,
-                        [("content-type", "application/json")],
-                        serde_json::json!({ "mfa_required": true, "mfa_type": "totp" })
-                            .to_string(),
-                    )
-                        .into_response();
+    // Check TOTP enrollment before touching IMAP so that the "MFA required"
+    // response does not confirm password validity.
+    let gate = if user_dir.exists() {
+        db::pool::with_user_db(&db_pool_manager, &user_hash, {
+            let mfa_crypto = mfa_crypto.clone();
+            let totp_code = body.totp_code.clone();
+            move |conn| {
+                // Passkey-only accounts cannot log in with a password.
+                if db::mfa::get_mfa_settings(conn)
+                    .map(|s| s.passkey_only)
+                    .unwrap_or(false)
+                {
+                    return Ok(MfaGate::PasskeyOnly);
                 }
-                Some(code) => {
-                    // Lockout check first to prevent brute-force.
-                    if totp::is_locked_out(&conn).unwrap_or(false) {
-                        return unauthorized_response();
-                    }
 
-                    // Validate IMAP credentials.
-                    let server = match EffectiveServerConfig::build(&body, &config) {
-                        Ok(s) => s,
-                        Err((status, msg)) => return server_config_error(status, msg),
-                    };
-                    let imap_result = imap_auth::validate_imap_credentials(
-                        &server.imap_host,
-                        &transport.imap_connect_host,
-                        server.imap_port,
-                        server.imap_tls,
-                        &body.email,
-                        &body.password,
-                        &transport.imap_connector,
+                if !db::mfa::is_totp_enrolled(conn).unwrap_or(false) {
+                    return Ok(MfaGate::Skip);
+                }
+
+                let Some(code) = totp_code else {
+                    return Ok(MfaGate::NeedsCode);
+                };
+
+                // Lockout check first to prevent brute-force.
+                if totp::is_locked_out(conn).unwrap_or(false) {
+                    return Ok(MfaGate::LockedOut);
+                }
+
+                match load_totp_secret(conn, &mfa_crypto) {
+                    Some(secret) => Ok(MfaGate::Ready { secret, code }),
+                    None => Ok(MfaGate::SecretMissing),
+                }
+            }
+        })
+        .await
+        .unwrap_or(MfaGate::Skip)
+    } else {
+        MfaGate::Skip
+    };
+
+    match gate {
+        MfaGate::PasskeyOnly | MfaGate::LockedOut => return unauthorized_response(),
+        MfaGate::NeedsCode => {
+            // Tell the client to show the TOTP field and re-submit.
+            return (
+                StatusCode::OK,
+                [("content-type", "application/json")],
+                serde_json::json!({ "mfa_required": true, "mfa_type": "totp" })
+                    .to_string(),
+            )
+                .into_response();
+        }
+        MfaGate::SecretMissing => {
+            tracing::error!(email = %body.email, "TOTP enrolled but secret missing");
+            return internal_error_response();
+        }
+        MfaGate::Ready { secret, code } => {
+            // Validate IMAP credentials.
+            let server = match EffectiveServerConfig::build(&body, &config) {
+                Ok(s) => s,
+                Err((status, msg)) => return server_config_error(status, msg),
+            };
+            let imap_result = imap_auth::validate_imap_credentials(
+                &server.imap_host,
+                &transport.imap_connect_host,
+                server.imap_port,
+                server.imap_tls,
+                &body.email,
+                &body.password,
+                &transport.imap_connector,
+            )
+            .await;
+
+            if !matches!(imap_result, AuthResult::Success) {
+                let _ = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
+                    db::mfa::increment_lockout(conn, 5, 900)
+                })
+                .await;
+                return match imap_result {
+                    AuthResult::ServerUnreachable(e) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        [("content-type", "application/json")],
+                        serde_json::json!({
+                            "error": {
+                                "code": "SERVER_UNREACHABLE",
+                                "message": e.to_string(),
+                                "status": 503
+                            }
+                        })
+                        .to_string(),
+                    )
+                        .into_response(),
+                    _ => unauthorized_response(),
+                };
+            }
+
+            // IMAP succeeded - now verify TOTP.
+            let verify_result = db::pool::with_user_db(&db_pool_manager, &user_hash, move |conn| {
+                totp::verify_and_record(conn, &secret, &code)
+            })
+            .await;
+
+            match verify_result {
+                Ok(true) => {
+                    // Both factors passed - fall through to session creation below.
+                    return create_login_session(
+                        body,
+                        server,
+                        user_hash,
+                        &store,
+                        &config,
+                        &db_pool_manager,
                     )
                     .await;
-
-                    if !matches!(imap_result, AuthResult::Success) {
-                        let _ = db::mfa::increment_lockout(&conn, 5, 900);
-                        return match imap_result {
-                            AuthResult::ServerUnreachable(e) => (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                [("content-type", "application/json")],
-                                serde_json::json!({
-                                    "error": {
-                                        "code": "SERVER_UNREACHABLE",
-                                        "message": e.to_string(),
-                                        "status": 503
-                                    }
-                                })
-                                .to_string(),
-                            )
-                                .into_response(),
-                            _ => unauthorized_response(),
-                        };
-                    }
-
-                    // IMAP succeeded - now verify TOTP.
-                    let secret = match load_totp_secret(&conn, &mfa_crypto) {
-                        Some(s) => s,
-                        None => {
-                            tracing::error!(email = %body.email, "TOTP enrolled but secret missing");
-                            return internal_error_response();
-                        }
-                    };
-
-                    match totp::verify_and_record(&conn, &secret, code) {
-                        Ok(true) => {
-                            // Both factors passed - fall through to session creation below.
-                            return create_login_session(
-                                body,
-                                server,
-                                user_hash,
-                                &store,
-                                &config,
-                            )
-                            .await;
-                        }
-                        Ok(false) => return unauthorized_response(),
-                        Err(e) => {
-                            tracing::error!(error = %e, "TOTP verification error");
-                            return internal_error_response();
-                        }
-                    }
+                }
+                Ok(false) => return unauthorized_response(),
+                Err(e) => {
+                    tracing::error!(error = %e, "TOTP verification error");
+                    return internal_error_response();
                 }
             }
         }
-        } // end if let Ok(conn)
-    } // end if user_dir.exists()
+        MfaGate::Skip => {}
+    }
 
     let server = match EffectiveServerConfig::build(&body, &config) {
         Ok(s) => s,
@@ -352,7 +390,7 @@ pub async fn login(
 
     match result {
         AuthResult::Success => {
-            return create_login_session(body, server, user_hash, &store, &config).await;
+            return create_login_session(body, server, user_hash, &store, &config, &db_pool_manager).await;
         }
         AuthResult::InvalidCredentials => return unauthorized_response(),
         AuthResult::ServerUnreachable(e) => return (
@@ -446,6 +484,7 @@ async fn create_login_session(
     user_hash: String,
     store: &Arc<SessionStore>,
     config: &Arc<AppConfig>,
+    db_pool_manager: &Arc<db::pool::DbPoolManager>,
 ) -> Response {
     if let Err(e) = user_data::provision_user_data(&config.data_dir, &user_hash) {
         tracing::error!(error = %e, "failed to provision user data directory");
@@ -481,25 +520,30 @@ async fn create_login_session(
         }
     }
 
-    if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &user_hash) {
-        match db::identities::has_identities(&conn) {
-            Ok(false) => {
-                let default_identity = db::identities::CreateIdentity {
-                    email: body.email.clone(),
-                    display_name: String::new(),
-                    signature_html: String::new(),
-                    is_default: true,
-                };
-                if let Err(e) = db::identities::create_identity(&conn, &default_identity) {
-                    tracing::warn!(error = %e, "Failed to auto-create default identity");
+    let _ = db::pool::with_user_db(db_pool_manager, &user_hash, {
+        let email = body.email.clone();
+        move |conn| {
+            match db::identities::has_identities(conn) {
+                Ok(false) => {
+                    let default_identity = db::identities::CreateIdentity {
+                        email,
+                        display_name: String::new(),
+                        signature_html: String::new(),
+                        is_default: true,
+                    };
+                    if let Err(e) = db::identities::create_identity(conn, &default_identity) {
+                        tracing::warn!(error = %e, "Failed to auto-create default identity");
+                    }
                 }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to check for existing identities");
+                }
+                _ => {}
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to check for existing identities");
-            }
-            _ => {}
+            Ok(())
         }
-    }
+    })
+    .await;
 
     const REMEMBER_ME_HOURS: u64 = 30 * 24;
     let session_hours = if body.remember {
@@ -568,7 +612,18 @@ async fn create_login_session(
 ///
 /// Returns the current user's session information. Requires authentication
 /// (the `auth_guard` middleware injects `SessionState` into extensions).
-pub async fn get_session(Extension(session): Extension<SessionState>) -> Response {
+pub async fn get_session(
+    Extension(session): Extension<SessionState>,
+    Extension(outbox_worker_manager): Extension<Arc<crate::realtime::outbox_worker::OutboxWorkerManager>>,
+) -> Response {
+    // The frontend calls this right after establishing auth, so it's a
+    // reliable point to resume any outbox entries left scheduled from
+    // before a server restart (credentials are never persisted, so a
+    // restarted worker needs a live session to pick them back up).
+    outbox_worker_manager
+        .ensure_worker(session.user_hash.clone(), session.email.clone(), session.password.clone())
+        .notify_one();
+
     (
         StatusCode::OK,
         [("content-type", "application/json")],

@@ -89,9 +89,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::path::PathBuf::from(&config.data_dir),
     ));
 
+    // Build the per-user SQLite connection pool manager and spawn its idle
+    // eviction sweep.
+    let db_pool_manager = Arc::new(db::pool::DbPoolManager::new(
+        config.data_dir.clone(),
+        config.db_pool_max_connections_per_user,
+        Duration::from_secs(config.db_pool_idle_timeout_secs),
+        config.db_pool_max_users,
+    ));
+    Arc::clone(&db_pool_manager).spawn_eviction_sweep();
+
     // Create the real-time event bus and IDLE manager.
     let event_bus = Arc::new(realtime::events::EventBus::new());
     let idle_manager = Arc::new(realtime::idle::IdleManager::new());
+    let sync_worker_manager = Arc::new(realtime::worker::SyncWorkerManager::new(
+        config.clone(),
+        imap_client.clone(),
+        event_bus.clone(),
+        search_engine.clone(),
+        smtp_client.clone(),
+        transport.clone(),
+        db_pool_manager.clone(),
+    ));
+
+    let outbox_worker_manager = Arc::new(realtime::outbox_worker::OutboxWorkerManager::new(
+        config.clone(),
+        imap_client.clone(),
+        smtp_client.clone(),
+        transport.clone(),
+        event_bus.clone(),
+        db_pool_manager.clone(),
+    ));
 
     // Load or generate the MFA encryption key from the data directory.
     let mfa_crypto = Arc::new(MfaCrypto::from_data_dir(&config.data_dir)?);
@@ -130,9 +158,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         search_engine,
         event_bus,
         idle_manager,
+        sync_worker_manager,
+        outbox_worker_manager,
         mfa_crypto,
         passkey_service,
         link_proxy_secret,
+        draft_locks: Arc::new(routes::drafts::DraftLocks::new()),
+        db_pool_manager,
     });
 
     // Bind to the configured host and port.

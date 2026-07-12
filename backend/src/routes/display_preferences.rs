@@ -4,7 +4,6 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 use crate::auth::session::SessionState;
-use crate::config::AppConfig;
 use crate::db;
 use crate::db::display_preferences::UpdateDisplayPreferences;
 use crate::error::AppError;
@@ -25,13 +24,13 @@ fn map_update_error(message: String) -> AppError {
 /// `GET /api/settings/display`
 pub async fn get_display_preferences(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let prefs = db::display_preferences::get_preferences(&conn)
-        .map_err(AppError::InternalError)?;
+    let prefs = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::display_preferences::get_preferences(conn)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     Ok(Json(prefs).into_response())
 }
@@ -39,14 +38,14 @@ pub async fn get_display_preferences(
 /// `PUT /api/settings/display`
 pub async fn update_display_preferences(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(data): Json<UpdateDisplayPreferences>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let prefs = db::display_preferences::update_preferences(&conn, &data)
-        .map_err(map_update_error)?;
+    let prefs = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::display_preferences::update_preferences(conn, &data)
+    })
+    .await
+    .map_err(map_update_error)?;
 
     Ok(Json(prefs).into_response())
 }
@@ -62,33 +61,13 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    fn test_config(data_dir: &str) -> Arc<AppConfig> {
-        Arc::new(AppConfig {
-            host: "127.0.0.1".to_string(),
-            port: 3001,
-            imap_host: None,
-            imap_port: 993,
-            smtp_host: None,
-            smtp_port: 587,
-            tls_enabled: true,
-            tls_ca_cert_path: None,
-            imap_connect_host: None,
-            smtp_connect_host: None,
-            data_dir: data_dir.to_string(),
-            session_timeout_hours: 24,
-            static_dir: "nonexistent_static_dir".to_string(),
-            environment: "development".to_string(),
-            base_path: None,
-            allow_custom_mail_servers: true,
-            rspamd_url: None,
-            link_proxy_enabled: false,
-            pgp_enabled: true,
-            webauthn_rp_id: None,
-            webauthn_rp_origin: None,
-            trusted_proxies: String::new(),
-            sieve_host: None,
-            sieve_port: 4190,
-        })
+    fn test_db_pool_manager(data_dir: &str) -> Arc<db::pool::DbPoolManager> {
+        Arc::new(db::pool::DbPoolManager::new(
+            data_dir.to_string(),
+            4,
+            std::time::Duration::from_secs(600),
+            500,
+        ))
     }
 
     fn test_session() -> SessionState {
@@ -112,14 +91,14 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_preferences_map_to_bad_request() {
         let tmp = TempDir::new().unwrap();
-        let config = test_config(tmp.path().to_str().unwrap());
+        let db_pool_manager = test_db_pool_manager(tmp.path().to_str().unwrap());
         let session = test_session();
         crate::auth::user_data::provision_user_data(tmp.path().to_str().unwrap(), &session.user_hash)
             .expect("failed to provision user db");
 
         let result = update_display_preferences(
             Extension(session),
-            Extension(config),
+            Extension(db_pool_manager),
             Json(UpdateDisplayPreferences {
                 density: None,
                 theme: None,
@@ -158,14 +137,14 @@ mod tests {
     #[tokio::test]
     async fn test_invalid_preferences_map_to_http_400_response() {
         let tmp = TempDir::new().unwrap();
-        let config = test_config(tmp.path().to_str().unwrap());
+        let db_pool_manager = test_db_pool_manager(tmp.path().to_str().unwrap());
         let session = test_session();
         crate::auth::user_data::provision_user_data(tmp.path().to_str().unwrap(), &session.user_hash)
             .expect("failed to provision user db");
 
         let result = update_display_preferences(
             Extension(session),
-            Extension(config),
+            Extension(db_pool_manager),
             Json(UpdateDisplayPreferences {
                 density: None,
                 theme: None,

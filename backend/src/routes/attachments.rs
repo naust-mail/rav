@@ -42,14 +42,14 @@ struct DeleteResponse {
 /// Returns all staged attachments for the given draft UUID.
 pub async fn list_attachments(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     AxumPath(draft_uuid): AxumPath<String>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let rows = db::drafts::get_draft_attachments(&conn, &draft_uuid)
-        .map_err(AppError::InternalError)?;
+    let rows = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::drafts::get_draft_attachments(conn, &draft_uuid)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     let items: Vec<AttachmentItem> = rows
         .into_iter()
@@ -74,12 +74,10 @@ pub async fn list_attachments(
 pub async fn upload_attachment(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     AxumPath(draft_id): AxumPath<String>,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
     // Build the attachment storage directory.
     let att_dir = Path::new(&config.data_dir)
         .join(&session.user_hash)
@@ -89,7 +87,7 @@ pub async fn upload_attachment(
         .await
         .map_err(|e| AppError::InternalError(format!("Failed to create attachment dir: {e}")))?;
 
-    let mut uploaded = Vec::new();
+    let mut saved = Vec::new();
 
     while let Some(field) = multipart
         .next_field()
@@ -126,28 +124,32 @@ pub async fn upload_attachment(
 
         let size = data.len() as i64;
 
-        db::drafts::add_draft_attachment(
-            &conn,
-            &att_id,
-            &draft_id,
-            &filename,
-            &content_type,
-            size,
-            file_path.to_str().unwrap_or(""),
-        )
-        .map_err(AppError::InternalError)?;
-
-        uploaded.push(UploadResponse {
-            id: att_id,
-            filename,
-            content_type,
-            size,
-        });
+        saved.push((att_id, filename, content_type, size, file_path.to_str().unwrap_or("").to_string()));
     }
 
-    if uploaded.is_empty() {
+    if saved.is_empty() {
         return Err(AppError::BadRequest("No files uploaded".to_string()));
     }
+
+    db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let draft_id = draft_id.clone();
+        let saved = saved.clone();
+        move |conn| {
+            for (att_id, filename, content_type, size, file_path) in &saved {
+                db::drafts::add_draft_attachment(
+                    conn, att_id, &draft_id, filename, content_type, *size, file_path,
+                )?;
+            }
+            Ok(())
+        }
+    })
+    .await
+    .map_err(AppError::InternalError)?;
+
+    let uploaded: Vec<UploadResponse> = saved
+        .into_iter()
+        .map(|(id, filename, content_type, size, _)| UploadResponse { id, filename, content_type, size })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "attachments": uploaded,
@@ -160,14 +162,14 @@ pub async fn upload_attachment(
 /// Serves the raw file content of a draft attachment for inline preview.
 pub async fn get_attachment_content(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     AxumPath((draft_id, attachment_id)): AxumPath<(String, String)>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let attachments = db::drafts::get_draft_attachments(&conn, &draft_id)
-        .map_err(AppError::InternalError)?;
+    let attachments = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::drafts::get_draft_attachments(conn, &draft_id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     let attachment = attachments
         .iter()
@@ -190,15 +192,16 @@ pub async fn get_attachment_content(
 /// Removes an attachment from the database and deletes the file from disk.
 pub async fn delete_attachment(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     AxumPath((draft_id, attachment_id)): AxumPath<(String, String)>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
     // Get the attachment record so we can find the file path.
-    let attachments = db::drafts::get_draft_attachments(&conn, &draft_id)
-        .map_err(AppError::InternalError)?;
+    let attachments = db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let draft_id = draft_id.clone();
+        move |conn| db::drafts::get_draft_attachments(conn, &draft_id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     let attachment = attachments
         .iter()
@@ -212,8 +215,12 @@ pub async fn delete_attachment(
     }
 
     // Delete from DB.
-    db::drafts::delete_draft_attachment(&conn, &attachment_id)
-        .map_err(AppError::InternalError)?;
+    db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let attachment_id = attachment_id.clone();
+        move |conn| db::drafts::delete_draft_attachment(conn, &attachment_id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     Ok(Json(DeleteResponse {
         status: "deleted".to_string(),

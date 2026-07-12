@@ -4,7 +4,6 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 use crate::auth::session::SessionState;
-use crate::config::AppConfig;
 use crate::db;
 use crate::db::vacation::UpdateVacationResponder;
 use crate::error::AppError;
@@ -12,24 +11,26 @@ use crate::error::AppError;
 /// `GET /api/settings/vacation`
 pub async fn get_vacation_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-    let vacation = db::vacation::get_vacation(&conn)
-        .map_err(AppError::InternalError)?;
+    let vacation = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::vacation::get_vacation(conn)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
     Ok(Json(vacation).into_response())
 }
 
 /// `PUT /api/settings/vacation`
 pub async fn update_vacation_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(body): Json<UpdateVacationResponder>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-    let vacation = db::vacation::update_vacation(&conn, &body)
-        .map_err(AppError::InternalError)?;
+    let vacation = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::vacation::update_vacation(conn, &body)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
     Ok(Json(vacation).into_response())
 }

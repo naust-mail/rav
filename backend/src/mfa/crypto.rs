@@ -8,7 +8,8 @@ use rand::RngCore;
 /// Wraps the server-side AES-256-GCM key used to encrypt TOTP secrets at rest.
 ///
 /// One key per Rav instance, stored as 32 raw bytes in `{data_dir}/.mfa_key`
-/// with mode 600. Generated on first use if the file does not exist.
+/// with mode 640 (owner rw, group r - the backup user reads it via the
+/// dedicated rav group). Generated on first use if the file does not exist.
 /// Losing this file invalidates all enrolled TOTP secrets.
 pub struct MfaCrypto {
     cipher: Aes256Gcm,
@@ -38,11 +39,12 @@ impl MfaCrypto {
             fs::write(&key_path, &bytes)
                 .map_err(|e| format!("Failed to write MFA key file: {e}"))?;
 
-            // Set mode 600 on Unix.
+            // Set mode 640 on Unix: owner rw, group r (the backup user reads
+            // it via the dedicated rav group, not by owning it).
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+                fs::set_permissions(&key_path, fs::Permissions::from_mode(0o640))
                     .map_err(|e| format!("Failed to set MFA key file permissions: {e}"))?;
             }
 

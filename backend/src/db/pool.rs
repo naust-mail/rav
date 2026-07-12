@@ -1,30 +1,147 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use r2d2::{CustomizeConnection, Pool};
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 
-/// Opens the per-user SQLite database at `{data_dir}/{user_hash}/db.sqlite`.
+/// Runs once per newly-created physical SQLite connection (not per checkout):
+/// enables WAL journal mode and foreign key enforcement. Mirrors the PRAGMAs
+/// the old per-request `open_user_db` used to set on every call.
+#[derive(Debug)]
+struct PragmaCustomizer;
+
+impl CustomizeConnection<Connection, rusqlite::Error> for PragmaCustomizer {
+    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+    }
+}
+
+struct PoolEntry {
+    pool: Pool<SqliteConnectionManager>,
+    last_accessed: Instant,
+}
+
+/// Holds one r2d2 connection pool per user's SQLite database, created lazily
+/// on first access. This replaces opening a fresh `Connection` (and re-running
+/// its setup PRAGMAs) on every request.
 ///
-/// Creates the directory tree if it doesn't exist, enables WAL journal mode
-/// and foreign key enforcement. Does NOT run migrations - call
-/// `auth::user_data::provision_user_data` first to ensure the schema is ready.
-pub fn open_user_db(data_dir: &str, user_hash: &str) -> Result<Connection, String> {
-    let dir = Path::new(data_dir).join(user_hash);
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed to create db dir: {e}"))?;
+/// Idle pools are dropped by the periodic eviction sweep (see
+/// `spawn_eviction_sweep`) once unused for `idle_timeout`. If accepting a new
+/// user would exceed `max_users` held pools, the least-recently-used pool is
+/// evicted immediately to make room.
+///
+/// This is the only supported way to access a user's database - there is no
+/// public function to open an unpooled `Connection` directly.
+pub struct DbPoolManager {
+    data_dir: String,
+    max_connections_per_user: u32,
+    idle_timeout: Duration,
+    max_users: usize,
+    pools: Mutex<HashMap<String, PoolEntry>>,
+}
 
-    let db_path = dir.join("db.sqlite");
-    let conn =
-        Connection::open(&db_path).map_err(|e| format!("Failed to open SQLite: {e}"))?;
+impl DbPoolManager {
+    pub fn new(
+        data_dir: String,
+        max_connections_per_user: u32,
+        idle_timeout: Duration,
+        max_users: usize,
+    ) -> Self {
+        Self {
+            data_dir,
+            max_connections_per_user,
+            idle_timeout,
+            max_users,
+            pools: Mutex::new(HashMap::new()),
+        }
+    }
 
-    // Enable WAL mode for better concurrent read performance.
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .map_err(|e| format!("Failed to set WAL mode: {e}"))?;
+    /// Returns the pool for `user_hash`, creating it (and the user's data
+    /// directory) on first access. Does NOT run migrations - call
+    /// `auth::user_data::provision_user_data` first to ensure the schema is
+    /// ready.
+    fn get_pool(&self, user_hash: &str) -> Result<Pool<SqliteConnectionManager>, String> {
+        let mut pools = self.pools.lock().expect("db pool map poisoned");
 
-    // Enable foreign key constraint enforcement.
-    conn.execute_batch("PRAGMA foreign_keys=ON;")
-        .map_err(|e| format!("Failed to enable foreign keys: {e}"))?;
+        if let Some(entry) = pools.get_mut(user_hash) {
+            entry.last_accessed = Instant::now();
+            return Ok(entry.pool.clone());
+        }
 
-    Ok(conn)
+        if pools.len() >= self.max_users {
+            if let Some(lru_key) = pools
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_accessed)
+                .map(|(k, _)| k.clone())
+            {
+                pools.remove(&lru_key);
+            }
+        }
+
+        let dir = Path::new(&self.data_dir).join(user_hash);
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create db dir: {e}"))?;
+        let db_path = dir.join("db.sqlite");
+
+        let manager = SqliteConnectionManager::file(&db_path);
+        let pool = Pool::builder()
+            .max_size(self.max_connections_per_user)
+            .connection_customizer(Box::new(PragmaCustomizer))
+            .build(manager)
+            .map_err(|e| format!("Failed to build connection pool: {e}"))?;
+
+        pools.insert(
+            user_hash.to_string(),
+            PoolEntry {
+                pool: pool.clone(),
+                last_accessed: Instant::now(),
+            },
+        );
+
+        Ok(pool)
+    }
+
+    /// Drops any pool unused for longer than `idle_timeout`.
+    fn evict_idle(&self) {
+        let idle_timeout = self.idle_timeout;
+        let mut pools = self.pools.lock().expect("db pool map poisoned");
+        pools.retain(|_, entry| entry.last_accessed.elapsed() < idle_timeout);
+    }
+
+    /// Spawns a background task that periodically evicts idle pools. The
+    /// sweep runs every minute regardless of the configured timeout, so
+    /// timeouts as short as ~1 minute are still enforced promptly.
+    pub fn spawn_eviction_sweep(self: Arc<Self>) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                self.evict_idle();
+            }
+        });
+    }
+}
+
+/// Runs `f` against a pooled connection for `user_hash`, off the async
+/// executor thread. This is the only supported way to touch a user's SQLite
+/// database from request or worker code.
+pub async fn with_user_db<F, T>(manager: &DbPoolManager, user_hash: &str, f: F) -> Result<T, String>
+where
+    F: FnOnce(&Connection) -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    let pool = manager.get_pool(user_hash)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = pool
+            .get()
+            .map_err(|e| format!("Failed to get pooled connection: {e}"))?;
+        f(&conn)
+    })
+    .await
+    .map_err(|e| format!("Blocking task panicked: {e}"))?
 }
 
 #[cfg(test)]
@@ -59,6 +176,7 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (28, include_str!("../../migrations/V028__calendar_stickers.sql")),
     (29, include_str!("../../migrations/V029__filter_rules_v2.sql")),
     (30, include_str!("../../migrations/V030__draft_staging.sql")),
+    (31, include_str!("../../migrations/V031__outbox.sql")),
 ];
 
 #[cfg(test)]
@@ -118,23 +236,66 @@ mod tests {
         assert!(tables.contains(&"draft_attachments".to_string()));
     }
 
-    #[test]
-    fn test_open_user_db_creates_file() {
+    #[tokio::test]
+    async fn pooled_connection_creates_file_with_pragmas_set() {
         let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().to_str().unwrap();
+        let data_dir = tmp.path().to_str().unwrap().to_string();
 
-        let conn = open_user_db(data_dir, "abc123").unwrap();
+        let manager = DbPoolManager::new(data_dir, 4, Duration::from_secs(600), 500);
 
-        // The file should exist on disk.
+        with_user_db(&manager, "abc123", |conn| {
+            let fk: i32 = conn
+                .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(fk, 1);
+            let journal_mode: String = conn
+                .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(journal_mode.to_lowercase(), "wal");
+            Ok(())
+        })
+        .await
+        .unwrap();
+
         let db_file = tmp.path().join("abc123").join("db.sqlite");
         assert!(db_file.exists());
+    }
 
-        // Foreign keys should be enabled.
-        let fk: i32 = conn
-            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(fk, 1);
+    #[tokio::test]
+    async fn lru_eviction_drops_least_recently_used_pool_at_capacity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_str().unwrap().to_string();
 
-        drop(conn);
+        // Cap at 2 users so a 3rd access forces an eviction.
+        let manager = DbPoolManager::new(data_dir, 4, Duration::from_secs(600), 2);
+
+        with_user_db(&manager, "user_a", |_| Ok(())).await.unwrap();
+        with_user_db(&manager, "user_b", |_| Ok(())).await.unwrap();
+        assert_eq!(manager.pools.lock().unwrap().len(), 2);
+
+        with_user_db(&manager, "user_c", |_| Ok(())).await.unwrap();
+
+        let pools = manager.pools.lock().unwrap();
+        assert_eq!(pools.len(), 2);
+        // user_a was least recently used and should have been evicted.
+        assert!(!pools.contains_key("user_a"));
+        assert!(pools.contains_key("user_b"));
+        assert!(pools.contains_key("user_c"));
+    }
+
+    #[tokio::test]
+    async fn idle_eviction_sweep_drops_pools_past_timeout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().to_str().unwrap().to_string();
+
+        // Zero-second timeout: any pool is immediately eligible for eviction.
+        let manager = DbPoolManager::new(data_dir, 4, Duration::from_secs(0), 500);
+
+        with_user_db(&manager, "abc123", |_| Ok(())).await.unwrap();
+        assert_eq!(manager.pools.lock().unwrap().len(), 1);
+
+        manager.evict_idle();
+
+        assert_eq!(manager.pools.lock().unwrap().len(), 0);
     }
 }

@@ -137,6 +137,9 @@ mod tests {
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         }
     }
 

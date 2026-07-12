@@ -205,6 +205,9 @@ vi.mock("@/hooks/useMessages", () => ({
   useUpdateFlags: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})) }),
   useMoveMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})) }),
   useDeleteMessage: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({})) }),
+  useBulkUpdateFlags: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({ failed_uids: [] })) }),
+  useBulkMoveMessages: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({ failed_uids: [] })) }),
+  useBulkDeleteMessages: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => ({ failed_uids: [] })) }),
 }));
 
 vi.mock("@/hooks/useTags", () => ({

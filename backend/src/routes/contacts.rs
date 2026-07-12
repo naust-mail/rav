@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::session::SessionState;
-use crate::config::AppConfig;
 use crate::db;
 use crate::db::contacts::Contact;
 use crate::error::AppError;
@@ -109,20 +108,25 @@ pub struct AutocompleteResponse {
 /// Lists contacts with optional search and LIMIT/OFFSET pagination.
 pub async fn list_contacts_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Query(params): Query<ListContactsParams>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    struct ContactsPage {
+        contacts: Vec<Contact>,
+        total_count: usize,
+    }
 
-    let query = params.q.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
-    let limit = params.limit.min(200);
+    let ContactsPage { contacts, total_count } = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        let query = params.q.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty());
+        let limit = params.limit.min(200);
 
-    let contacts = db::contacts::list_contacts(&conn, query, limit, params.offset)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        let contacts = db::contacts::list_contacts(conn, query, limit, params.offset)?;
+        let total_count = db::contacts::count_contacts(conn, query)?;
 
-    let total_count = db::contacts::count_contacts(&conn, query)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        Ok(ContactsPage { contacts, total_count })
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(ListContactsResponse {
         contacts,
@@ -136,45 +140,47 @@ pub async fn list_contacts_handler(
 /// Creates or updates a contact. Generates a UUID for `id` if not provided.
 pub async fn create_contact_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(body): Json<CreateContactBody>,
 ) -> Result<Response, AppError> {
     if body.email.trim().is_empty() {
         return Err(AppError::BadRequest("Email is required".to_string()));
     }
 
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let contact = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        let now: String = conn
+            .query_row("SELECT datetime('now')", [], |row| row.get(0))
+            .map_err(|e| format!("Database error: {e}"))?;
+        let id = body.id.unwrap_or_else(|| Uuid::new_v4().to_string());
 
-    let now: String = conn
-        .query_row("SELECT datetime('now')", [], |row| row.get(0))
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-    let id = body.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let contact = Contact {
+            id,
+            email: body.email,
+            name: body.name,
+            company: body.company,
+            notes: body.notes,
+            is_favorite: body.is_favorite,
+            last_contacted: body.last_contacted,
+            contact_count: body.contact_count,
+            source: body.source,
+            created_at: if body.created_at.is_empty() {
+                now.clone()
+            } else {
+                body.created_at
+            },
+            updated_at: if body.updated_at.is_empty() {
+                now
+            } else {
+                body.updated_at
+            },
+        };
 
-    let contact = Contact {
-        id,
-        email: body.email,
-        name: body.name,
-        company: body.company,
-        notes: body.notes,
-        is_favorite: body.is_favorite,
-        last_contacted: body.last_contacted,
-        contact_count: body.contact_count,
-        source: body.source,
-        created_at: if body.created_at.is_empty() {
-            now.clone()
-        } else {
-            body.created_at
-        },
-        updated_at: if body.updated_at.is_empty() {
-            now
-        } else {
-            body.updated_at
-        },
-    };
+        db::contacts::upsert_contact(conn, &contact)?;
 
-    db::contacts::upsert_contact(&conn, &contact)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        Ok(contact)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(contact).into_response())
 }
@@ -185,53 +191,95 @@ pub async fn create_contact_handler(
 /// suggestions with only email, name, and source.
 pub async fn autocomplete_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Query(params): Query<AutocompleteParams>,
 ) -> Result<Response, AppError> {
     let query = params
         .q
         .as_deref()
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
 
-    let query = match query {
-        Some(q) => q,
-        None => {
-            return Ok(Json(AutocompleteResponse {
-                suggestions: vec![],
-            })
-            .into_response());
-        }
+    let Some(query) = query else {
+        return Ok(Json(AutocompleteResponse {
+            suggestions: vec![],
+        })
+        .into_response());
     };
 
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let suggestions = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        // Search contacts first
+        let contacts = db::contacts::search_contacts(conn, &query, params.limit)?;
 
-    // Search contacts first
-    let contacts = db::contacts::search_contacts(&conn, query, params.limit)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        // Build suggestions from contacts with deduplication by email (lowercase)
+        let mut seen_emails = std::collections::HashSet::new();
+        let mut suggestions: Vec<AutocompleteSuggestion> = Vec::new();
 
-    // Build suggestions from contacts with deduplication by email (lowercase)
-    let mut seen_emails = std::collections::HashSet::new();
-    let mut suggestions: Vec<AutocompleteSuggestion> = Vec::new();
-
-    for c in contacts {
-        let email_lower = c.email.to_lowercase();
-        if seen_emails.insert(email_lower) {
-            suggestions.push(AutocompleteSuggestion {
-                email: c.email,
-                name: c.name,
-                source: Some("contact".to_string()),
-            });
+        for c in contacts {
+            let email_lower = c.email.to_lowercase();
+            if seen_emails.insert(email_lower) {
+                suggestions.push(AutocompleteSuggestion {
+                    email: c.email,
+                    name: c.name,
+                    source: Some("contact".to_string()),
+                });
+            }
         }
-    }
 
-    // If we haven't hit the limit, also search known addresses
-    if suggestions.len() < params.limit as usize {
-        let remaining = params.limit as usize - suggestions.len();
-        #[allow(dead_code)]
-        let known = db::contacts::search_known_addresses(&conn, query, remaining as u32)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+        // If we haven't hit the limit, also search known addresses
+        if suggestions.len() < params.limit as usize {
+            let remaining = params.limit as usize - suggestions.len();
+            let known = db::contacts::search_known_addresses(conn, &query, remaining as u32)?;
+
+            for k in known {
+                let email_lower = k.email.to_lowercase();
+                if seen_emails.insert(email_lower) {
+                    suggestions.push(AutocompleteSuggestion {
+                        email: k.email,
+                        name: k.name,
+                        source: Some("known".to_string()),
+                    });
+                }
+            }
+        }
+
+        // Truncate to limit in case we went over
+        suggestions.truncate(params.limit as usize);
+
+        Ok(suggestions)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+
+    Ok(Json(AutocompleteResponse { suggestions }).into_response())
+}
+
+/// `GET /api/contacts/autocomplete/all`
+///
+/// Returns all contacts and known addresses for client-side autocomplete.
+/// Used for prefetching to enable instant fuzzy search without network latency.
+pub async fn autocomplete_all_handler(
+    Extension(session): Extension<SessionState>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
+) -> Result<Response, AppError> {
+    let suggestions = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        let contacts = db::contacts::list_contacts(conn, None, 50000, 0)?;
+        let known = db::contacts::search_known_addresses(conn, "", 50000)?;
+
+        let mut seen_emails = std::collections::HashSet::new();
+        let mut suggestions: Vec<AutocompleteSuggestion> = Vec::new();
+
+        for c in contacts {
+            let email_lower = c.email.to_lowercase();
+            if seen_emails.insert(email_lower) {
+                suggestions.push(AutocompleteSuggestion {
+                    email: c.email,
+                    name: c.name,
+                    source: Some("contact".to_string()),
+                });
+            }
+        }
 
         for k in known {
             let email_lower = k.email.to_lowercase();
@@ -243,55 +291,11 @@ pub async fn autocomplete_handler(
                 });
             }
         }
-    }
 
-    // Truncate to limit in case we went over
-    suggestions.truncate(params.limit as usize);
-
-    Ok(Json(AutocompleteResponse { suggestions }).into_response())
-}
-
-/// `GET /api/contacts/autocomplete/all`
-///
-/// Returns all contacts and known addresses for client-side autocomplete.
-/// Used for prefetching to enable instant fuzzy search without network latency.
-pub async fn autocomplete_all_handler(
-    Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
-) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let contacts = db::contacts::list_contacts(&conn, None, 50000, 0)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let known = db::contacts::search_known_addresses(&conn, "", 50000)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let mut seen_emails = std::collections::HashSet::new();
-    let mut suggestions: Vec<AutocompleteSuggestion> = Vec::new();
-
-    for c in contacts {
-        let email_lower = c.email.to_lowercase();
-        if seen_emails.insert(email_lower) {
-            suggestions.push(AutocompleteSuggestion {
-                email: c.email,
-                name: c.name,
-                source: Some("contact".to_string()),
-            });
-        }
-    }
-
-    for k in known {
-        let email_lower = k.email.to_lowercase();
-        if seen_emails.insert(email_lower) {
-            suggestions.push(AutocompleteSuggestion {
-                email: k.email,
-                name: k.name,
-                source: Some("known".to_string()),
-            });
-        }
-    }
+        Ok(suggestions)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(AutocompleteResponse { suggestions }).into_response())
 }
@@ -301,14 +305,15 @@ pub async fn autocomplete_all_handler(
 /// Returns a single contact by id. Returns 404 if not found.
 pub async fn get_contact_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let contact = db::contacts::get_contact(&conn, &id)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let contact = db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let id = id.clone();
+        move |conn| db::contacts::get_contact(conn, &id)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     match contact {
         Some(c) => Ok(Json(c).into_response()),
@@ -321,14 +326,15 @@ pub async fn get_contact_handler(
 /// Deletes a contact by id. Returns 404 if the contact does not exist.
 pub async fn delete_contact_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let deleted = db::contacts::delete_contact(&conn, &id)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let deleted = db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let id = id.clone();
+        move |conn| db::contacts::delete_contact(conn, &id)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     if deleted {
         Ok(Json(serde_json::json!({ "status": "deleted" })).into_response())
@@ -487,13 +493,13 @@ fn parse_vcards(data: &str) -> Vec<ParsedVCard> {
 /// Export all contacts as a .vcf file download.
 pub async fn export_contacts_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let contacts = db::contacts::list_contacts(&conn, None, 10000, 0)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let contacts = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::contacts::list_contacts(conn, None, 10000, 0)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     let vcf: String = contacts
         .iter()
@@ -516,14 +522,15 @@ pub async fn export_contacts_handler(
 /// Export a single contact as a .vcf file download.
 pub async fn export_single_contact_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let contact = db::contacts::get_contact(&conn, &id)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    let contact = db::pool::with_user_db(&db_pool_manager, &session.user_hash, {
+        let id = id.clone();
+        move |conn| db::contacts::get_contact(conn, &id)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     match contact {
         Some(c) => {
@@ -566,7 +573,7 @@ pub struct ImportResponse {
 /// Import contacts from an uploaded .vcf file (multipart form data).
 pub async fn import_contacts_handler(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
     // Read the uploaded file content
@@ -588,73 +595,79 @@ pub async fn import_contacts_handler(
         return Err(AppError::BadRequest("No file uploaded".to_string()));
     }
 
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let now: String = conn
-        .query_row("SELECT datetime('now')", [], |row| row.get(0))
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    let parsed = parse_vcards(&vcf_content);
-
-    let mut created = 0usize;
-    let mut updated = 0usize;
-    let mut skipped = 0usize;
-
-    for entry in &parsed {
-        if entry.email.is_empty() {
-            skipped += 1;
-            continue;
-        }
-
-        let existing = db::contacts::get_contact_by_email(&conn, &entry.email)
-            .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-        match existing {
-            Some(mut c) => {
-                // Merge only empty fields (don't overwrite manual edits).
-                let mut changed = false;
-                if c.name.is_empty() && !entry.name.is_empty() {
-                    c.name = entry.name.clone();
-                    changed = true;
-                }
-                if c.company.is_empty() && !entry.company.is_empty() {
-                    c.company = entry.company.clone();
-                    changed = true;
-                }
-                if c.notes.is_empty() && !entry.notes.is_empty() {
-                    c.notes = entry.notes.clone();
-                    changed = true;
-                }
-                if changed {
-                    c.updated_at = now.clone();
-                    db::contacts::upsert_contact(&conn, &c)
-                        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-                    updated += 1;
-                } else {
-                    skipped += 1;
-                }
-            }
-            None => {
-                let contact = Contact {
-                    id: Uuid::new_v4().to_string(),
-                    email: entry.email.clone(),
-                    name: entry.name.clone(),
-                    company: entry.company.clone(),
-                    notes: entry.notes.clone(),
-                    is_favorite: false,
-                    last_contacted: None,
-                    contact_count: 0,
-                    source: "imported".to_string(),
-                    created_at: now.clone(),
-                    updated_at: now.clone(),
-                };
-                db::contacts::upsert_contact(&conn, &contact)
-                    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-                created += 1;
-            }
-        }
+    struct ImportCounts {
+        created: usize,
+        updated: usize,
+        skipped: usize,
     }
+
+    let ImportCounts { created, updated, skipped } = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        let now: String = conn
+            .query_row("SELECT datetime('now')", [], |row| row.get(0))
+            .map_err(|e| format!("Database error: {e}"))?;
+
+        let parsed = parse_vcards(&vcf_content);
+
+        let mut created = 0usize;
+        let mut updated = 0usize;
+        let mut skipped = 0usize;
+
+        for entry in &parsed {
+            if entry.email.is_empty() {
+                skipped += 1;
+                continue;
+            }
+
+            let existing = db::contacts::get_contact_by_email(conn, &entry.email)?;
+
+            match existing {
+                Some(mut c) => {
+                    // Merge only empty fields (don't overwrite manual edits).
+                    let mut changed = false;
+                    if c.name.is_empty() && !entry.name.is_empty() {
+                        c.name = entry.name.clone();
+                        changed = true;
+                    }
+                    if c.company.is_empty() && !entry.company.is_empty() {
+                        c.company = entry.company.clone();
+                        changed = true;
+                    }
+                    if c.notes.is_empty() && !entry.notes.is_empty() {
+                        c.notes = entry.notes.clone();
+                        changed = true;
+                    }
+                    if changed {
+                        c.updated_at = now.clone();
+                        db::contacts::upsert_contact(conn, &c)?;
+                        updated += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+                None => {
+                    let contact = Contact {
+                        id: Uuid::new_v4().to_string(),
+                        email: entry.email.clone(),
+                        name: entry.name.clone(),
+                        company: entry.company.clone(),
+                        notes: entry.notes.clone(),
+                        is_favorite: false,
+                        last_contacted: None,
+                        contact_count: 0,
+                        source: "imported".to_string(),
+                        created_at: now.clone(),
+                        updated_at: now.clone(),
+                    };
+                    db::contacts::upsert_contact(conn, &contact)?;
+                    created += 1;
+                }
+            }
+        }
+
+        Ok(ImportCounts { created, updated, skipped })
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(ImportResponse {
         created,

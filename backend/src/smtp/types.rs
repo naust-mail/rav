@@ -1,6 +1,6 @@
 //! SMTP data types.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Parameters needed to establish an SMTP connection.
 /// Passed explicitly to every trait method so the trait stays stateless.
@@ -35,7 +35,7 @@ impl std::fmt::Debug for SmtpCredentials {
 }
 
 /// Whether to sign or sign+encrypt an outbound PGP/MIME message.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PgpMode {
     Sign,
@@ -44,7 +44,7 @@ pub enum PgpMode {
 
 /// Parameters for PGP/MIME message wrapping.
 /// Set by the client after performing crypto in the browser worker.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PgpSendParams {
     pub mode: PgpMode,
     /// Armored detached signature (for Sign mode).

@@ -42,6 +42,9 @@
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         })
     }
 
@@ -72,6 +75,9 @@
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         })
     }
 
@@ -102,6 +108,9 @@
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         })
     }
 
@@ -158,6 +167,18 @@
         Arc::new(crate::realtime::events::EventBus::new())
     }
 
+    /// Helper: create a test DbPoolManager backed by the given data directory.
+    /// Must match whatever data_dir the test's AppConfig uses, or the router
+    /// won't find data seeded directly into that directory.
+    fn test_db_pool_manager(data_dir: &str) -> Arc<crate::db::pool::DbPoolManager> {
+        Arc::new(crate::db::pool::DbPoolManager::new(
+            data_dir.to_string(),
+            4,
+            std::time::Duration::from_secs(600),
+            500,
+        ))
+    }
+
     /// Helper: create a test IdleManager.
     fn test_idle_manager() -> Arc<crate::realtime::idle::IdleManager> {
         Arc::new(crate::realtime::idle::IdleManager::new())
@@ -198,6 +219,9 @@
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         }).expect("test PasskeyService with WebAuthn"))
     }
 
@@ -228,12 +252,21 @@
             trusted_proxies: String::new(),
             sieve_host: None,
             sieve_port: 4190,
+            db_pool_max_connections_per_user: 4,
+            db_pool_idle_timeout_secs: 600,
+            db_pool_max_users: 500,
         }).expect("test PasskeyService"))
     }
 
     /// Helper: build a default AppServices for tests using the given static dir.
     /// Override individual fields with struct update syntax for custom behaviour.
     fn test_services(static_dir: &str) -> AppServices {
+        let db_pool_manager = Arc::new(crate::db::pool::DbPoolManager::new(
+            "/tmp/rav-test".to_string(),
+            4,
+            std::time::Duration::from_secs(600),
+            500,
+        ));
         AppServices {
             config: test_config(static_dir),
             transport: test_transport(),
@@ -244,9 +277,28 @@
             search_engine: test_search_engine("/tmp/rav-test"),
             event_bus: test_event_bus(),
             idle_manager: test_idle_manager(),
+            sync_worker_manager: Arc::new(crate::realtime::worker::SyncWorkerManager::new(
+                test_config(static_dir),
+                test_imap_client(),
+                test_event_bus(),
+                test_search_engine("/tmp/rav-test"),
+                test_smtp_client(),
+                test_transport(),
+                db_pool_manager.clone(),
+            )),
+            outbox_worker_manager: Arc::new(crate::realtime::outbox_worker::OutboxWorkerManager::new(
+                test_config(static_dir),
+                test_imap_client(),
+                test_smtp_client(),
+                test_transport(),
+                test_event_bus(),
+                db_pool_manager.clone(),
+            )),
             mfa_crypto: test_mfa_crypto(),
             passkey_service: test_passkey_service(),
             link_proxy_secret: None,
+            draft_locks: Arc::new(crate::routes::drafts::DraftLocks::new()),
+            db_pool_manager,
         }
     }
 
@@ -283,6 +335,14 @@
     /// Helper: provision a user database so that route handlers can open it.
     fn provision_user_db(data_dir: &str, user_hash: &str) {
         crate::auth::user_data::provision_user_data(data_dir, user_hash).unwrap();
+    }
+
+    /// Helper: open a direct (unpooled) connection to an already-provisioned
+    /// user database, for seeding fixture data before a test's HTTP request
+    /// goes through the pooled router.
+    fn test_open_db(data_dir: &str, user_hash: &str) -> rusqlite::Connection {
+        let path = std::path::Path::new(data_dir).join(user_hash).join("db.sqlite");
+        rusqlite::Connection::open(path).unwrap()
     }
 
     // -----------------------------------------------------------------------
@@ -767,7 +827,7 @@
             },
         ]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/folders")
@@ -807,7 +867,7 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Seed a folder and a message before the request so they appear in recent_messages.
-        let conn = crate::db::pool::open_user_db(data_dir.path().to_str().unwrap(), &user_hash).unwrap();
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
         crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0).unwrap();
         crate::db::messages::upsert_message(
             &conn, "INBOX", 1, None, None, None, "Hello world", "a@b.com", "Alice",
@@ -825,7 +885,7 @@
             config,
             store,
             imap_client,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -864,7 +924,7 @@
         let mock = MockImapClient::new()
             .with_error(ImapError::ConnectionFailed(crate::error::ConnectError::Unreachable));
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/folders")
@@ -966,7 +1026,7 @@
             },
         ]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri(format!("/api/folders/{inbox_id}/messages?page=0&per_page=50"))
@@ -1042,7 +1102,7 @@
                 pgp_status: None,
             }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config: config.clone(), store: store.clone(), imap_client: imap_client.clone(), search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config: config.clone(), store: store.clone(), imap_client: imap_client.clone(), search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         // First, populate the message cache by listing messages.
         let mut req1 = Request::builder()
@@ -1058,7 +1118,7 @@
         assert_eq!(response.status(), StatusCode::OK);
 
         // Now get the full message.
-        let app2 = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app2 = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
         let inbox_id2 = cipher.encrypt("INBOX");
         let mut req2 = Request::builder()
             .uri(format!("/api/messages/{inbox_id2}/42"))
@@ -1112,11 +1172,10 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Seed a message in the cache.
-        let conn = crate::db::pool::open_user_db(
+        let conn = test_open_db(
             data_dir.path().to_str().unwrap(),
             &user_hash,
-        )
-        .unwrap();
+        );
         crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
             .unwrap();
         crate::db::messages::upsert_message(
@@ -1128,7 +1187,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -1164,7 +1223,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -1202,7 +1261,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("PATCH")
@@ -1240,11 +1299,10 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Seed a message in the cache.
-        let conn = crate::db::pool::open_user_db(
+        let conn = test_open_db(
             data_dir.path().to_str().unwrap(),
             &user_hash,
-        )
-        .unwrap();
+        );
         crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
             .unwrap();
         crate::db::messages::upsert_message(
@@ -1256,7 +1314,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let move_body = format!(r#"{{"from_folder":"{inbox_id}","to_folder":"{archive_id}","uid":42}}"#);
         let mut req = Request::builder()
@@ -1292,11 +1350,10 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Seed a message in the cache.
-        let conn = crate::db::pool::open_user_db(
+        let conn = test_open_db(
             data_dir.path().to_str().unwrap(),
             &user_hash,
-        )
-        .unwrap();
+        );
         crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0)
             .unwrap();
         crate::db::messages::upsert_message(
@@ -1308,7 +1365,7 @@
 
         let mock = MockImapClient::new();
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("DELETE")
@@ -1323,6 +1380,418 @@
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Seeds two messages (uids 1 and 2) in `folder` and returns the app + encrypted folder id.
+    fn setup_bulk_test_messages(
+        data_dir: &TempDir,
+        folder: &str,
+    ) -> (axum::Router, crate::folder_cipher::FolderId, String, String, String, String) {
+        let static_dir = setup_static_dir();
+        let config = test_config_with_imap(
+            static_dir.path().to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+        );
+        let store = test_store();
+        let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
+        let cipher = crate::folder_cipher::FolderCipher::from_session_token(&token);
+        let folder_id = cipher.encrypt(folder);
+
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        crate::db::folders::upsert_folder(&conn, folder, None, None, "", true, 0, 0, 0, 0)
+            .unwrap();
+        crate::db::messages::upsert_message(
+            &conn, folder, 1, None, None, None, "Test 1", "a@b.com", "A", "[]", "[]",
+            "2024-01-01", 0, "", 0, false, "", None,
+        )
+        .unwrap();
+        crate::db::messages::upsert_message(
+            &conn, folder, 2, None, None, None, "Test 2", "a@b.com", "A", "[]", "[]",
+            "2024-01-01", 0, "", 0, false, "", None,
+        )
+        .unwrap();
+        drop(conn);
+
+        let mock = MockImapClient::new();
+        let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
+        let app = create_router(AppServices {
+            config,
+            store,
+            imap_client,
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
+            ..test_services("/tmp")
+        });
+
+        (app, folder_id, browser_id, account_id, token, user_hash)
+    }
+
+    #[tokio::test]
+    async fn bulk_update_flags_marks_all_valid_uids() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/messages/{folder_id}/flags/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"uids":[1,2],"flags":["\\Seen"],"add":true}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let flags1: String = conn
+            .query_row("SELECT flags FROM messages WHERE folder='INBOX' AND uid=1", [], |r| r.get(0))
+            .unwrap();
+        let flags2: String = conn
+            .query_row("SELECT flags FROM messages WHERE folder='INBOX' AND uid=2", [], |r| r.get(0))
+            .unwrap();
+        assert!(flags1.contains("\\Seen"));
+        assert!(flags2.contains("\\Seen"));
+    }
+
+    #[tokio::test]
+    async fn bulk_update_flags_reports_failed_uids_but_still_applies_valid_ones() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        // uid 999 does not exist in this folder.
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/messages/{folder_id}/flags/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"uids":[1,999],"flags":["\\Seen"],"add":true}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([999]));
+
+        // The valid uid was still updated despite the invalid one in the batch.
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let flags1: String = conn
+            .query_row("SELECT flags FROM messages WHERE folder='INBOX' AND uid=1", [], |r| r.get(0))
+            .unwrap();
+        assert!(flags1.contains("\\Seen"));
+    }
+
+    #[tokio::test]
+    async fn bulk_update_flags_all_invalid_uids_is_noop_not_error() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, _user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/messages/{folder_id}/flags/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"uids":[998,999],"flags":["\\Seen"],"add":true}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([998, 999]));
+    }
+
+    #[tokio::test]
+    async fn bulk_update_flags_empty_uids_is_noop() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, _user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/messages/{folder_id}/flags/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"uids":[],"flags":["\\Seen"],"add":true}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn bulk_move_messages_moves_all_valid_uids() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, inbox_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+        let cipher = crate::folder_cipher::FolderCipher::from_session_token(&token);
+        let archive_id = cipher.encrypt("Archive");
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        crate::db::folders::upsert_folder(&conn, "Archive", None, None, "", true, 0, 0, 0, 0)
+            .unwrap();
+        drop(conn);
+
+        let move_body = format!(
+            r#"{{"from_folder":"{inbox_id}","to_folder":"{archive_id}","uids":[1,2]}}"#
+        );
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/messages/move/bulk")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(move_body)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn bulk_move_messages_reports_failed_uids_but_still_moves_valid_ones() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, inbox_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+        let cipher = crate::folder_cipher::FolderCipher::from_session_token(&token);
+        let archive_id = cipher.encrypt("Archive");
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        crate::db::folders::upsert_folder(&conn, "Archive", None, None, "", true, 0, 0, 0, 0)
+            .unwrap();
+        drop(conn);
+
+        let move_body = format!(
+            r#"{{"from_folder":"{inbox_id}","to_folder":"{archive_id}","uids":[1,999]}}"#
+        );
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/messages/move/bulk")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(move_body)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([999]));
+
+        // uid 1 was removed from the source cache; uid 2 (not requested) stayed put.
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX' AND uid=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        let untouched: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX' AND uid=2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(untouched, 1);
+    }
+
+    #[tokio::test]
+    async fn bulk_move_messages_empty_uids_is_noop() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, inbox_id, browser_id, account_id, token, _user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+        let cipher = crate::folder_cipher::FolderCipher::from_session_token(&token);
+        let archive_id = cipher.encrypt("Archive");
+
+        let move_body = format!(
+            r#"{{"from_folder":"{inbox_id}","to_folder":"{archive_id}","uids":[]}}"#
+        );
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/messages/move/bulk")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(move_body)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_messages_deletes_all_valid_uids() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/messages/{folder_id}/delete/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(r#"{"uids":[1,2]}"#)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_messages_reports_failed_uids_but_still_deletes_valid_ones() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/messages/{folder_id}/delete/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(r#"{"uids":[1,999]}"#)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([999]));
+
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let uid1_remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX' AND uid=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uid1_remaining, 0);
+        let uid2_untouched: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX' AND uid=2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uid2_untouched, 1);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_messages_empty_uids_is_noop() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/messages/{folder_id}/delete/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(r#"{"uids":[]}"#)).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["failed_uids"], serde_json::json!([]));
+
+        // Both seeded messages are untouched.
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE folder='INBOX'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 2);
+    }
+
+    #[tokio::test]
+    async fn bulk_update_flags_rejects_invalid_flag_characters() {
+        let data_dir = TempDir::new().unwrap();
+        let (app, folder_id, browser_id, account_id, token, _user_hash) =
+            setup_bulk_test_messages(&data_dir, "INBOX");
+
+        let mut req = Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/messages/{folder_id}/flags/bulk"))
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"uids":[1,2],"flags":["\\Seen \\Flagged"],"add":true}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // -----------------------------------------------------------------------
@@ -1361,7 +1830,7 @@
             pgp_status: None,
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri(format!("/api/messages/{inbox_id}/42/attachments/0"))
@@ -1434,7 +1903,7 @@
             pgp_status: None,
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri(format!("/api/messages/{inbox_id}/1/attachments/0"))
@@ -1491,7 +1960,7 @@
             pgp_status: None,
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri(format!("/api/messages/{inbox_id}/42/attachments/99"))
@@ -1536,7 +2005,7 @@
             pgp_status: None,
         }]);
         let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/messages/INBOX/42/attachments/abc")
@@ -1572,7 +2041,7 @@
 
         let mock_smtp: Arc<dyn SmtpClient> = Arc::new(MockSmtpClient::new());
         let mock_imap: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
-        let app = create_router(AppServices { config, store, imap_client: mock_imap, smtp_client: mock_smtp, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client: mock_imap, smtp_client: mock_smtp, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1611,7 +2080,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1649,7 +2118,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1684,7 +2153,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1726,7 +2195,7 @@
             MockSmtpClient::new()
                 .with_error(SmtpError::SendFailed("relay denied".to_string())),
         );
-        let app = create_router(AppServices { config, store, smtp_client: failing_smtp, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, smtp_client: failing_smtp, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1753,6 +2222,184 @@
             .contains("relay denied"));
     }
 
+    // -----------------------------------------------------------------------
+    // Outbox endpoint tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn outbox_enqueue_returns_id_and_send_after() {
+        let static_dir = setup_static_dir();
+        let data_dir = TempDir::new().unwrap();
+        let config = test_config_with_smtp(
+            static_dir.path().to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+        );
+        let store = test_store();
+        let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
+
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
+
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/outbox")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"to":["bob@example.com"],"subject":"Hello","text_body":"Hi Bob"}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["id"].as_str().is_some());
+        assert!(json["send_after"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn outbox_enqueue_returns_400_without_recipients() {
+        let static_dir = setup_static_dir();
+        let data_dir = TempDir::new().unwrap();
+        let config = test_config_with_smtp(
+            static_dir.path().to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+        );
+        let store = test_store();
+        let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
+
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
+
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/outbox")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(
+                r#"{"to":[],"subject":"Hello","text_body":"Hi"}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn outbox_list_then_cancel_round_trip() {
+        let static_dir = setup_static_dir();
+        let data_dir = TempDir::new().unwrap();
+        let config = test_config_with_smtp(
+            static_dir.path().to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+        );
+        let store = test_store();
+        let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
+
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
+
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+
+        let mut enqueue_req = Request::builder()
+            .method("POST")
+            .uri("/api/outbox")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("content-type", "application/json");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            enqueue_req = enqueue_req.header(name, value);
+        }
+        let enqueue_response = app
+            .clone()
+            .oneshot(enqueue_req.body(Body::from(
+                r#"{"to":["bob@example.com"],"subject":"Hello","text_body":"Hi Bob"}"#,
+            )).unwrap())
+            .await
+            .unwrap();
+        let body = enqueue_response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = json["id"].as_str().unwrap().to_string();
+
+        let mut list_req = Request::builder()
+            .method("GET")
+            .uri("/api/outbox")
+            .header("x-requested-with", "XMLHttpRequest");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            list_req = list_req.header(name, value);
+        }
+        let list_response = app.clone().oneshot(list_req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let body = list_response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(json["entries"][0]["id"], id);
+        assert_eq!(json["entries"][0]["state"], "scheduled");
+
+        let mut delete_req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/outbox/{id}"))
+            .header("x-requested-with", "XMLHttpRequest");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            delete_req = delete_req.header(name, value);
+        }
+        let delete_response = app.clone().oneshot(delete_req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(delete_response.status(), StatusCode::OK);
+
+        let mut list_req2 = Request::builder()
+            .method("GET")
+            .uri("/api/outbox")
+            .header("x-requested-with", "XMLHttpRequest");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            list_req2 = list_req2.header(name, value);
+        }
+        let list_response2 = app.oneshot(list_req2.body(Body::empty()).unwrap()).await.unwrap();
+        let body = list_response2.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["entries"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn outbox_delete_returns_404_for_unknown_id() {
+        let static_dir = setup_static_dir();
+        let data_dir = TempDir::new().unwrap();
+        let config = test_config_with_smtp(
+            static_dir.path().to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+        );
+        let store = test_store();
+        let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
+
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
+
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+
+        let mut req = Request::builder()
+            .method("DELETE")
+            .uri("/api/outbox/does-not-exist")
+            .header("x-requested-with", "XMLHttpRequest");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     #[tokio::test]
     async fn export_contact_strips_control_chars_from_filename() {
         // A contact name containing control characters must have them stripped
@@ -1770,10 +2417,10 @@
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Insert a contact whose name contains a newline.
-        let conn = crate::db::pool::open_user_db(
+        let conn = test_open_db(
             data_dir.path().to_str().unwrap(),
             &user_hash,
-        ).unwrap();
+        );
         let contact = crate::db::contacts::Contact {
             id: "c1".to_string(),
             email: "bob@example.com".to_string(),
@@ -1791,7 +2438,7 @@
         drop(conn);
 
         let imap_client: Arc<dyn ImapClient> = Arc::new(MockImapClient::new());
-        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, imap_client, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/contacts/c1/export")
@@ -1834,7 +2481,7 @@
         let inbox_id = cipher.encrypt("INBOX");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1865,7 +2512,7 @@
         let junk_id = cipher.encrypt("Junk");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("POST")
@@ -1898,7 +2545,7 @@
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/settings/vacation")
@@ -1928,7 +2575,7 @@
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("PUT")
@@ -1968,7 +2615,7 @@
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .uri("/api/filters")
@@ -1996,7 +2643,7 @@
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         // POST - create
         let create_body = r#"{
@@ -2049,7 +2696,7 @@
         let (browser_id, account_id, token) = setup_test_account(&store, "alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &crate::auth::user_data::hash_email("alice@example.com"));
 
-        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
+        let app = create_router(AppServices { config, store, search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()), ..test_services("/tmp") });
 
         let mut req = Request::builder()
             .method("DELETE")
@@ -2084,7 +2731,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2158,7 +2805,7 @@
 
         let app = create_router(AppServices {
             config,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2196,7 +2843,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2232,7 +2879,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2270,7 +2917,7 @@
         let app = create_router(AppServices {
             config,
             passkey_service,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2306,7 +2953,7 @@
         let app = create_router(AppServices {
             config,
             passkey_service,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2352,7 +2999,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let conn = crate::db::pool::open_user_db(data_dir.path().to_str().unwrap(), &user_hash).unwrap();
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
         crate::db::mfa::insert_passkey(
             &conn, "cred-solo", r#"{"test":true}"#, &[0u8; 32],
             &[0u8; 16], &[0u8; 12], "Solo Key",
@@ -2364,7 +3011,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2400,7 +3047,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let conn = crate::db::pool::open_user_db(data_dir.path().to_str().unwrap(), &user_hash).unwrap();
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
 
         // Store a dummy encrypted TOTP secret so the route doesn't short-circuit with 400.
         let secret = crate::mfa::totp::generate_secret().unwrap();
@@ -2418,7 +3065,7 @@
             config,
             store,
             mfa_crypto: mfa_crypto.clone(),
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2460,7 +3107,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2509,7 +3156,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2553,7 +3200,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2586,7 +3233,7 @@
             let app = create_router(AppServices {
                 config,
                 store: store.clone(),
-                search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+                search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
                 ..test_services("/tmp")
             });
             let mut req = Request::builder()
@@ -2625,7 +3272,7 @@
         let user_hash = crate::auth::user_data::hash_email("alice@example.com");
         provision_user_db(data_dir.path().to_str().unwrap(), &user_hash);
 
-        let conn = crate::db::pool::open_user_db(data_dir.path().to_str().unwrap(), &user_hash).unwrap();
+        let conn = test_open_db(data_dir.path().to_str().unwrap(), &user_hash);
         crate::db::folders::upsert_folder(&conn, "INBOX", None, None, "", true, 0, 0, 0, 0).unwrap();
         crate::db::messages::upsert_message(
             &conn, "INBOX", 1, None, None, None, "Budget Report", "finance@example.com", "Finance",
@@ -2637,7 +3284,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 
@@ -2691,7 +3338,7 @@
         let app = create_router(AppServices {
             config,
             store,
-            search_engine: test_search_engine(data_dir.path().to_str().unwrap()),
+            search_engine: test_search_engine(data_dir.path().to_str().unwrap()), db_pool_manager: test_db_pool_manager(data_dir.path().to_str().unwrap()),
             ..test_services("/tmp")
         });
 

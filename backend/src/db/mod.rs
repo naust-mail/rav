@@ -11,6 +11,7 @@ pub mod folders;
 pub mod identities;
 pub mod messages;
 pub mod notification_preferences;
+pub mod outbox;
 pub mod pgp;
 pub mod pool;
 pub mod tags;

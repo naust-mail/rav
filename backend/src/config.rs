@@ -125,6 +125,20 @@ pub struct AppConfig {
     /// ManageSieve server port.
     #[serde(default = "default_sieve_port")]
     pub sieve_port: u16,
+
+    /// Max concurrent SQLite connections held per user in the connection pool.
+    #[serde(default = "default_db_pool_max_connections_per_user")]
+    pub db_pool_max_connections_per_user: u32,
+
+    /// Seconds a user's connection pool may sit unused before the eviction
+    /// sweep drops it. Freed on next access by opening a new pool.
+    #[serde(default = "default_db_pool_idle_timeout_secs")]
+    pub db_pool_idle_timeout_secs: u64,
+
+    /// Max number of per-user connection pools held in memory at once.
+    /// When exceeded, the least-recently-used pool is evicted to make room.
+    #[serde(default = "default_db_pool_max_users")]
+    pub db_pool_max_users: usize,
 }
 
 fn default_pgp_enabled() -> bool {
@@ -175,6 +189,18 @@ fn default_environment() -> String {
     "development".to_string()
 }
 
+fn default_db_pool_max_connections_per_user() -> u32 {
+    4
+}
+
+fn default_db_pool_idle_timeout_secs() -> u64 {
+    600
+}
+
+fn default_db_pool_max_users() -> usize {
+    500
+}
+
 impl AppConfig {
     /// Load configuration by layering serde defaults with environment variables.
     ///
@@ -210,6 +236,9 @@ mod tests {
         assert_eq!(config.static_dir, "./static");
         assert_eq!(config.environment, "development");
         assert!(config.allow_custom_mail_servers);
+        assert_eq!(config.db_pool_max_connections_per_user, 4);
+        assert_eq!(config.db_pool_idle_timeout_secs, 600);
+        assert_eq!(config.db_pool_max_users, 500);
     }
 
     #[test]
@@ -229,6 +258,9 @@ mod tests {
             .merge(("static_dir", "/srv/static"))
             .merge(("environment", "production"))
             .merge(("allow_custom_mail_servers", false))
+            .merge(("db_pool_max_connections_per_user", 8u32))
+            .merge(("db_pool_idle_timeout_secs", 120u64))
+            .merge(("db_pool_max_users", 50usize))
             .extract()
             .expect("overrides should load");
 
@@ -244,6 +276,9 @@ mod tests {
         assert_eq!(config.static_dir, "/srv/static");
         assert_eq!(config.environment, "production");
         assert!(!config.allow_custom_mail_servers);
+        assert_eq!(config.db_pool_max_connections_per_user, 8);
+        assert_eq!(config.db_pool_idle_timeout_secs, 120);
+        assert_eq!(config.db_pool_max_users, 50);
     }
 
     #[test]

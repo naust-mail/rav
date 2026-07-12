@@ -3,7 +3,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PgpSendRequest } from "@/types/pgp";
 import type { FolderId } from "@/types/folder";
+import type { SendRequest } from "@/types/generated/SendRequest";
+import type { SendResponse } from "@/types/generated/SendResponse";
+import type { EnqueueResponse } from "@/types/generated/EnqueueResponse";
+import type { ListResponse } from "@/types/generated/ListResponse";
+import type { StatusResponse } from "@/types/generated/StatusResponse";
 import { apiPost, apiGet, apiPostFormData, apiDelete } from "@/lib/api";
+
+export type { OutboxEntry } from "@/types/generated/OutboxEntry";
 
 type SendParams = {
   to: string;
@@ -20,10 +27,21 @@ type SendParams = {
   pgp?: PgpSendRequest | null;
 };
 
-type SendResponse = {
-  status: string;
-  message_id: string;
-};
+function toSendRequest(params: SendParams): SendRequest {
+  return {
+    to: parseRecipients(params.to),
+    cc: parseRecipients(params.cc),
+    bcc: parseRecipients(params.bcc),
+    subject: params.subject,
+    text_body: params.body,
+    html_body: params.htmlBody,
+    in_reply_to: params.inReplyTo,
+    references: params.references,
+    draft_id: params.draftId,
+    from_identity_id: params.fromIdentityId,
+    pgp: params.pgp ?? null,
+  };
+}
 
 type UploadResponse = {
   attachments: {
@@ -76,26 +94,56 @@ function parseRecipients(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+/** Immediate send, bypassing the outbox/undo-delay queue. Not used by the
+ * compose flow (which goes through `useEnqueueOutbox` instead so sends are
+ * undoable and retryable) - kept for callers that want a direct send. */
 export function useSendMessage() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (params: SendParams) =>
-      apiPost<SendResponse>("/messages/send", {
-        to: parseRecipients(params.to),
-        cc: parseRecipients(params.cc),
-        bcc: parseRecipients(params.bcc),
-        subject: params.subject,
-        text_body: params.body,
-        html_body: params.htmlBody,
-        in_reply_to: params.inReplyTo,
-        references: params.references,
-        draft_id: params.draftId,
-        from_identity_id: params.fromIdentityId,
-        ...(params.pgp ? { pgp: params.pgp } : {}),
-      }),
+      apiPost<SendResponse>("/messages/send", toSendRequest(params)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["messages"] });
       queryClient.invalidateQueries({ queryKey: ["folders"] });
+    },
+  });
+}
+
+/** Queue a message for sending after the user's undo-send delay. Returns
+ * immediately with the outbox entry id, used to undo via `useCancelOutbox`. */
+export function useEnqueueOutbox() {
+  return useMutation({
+    mutationFn: (params: SendParams) =>
+      apiPost<EnqueueResponse>("/outbox", toSendRequest(params)),
+  });
+}
+
+/** List entries still scheduled or permanently failed. */
+export function useOutboxList() {
+  return useQuery({
+    queryKey: ["outbox"],
+    queryFn: () => apiGet<ListResponse>("/outbox"),
+  });
+}
+
+/** Undo (while scheduled) or discard (while failed) a queued send. */
+export function useCancelOutbox() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiDelete<StatusResponse>(`/outbox/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["outbox"] });
+    },
+  });
+}
+
+/** Requeue a permanently failed entry for an immediate retry. */
+export function useRetryOutbox() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiPost<StatusResponse>(`/outbox/${id}/retry`, {}),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["outbox"] });
     },
   });
 }

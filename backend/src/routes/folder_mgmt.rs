@@ -101,6 +101,7 @@ pub async fn create_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(body): Json<CreateFolderRequest>,
 ) -> Result<Response, AppError> {
     validate_folder_name(&body.name)?;
@@ -114,11 +115,11 @@ pub async fn create_folder(
         .map_err(|e| AppError::InternalError(format!("IMAP create_folder failed: {e}")))?;
 
     // Cache the new folder locally.
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    db::folders::insert_folder_if_new(&conn, &body.name, None, "")
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::folders::insert_folder_if_new(conn, &body.name, None, "")
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(MessageResponse { status: "created" }).into_response())
 }
@@ -128,6 +129,7 @@ pub async fn rename_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(folder_id): Path<FolderId>,
     Json(body): Json<RenameFolderRequest>,
 ) -> Result<Response, AppError> {
@@ -149,11 +151,11 @@ pub async fn rename_folder(
         .map_err(|e| AppError::InternalError(format!("IMAP rename_folder failed: {e}")))?;
 
     // Update the local cache.
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    db::folders::rename_folder_in_cache(&conn, &name, &body.new_name)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::folders::rename_folder_in_cache(conn, &name, &body.new_name)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(MessageResponse { status: "renamed" }).into_response())
 }
@@ -163,6 +165,7 @@ pub async fn delete_folder(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Path(folder_id): Path<FolderId>,
 ) -> Result<Response, AppError> {
     let name = crate::folder_cipher::FolderCipher::new(&session.folder_key).decrypt(&folder_id)?;
@@ -181,11 +184,11 @@ pub async fn delete_folder(
         .map_err(|e| AppError::InternalError(format!("IMAP delete_folder failed: {e}")))?;
 
     // Remove from local cache.
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
-
-    db::folders::delete_folder_and_messages(&conn, &name)
-        .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
+    db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::folders::delete_folder_and_messages(conn, &name)
+    })
+    .await
+    .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
 
     Ok(Json(MessageResponse { status: "deleted" }).into_response())
 }

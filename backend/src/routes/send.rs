@@ -10,10 +10,207 @@ use crate::config::AppConfig;
 use crate::db;
 use crate::error::AppError;
 use crate::imap::client::{ImapClient, ImapCredentials};
+use crate::mail_transport::MailTransport;
 use crate::smtp::client::{AttachmentData, SendableMessage, SmtpClient, SmtpCredentials};
 use crate::smtp::types::{PgpMode, PgpSendParams};
 
+/// IMAP/SMTP credentials for a single send, resolved once at enqueue time
+/// (from the live session) and passed down to `perform_send`. The outbox
+/// worker builds this same shape from the credentials it holds in memory
+/// for the user's worker task.
+pub(crate) struct SendCredentials {
+    pub user_hash: String,
+    pub email: String,
+    pub password: String,
+}
+
+/// Fully-resolved send job, shared by the immediate-send handler and the
+/// outbox worker's deferred send.
+pub(crate) struct SendJob {
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub subject: String,
+    pub text_body: String,
+    pub html_body: Option<String>,
+    pub in_reply_to: Option<String>,
+    pub references: Option<String>,
+    pub draft_id: Option<String>,
+    pub from_identity_id: Option<i64>,
+    pub pgp: Option<PgpSendParams>,
+}
+
+/// Convert a client-supplied `PgpSendRequest` into the internal `PgpSendParams`,
+/// validating the micalg against the allow-list. Shared by the immediate-send
+/// handler and the outbox enqueue route, both of which take this shape from
+/// the client and need the same validation before it's trusted.
+pub(crate) fn resolve_pgp_params(pgp_req: &PgpSendRequest) -> Result<PgpSendParams, AppError> {
+    let mode = match pgp_req.mode.as_str() {
+        "sign" => PgpMode::Sign,
+        "encrypt" => PgpMode::Encrypt,
+        other => return Err(AppError::BadRequest(format!("Unknown PGP mode: {other}"))),
+    };
+    const ALLOWED_MICALG: &[&str] = &[
+        "pgp-sha256", "pgp-sha384", "pgp-sha512", "pgp-sha224",
+        "pgp-sha1", "pgp-ripemd160",
+    ];
+    let micalg = pgp_req.micalg.clone().unwrap_or_else(|| "pgp-sha256".to_string());
+    if !ALLOWED_MICALG.contains(&micalg.as_str()) {
+        return Err(AppError::BadRequest(format!("Invalid micalg: {micalg}")));
+    }
+    Ok(PgpSendParams {
+        mode,
+        signature: pgp_req.signature.clone(),
+        ciphertext: pgp_req.ciphertext.clone(),
+        micalg,
+    })
+}
+
+/// Build the message, send it over SMTP, best-effort append a copy to the
+/// Sent folder, and (if the job came from a draft) clean up the draft's
+/// IMAP copy, staging row, and attachment files. Used both by the
+/// immediate-send handler and the outbox worker's deferred send — the two
+/// only differ in where the credentials and job data come from.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn perform_send(
+    config: &AppConfig,
+    transport: &MailTransport,
+    smtp_client: &Arc<dyn SmtpClient>,
+    imap_client: &Arc<dyn ImapClient>,
+    db_pool_manager: &db::pool::DbPoolManager,
+    creds: &SendCredentials,
+    job: SendJob,
+) -> Result<String, AppError> {
+    let smtp_host = config
+        .smtp_host
+        .as_deref()
+        .ok_or_else(|| AppError::ServiceUnavailable("SMTP server not configured".to_string()))?;
+
+    let smtp_creds = SmtpCredentials {
+        host: smtp_host.to_string(),
+        connect_host: transport.smtp_connect_host.clone(),
+        port: config.smtp_port,
+        tls: config.tls_enabled,
+        email: creds.email.clone(),
+        password: creds.password.clone(),
+        tls_params: transport.smtp_tls_params.clone(),
+    };
+
+    // Resolve the From address: use identity if specified, else session email.
+    let from_address = if let Some(identity_id) = job.from_identity_id {
+        let identity = db::pool::with_user_db(db_pool_manager, &creds.user_hash, move |conn| {
+            db::identities::get_identity(conn, identity_id)
+        })
+        .await
+        .map_err(AppError::InternalError)?
+        .ok_or_else(|| AppError::NotFound("Identity not found".to_string()))?;
+        if identity.display_name.is_empty() {
+            identity.email
+        } else {
+            format!("\"{}\" <{}>", identity.display_name, identity.email)
+        }
+    } else {
+        creds.email.clone()
+    };
+
+    // Load attachments from draft if draft_id is provided.
+    let attachments = if let Some(ref draft_id) = job.draft_id {
+        load_draft_attachments(db_pool_manager, &creds.user_hash, draft_id).await?
+    } else {
+        vec![]
+    };
+
+    let message = SendableMessage {
+        from: from_address,
+        to: job.to,
+        cc: job.cc,
+        bcc: job.bcc,
+        subject: job.subject,
+        text_body: job.text_body,
+        html_body: job.html_body,
+        in_reply_to: job.in_reply_to,
+        references: job.references,
+        attachments,
+        auto_submitted: false,
+        pgp: job.pgp,
+    };
+
+    // Send via SMTP.
+    let message_id = smtp_client
+        .send_message(&smtp_creds, &message)
+        .await
+        .map_err(|e| AppError::ServiceUnavailable(format!("Failed to send email: {e}")))?;
+
+    // Best-effort: append a copy to the Sent folder via IMAP.
+    // Don't fail the send if this fails.
+    if let Some(imap_host) = config.imap_host.as_deref() {
+        let imap_creds = ImapCredentials {
+            host: imap_host.to_string(),
+            port: config.imap_port,
+            tls: config.tls_enabled,
+            email: creds.email.clone(),
+            password: creds.password.clone(),
+        };
+
+        match build_rfc822_bytes(&message, &message_id) {
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to build RFC822 bytes for Sent copy");
+            }
+            Ok(rfc822_bytes) => {
+                // Look up the actual Sent folder name from the cached folder list.
+                // Hardcoding "Sent" fails when the server uses a different name.
+                let sent_folder = db::pool::with_user_db(db_pool_manager, &creds.user_hash, |conn| {
+                    Ok(db::folders::find_folder_by_attribute(conn, "\\Sent").ok().flatten())
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "Sent".to_string());
+
+                match imap_client
+                    .append_message(&imap_creds, &sent_folder, &rfc822_bytes, &["\\Seen"], None)
+                    .await
+                {
+                    Err(e) => {
+                        tracing::warn!(error = %e, folder = %sent_folder, "Failed to append sent message to IMAP Sent folder");
+                    }
+                    Ok(_) => {
+                        // Invalidate the Sent folder cache so the next list_messages
+                        // is forced to re-check IMAP rather than returning stale 0.
+                        let _ = db::pool::with_user_db(db_pool_manager, &creds.user_hash, {
+                            let sent_folder = sent_folder.clone();
+                            move |conn| db::folders::invalidate_folder_freshness(conn, &sent_folder)
+                        })
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+
+    // Clean up draft and attachment files after successful send.
+    if let Some(ref draft_id) = job.draft_id {
+        cleanup_draft(config, db_pool_manager, &creds.user_hash, &creds.email, &creds.password, draft_id, imap_client).await;
+    }
+
+    Ok(message_id)
+}
+
+/// Whether a failed `perform_send` is worth retrying. Setup-time failures
+/// (bad config, missing identity, unreadable attachment) won't fix
+/// themselves on a blind retry; SMTP auth failures mean the stored
+/// password is wrong and retrying just repeats the same rejection.
+/// Connection/transient send failures are the only ones worth another attempt.
+pub(crate) fn is_retryable(err: &AppError) -> bool {
+    match err {
+        AppError::ServiceUnavailable(msg) => !msg.contains("Authentication failed"),
+        AppError::InternalError(_) | AppError::NotFound(_) | AppError::BadRequest(_) | AppError::Unauthorized(_) => false,
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct PgpSendRequest {
     pub mode: String,
     pub signature: Option<String>,
@@ -21,7 +218,11 @@ pub struct PgpSendRequest {
     pub micalg: Option<String>,
 }
 
+/// Shared request body for both `POST /api/messages/send` (immediate) and
+/// `POST /api/outbox` (queued). Both send flows take the exact same shape.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct SendRequest {
     pub to: Vec<String>,
     #[serde(default)]
@@ -45,6 +246,8 @@ pub struct SendRequest {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", ts(export))]
 pub struct SendResponse {
     pub status: String,
     pub message_id: String,
@@ -52,24 +255,59 @@ pub struct SendResponse {
 
 /// Handler for `POST /api/messages/send`.
 ///
-/// Validates the request, sends the message via SMTP, and appends a copy
-/// to the IMAP "Sent" folder (best-effort).
+/// Sends immediately, bypassing the outbox/undo-delay queue. Kept as a
+/// direct API primitive; the webmail frontend itself goes through
+/// `POST /api/outbox` so sends are undoable and retryable.
 pub async fn send_message_handler(
     Extension(session): Extension<SessionState>,
     Extension(config): Extension<Arc<AppConfig>>,
-    Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
+    Extension(transport): Extension<Arc<MailTransport>>,
     Extension(smtp_client): Extension<Arc<dyn SmtpClient>>,
     Extension(imap_client): Extension<Arc<dyn ImapClient>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(req): Json<SendRequest>,
 ) -> Result<Response, AppError> {
-    // Validate: at least one recipient.
+    validate_send_request(&req)?;
+
+    let pgp = req.pgp.as_ref().map(resolve_pgp_params).transpose()?;
+
+    let creds = SendCredentials {
+        user_hash: session.user_hash.clone(),
+        email: session.email.clone(),
+        password: session.password.clone(),
+    };
+    let job = SendJob {
+        to: req.to,
+        cc: req.cc,
+        bcc: req.bcc,
+        subject: req.subject,
+        text_body: req.text_body.unwrap_or_default(),
+        html_body: req.html_body,
+        in_reply_to: req.in_reply_to,
+        references: req.references,
+        draft_id: req.draft_id,
+        from_identity_id: req.from_identity_id,
+        pgp,
+    };
+
+    let message_id = perform_send(&config, &transport, &smtp_client, &imap_client, &db_pool_manager, &creds, job).await?;
+
+    Ok(Json(SendResponse {
+        status: "sent".to_string(),
+        message_id,
+    })
+    .into_response())
+}
+
+/// Validate recipients and subject/body presence. Shared by the immediate-send
+/// handler and the outbox enqueue route, since both take the same request shape.
+pub(crate) fn validate_send_request(req: &SendRequest) -> Result<(), AppError> {
     if req.to.is_empty() && req.cc.is_empty() && req.bcc.is_empty() {
         return Err(AppError::BadRequest(
             "At least one recipient is required".to_string(),
         ));
     }
 
-    // Validate: subject or body must be non-empty.
     let has_subject = !req.subject.trim().is_empty();
     let has_text = req.text_body.as_deref().is_some_and(|t| !t.trim().is_empty());
     let has_html = req.html_body.as_deref().is_some_and(|h| !h.trim().is_empty());
@@ -79,164 +317,21 @@ pub async fn send_message_handler(
         ));
     }
 
-    // Check that SMTP is configured.
-    let smtp_host = config
-        .smtp_host
-        .as_deref()
-        .ok_or_else(|| AppError::ServiceUnavailable("SMTP server not configured".to_string()))?;
-
-    // Build SMTP credentials from config + session + transport.
-    let smtp_creds = SmtpCredentials {
-        host: smtp_host.to_string(),
-        connect_host: transport.smtp_connect_host.clone(),
-        port: config.smtp_port,
-        tls: config.tls_enabled,
-        email: session.email.clone(),
-        password: session.password.clone(),
-        tls_params: transport.smtp_tls_params.clone(),
-    };
-
-    // Resolve the From address: use identity if specified, else session email.
-    let from_address = if let Some(identity_id) = req.from_identity_id {
-        let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-            .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-        let identity = db::identities::get_identity(&conn, identity_id)
-            .map_err(AppError::InternalError)?
-            .ok_or_else(|| AppError::NotFound("Identity not found".to_string()))?;
-        if identity.display_name.is_empty() {
-            identity.email
-        } else {
-            format!("\"{}\" <{}>", identity.display_name, identity.email)
-        }
-    } else {
-        session.email.clone()
-    };
-
-    // Load attachments from draft if draft_id is provided.
-    let attachments = if let Some(ref draft_id) = req.draft_id {
-        load_draft_attachments(&config.data_dir, &session.user_hash, draft_id)?
-    } else {
-        vec![]
-    };
-
-    // Convert PGP request params to internal type.
-    let pgp_params: Option<PgpSendParams> = if let Some(ref pgp_req) = req.pgp {
-        let mode = match pgp_req.mode.as_str() {
-            "sign" => PgpMode::Sign,
-            "encrypt" => PgpMode::Encrypt,
-            other => {
-                return Err(AppError::BadRequest(format!(
-                    "Unknown PGP mode: {other}"
-                )))
-            }
-        };
-        const ALLOWED_MICALG: &[&str] = &[
-            "pgp-sha256", "pgp-sha384", "pgp-sha512", "pgp-sha224",
-            "pgp-sha1", "pgp-ripemd160",
-        ];
-        let micalg = pgp_req.micalg.clone().unwrap_or_else(|| "pgp-sha256".to_string());
-        if !ALLOWED_MICALG.contains(&micalg.as_str()) {
-            return Err(AppError::BadRequest(format!("Invalid micalg: {micalg}")));
-        }
-        Some(PgpSendParams {
-            mode,
-            signature: pgp_req.signature.clone(),
-            ciphertext: pgp_req.ciphertext.clone(),
-            micalg,
-        })
-    } else {
-        None
-    };
-
-    // Build the sendable message.
-    let message = SendableMessage {
-        from: from_address,
-        to: req.to,
-        cc: req.cc,
-        bcc: req.bcc,
-        subject: req.subject,
-        text_body: req.text_body.unwrap_or_default(),
-        html_body: req.html_body,
-        in_reply_to: req.in_reply_to,
-        references: req.references,
-        attachments,
-        auto_submitted: false,
-        pgp: pgp_params,
-    };
-
-    // Send via SMTP.
-    let message_id = smtp_client
-        .send_message(&smtp_creds, &message)
-        .await
-        .map_err(|e| AppError::ServiceUnavailable(format!("Failed to send email: {e}")))?;
-
-    // Best-effort: append a copy to the Sent folder via IMAP.
-    // Don't fail the send if this fails.
-    if let Some(imap_host) = config.imap_host.as_deref() {
-        let imap_creds = ImapCredentials {
-            host: imap_host.to_string(),
-            port: config.imap_port,
-            tls: config.tls_enabled,
-            email: session.email.clone(),
-            password: session.password.clone(),
-        };
-
-        match build_rfc822_bytes(&message, &message_id) {
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to build RFC822 bytes for Sent copy");
-            }
-            Ok(rfc822_bytes) => {
-                // Look up the actual Sent folder name from the cached folder list.
-                // Hardcoding "Sent" fails when the server uses a different name.
-                let sent_folder = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-                    .ok()
-                    .and_then(|conn| {
-                        db::folders::find_folder_by_attribute(&conn, "\\Sent").ok().flatten()
-                    })
-                    .unwrap_or_else(|| "Sent".to_string());
-
-                match imap_client
-                    .append_message(&imap_creds, &sent_folder, &rfc822_bytes, &["\\Seen"], None)
-                    .await
-                {
-                    Err(e) => {
-                        tracing::warn!(error = %e, folder = %sent_folder, "Failed to append sent message to IMAP Sent folder");
-                    }
-                    Ok(_) => {
-                        // Invalidate the Sent folder cache so the next list_messages
-                        // is forced to re-check IMAP rather than returning stale 0.
-                        if let Ok(conn) = db::pool::open_user_db(&config.data_dir, &session.user_hash) {
-                            let _ = db::folders::invalidate_folder_freshness(&conn, &sent_folder);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Clean up draft and attachment files after successful send.
-    if let Some(ref draft_id) = req.draft_id {
-        cleanup_draft(&config, &session, draft_id, &imap_client).await;
-    }
-
-    Ok(Json(SendResponse {
-        status: "sent".to_string(),
-        message_id,
-    })
-    .into_response())
+    Ok(())
 }
 
 /// Load attachment data from disk for a given draft.
-fn load_draft_attachments(
-    data_dir: &str,
+async fn load_draft_attachments(
+    db_pool_manager: &db::pool::DbPoolManager,
     user_hash: &str,
     draft_id: &str,
 ) -> Result<Vec<AttachmentData>, AppError> {
-    let conn = db::pool::open_user_db(data_dir, user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let db_attachments = db::drafts::get_draft_attachments(&conn, draft_id)
-        .map_err(AppError::InternalError)?;
+    let db_attachments = db::pool::with_user_db(db_pool_manager, user_hash, {
+        let draft_id = draft_id.to_string();
+        move |conn| db::drafts::get_draft_attachments(conn, &draft_id)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     let mut attachments = Vec::new();
     for att in db_attachments {
@@ -256,50 +351,70 @@ fn load_draft_attachments(
     Ok(attachments)
 }
 
+struct DraftCleanupPreState {
+    imap_uid: Option<u32>,
+    drafts_folder: String,
+}
+
 /// Clean up draft record and attachment files from disk after successful send.
+#[allow(clippy::too_many_arguments)]
 async fn cleanup_draft(
     config: &AppConfig,
-    session: &SessionState,
+    db_pool_manager: &db::pool::DbPoolManager,
+    user_hash: &str,
+    email: &str,
+    password: &str,
     draft_id: &str,
     imap_client: &Arc<dyn ImapClient>,
 ) {
-    let conn = match db::pool::open_user_db(&config.data_dir, &session.user_hash) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to open DB during draft cleanup");
-            return;
+    let pre = db::pool::with_user_db(db_pool_manager, user_hash, {
+        let draft_id = draft_id.to_string();
+        move |conn| {
+            let imap_uid = db::drafts::get_staging(conn, &draft_id)
+                .ok()
+                .flatten()
+                .and_then(|s| s.imap_uid);
+            let drafts_folder = db::folders::find_folder_by_attribute(conn, "\\Drafts")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "Drafts".to_string());
+            Ok(DraftCleanupPreState { imap_uid, drafts_folder })
         }
+    })
+    .await;
+
+    let Ok(DraftCleanupPreState { imap_uid, drafts_folder }) = pre else {
+        tracing::warn!("Failed to open DB during draft cleanup");
+        return;
     };
 
     // Expunge the IMAP Drafts copy before deleting the staging record.
     if let Some(imap_host) = config.imap_host.as_deref()
-        && let Some(uid) = db::drafts::get_staging(&conn, draft_id)
-            .ok()
-            .flatten()
-            .and_then(|s| s.imap_uid)
+        && let Some(uid) = imap_uid
         {
             let imap_creds = ImapCredentials {
                 host: imap_host.to_string(),
                 port: config.imap_port,
                 tls: config.tls_enabled,
-                email: session.email.clone(),
-                password: session.password.clone(),
+                email: email.to_string(),
+                password: password.to_string(),
             };
-            let drafts_folder = db::folders::find_folder_by_attribute(&conn, "\\Drafts")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| "Drafts".to_string());
             if let Err(e) = imap_client.expunge_message(&imap_creds, &drafts_folder, uid).await {
                 tracing::warn!(error = %e, uid = uid, "Failed to expunge draft from IMAP after send");
             }
         }
 
-    if let Err(e) = db::drafts::delete_staging(&conn, draft_id) {
+    let staging_result = db::pool::with_user_db(db_pool_manager, user_hash, {
+        let draft_id = draft_id.to_string();
+        move |conn| db::drafts::delete_staging(conn, &draft_id)
+    })
+    .await;
+    if let Err(e) = staging_result {
         tracing::warn!(error = %e, "Failed to delete draft staging after send");
     }
 
     let att_dir = Path::new(&config.data_dir)
-        .join(&session.user_hash)
+        .join(user_hash)
         .join("attachments")
         .join(draft_id);
     if att_dir.exists()

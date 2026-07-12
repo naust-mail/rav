@@ -48,7 +48,7 @@ export function useNotifications() {
 
   const handleEvent = useCallback(
     (event: MailEvent) => {
-      if (event.type !== "NewMessages") return;
+      if (event.type !== "NewMail") return;
       if (!prefs?.enabled) return;
 
       const folder = event.data?.folder;

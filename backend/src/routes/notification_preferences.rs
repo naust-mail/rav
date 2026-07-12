@@ -4,7 +4,6 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 
 use crate::auth::session::SessionState;
-use crate::config::AppConfig;
 use crate::db;
 use crate::db::notification_preferences::UpdateNotificationPreferences;
 use crate::error::AppError;
@@ -12,13 +11,13 @@ use crate::error::AppError;
 /// `GET /api/settings/notifications`
 pub async fn get_notification_preferences(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let prefs = db::notification_preferences::get_preferences(&conn)
-        .map_err(AppError::InternalError)?;
+    let prefs = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::notification_preferences::get_preferences(conn)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     Ok(Json(prefs).into_response())
 }
@@ -26,14 +25,14 @@ pub async fn get_notification_preferences(
 /// `PUT /api/settings/notifications`
 pub async fn update_notification_preferences(
     Extension(session): Extension<SessionState>,
-    Extension(config): Extension<Arc<AppConfig>>,
+    Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
     Json(data): Json<UpdateNotificationPreferences>,
 ) -> Result<Response, AppError> {
-    let conn = db::pool::open_user_db(&config.data_dir, &session.user_hash)
-        .map_err(|e| AppError::InternalError(format!("Failed to open database: {e}")))?;
-
-    let prefs = db::notification_preferences::update_preferences(&conn, &data)
-        .map_err(AppError::InternalError)?;
+    let prefs = db::pool::with_user_db(&db_pool_manager, &session.user_hash, move |conn| {
+        db::notification_preferences::update_preferences(conn, &data)
+    })
+    .await
+    .map_err(AppError::InternalError)?;
 
     Ok(Json(prefs).into_response())
 }

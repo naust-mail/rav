@@ -495,6 +495,41 @@ pub fn find_by_message_id(conn: &Connection, message_id: &str) -> Result<Option<
     }
 }
 
+/// Return the subset of `uids` that have a cached row in `folder`.
+///
+/// Used by bulk message operations to tell the caller which requested UIDs
+/// didn't correspond to an actual message (already deleted elsewhere, stale
+/// client state, a bad ID), instead of silently doing nothing for them.
+pub fn filter_existing_uids(
+    conn: &Connection,
+    folder: &str,
+    uids: &[u32],
+) -> Result<std::collections::HashSet<u32>, String> {
+    if uids.is_empty() {
+        return Ok(std::collections::HashSet::new());
+    }
+
+    let placeholders: Vec<String> = (2..=uids.len() + 1).map(|i| format!("?{i}")).collect();
+    let sql = format!(
+        "SELECT uid FROM messages WHERE folder = ?1 AND uid IN ({})",
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare error: {e}"))?;
+    let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&folder];
+    params.extend(uids.iter().map(|u| u as &dyn rusqlite::types::ToSql));
+
+    let rows = stmt
+        .query_map(params.as_slice(), |row| row.get::<_, u32>(0))
+        .map_err(|e| format!("Failed to query existing uids: {e}"))?;
+
+    let mut found = std::collections::HashSet::with_capacity(uids.len());
+    for row in rows {
+        found.insert(row.map_err(|e| format!("Failed to read uid row: {e}"))?);
+    }
+    Ok(found)
+}
+
 /// Delete a single message by folder and UID.
 pub fn delete_message(conn: &Connection, folder: &str, uid: u32) -> Result<(), String> {
     conn.execute(
