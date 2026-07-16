@@ -16,7 +16,7 @@
     "@tanstack/react-virtual": "^3.14.5",
     "@tiptap/extension-image": "^3.27.3",
     "@tiptap/extension-link": "^3.27.3",
-    "@tiptap/extension-placeholder": "^3.27.3",
+    "@tiptap/extension-placeholder": "^3.28.0",
     "@tiptap/extension-underline": "^3.27.3",
     "@tiptap/react": "^3.27.3",
     "@tiptap/starter-kit": "^3.27.3",
