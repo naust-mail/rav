@@ -547,7 +547,7 @@ impl ImapClient for RealImapClient {
         let uid_str = uid.to_string();
         let body = {
             let mut fetch_stream = session
-                .uid_fetch(&uid_str, "(UID BODY[])")
+                .uid_fetch(&uid_str, "(UID BODY.PEEK[])")
                 .await
                 .map_err(map_imap_error)?;
 
