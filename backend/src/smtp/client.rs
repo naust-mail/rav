@@ -45,7 +45,7 @@ fn filter_envelope_headers(raw: &str) -> String {
     let (headers_str, _) = raw
         .split_once("\r\n\r\n")
         .or_else(|| raw.split_once("\n\n"))
-        .map_or((raw, ""), |p| p);
+        .unwrap_or((raw, ""));
 
     let mut result: Vec<&str> = Vec::new();
     let mut skip_continuation = false;
