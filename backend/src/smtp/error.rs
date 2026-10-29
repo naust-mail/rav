@@ -14,6 +14,8 @@ pub enum SmtpError {
     AuthenticationFailed,
     /// The message could not be sent.
     SendFailed(String),
+    /// The server permanently rejected the message (5xx reply).
+    Rejected(String),
 }
 
 impl fmt::Display for SmtpError {
@@ -22,6 +24,7 @@ impl fmt::Display for SmtpError {
             SmtpError::ConnectionFailed(e) => write!(f, "{e}"),
             SmtpError::AuthenticationFailed => write!(f, "Authentication failed"),
             SmtpError::SendFailed(msg) => write!(f, "Send failed: {msg}"),
+            SmtpError::Rejected(msg) => write!(f, "Rejected by server: {msg}"),
         }
     }
 }

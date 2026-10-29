@@ -406,6 +406,9 @@ impl SmtpClient for RealSmtpClient {
                 {
                     warn!(error = %e, host = creds.host, "SMTP authentication failed");
                     SmtpError::AuthenticationFailed
+                } else if e.is_permanent() {
+                    warn!(error = %e, host = creds.host, "SMTP send permanently rejected");
+                    SmtpError::Rejected(msg)
                 } else if msg.to_lowercase().contains("connect")
                     || msg.to_lowercase().contains("dns")
                     || msg.to_lowercase().contains("resolve")

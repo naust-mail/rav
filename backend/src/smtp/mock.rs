@@ -55,6 +55,7 @@ fn clone_error(err: &SmtpError) -> SmtpError {
         SmtpError::ConnectionFailed(msg) => SmtpError::ConnectionFailed(msg.clone()),
         SmtpError::AuthenticationFailed => SmtpError::AuthenticationFailed,
         SmtpError::SendFailed(msg) => SmtpError::SendFailed(msg.clone()),
+        SmtpError::Rejected(msg) => SmtpError::Rejected(msg.clone()),
     }
 }
 
@@ -219,6 +220,10 @@ mod tests {
             (
                 SmtpError::SendFailed("rejected by server".to_string()),
                 "Send failed: rejected by server",
+            ),
+            (
+                SmtpError::Rejected("permanent error (554): access denied".to_string()),
+                "Rejected by server: permanent error (554): access denied",
             ),
         ];
 

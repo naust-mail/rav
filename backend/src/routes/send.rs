@@ -198,11 +198,14 @@ pub(crate) async fn perform_send(
 /// Whether a failed `perform_send` is worth retrying. Setup-time failures
 /// (bad config, missing identity, unreadable attachment) won't fix
 /// themselves on a blind retry; SMTP auth failures mean the stored
-/// password is wrong and retrying just repeats the same rejection.
+/// password is wrong and retrying just repeats the same rejection. Likewise
+/// for permanent (5xx) rejections, e.g. a policy or recipient refusal.
 /// Connection/transient send failures are the only ones worth another attempt.
 pub(crate) fn is_retryable(err: &AppError) -> bool {
     match err {
-        AppError::ServiceUnavailable(msg) => !msg.contains("Authentication failed"),
+        AppError::ServiceUnavailable(msg) => {
+            !msg.contains("Authentication failed") && !msg.contains("Rejected by server")
+        }
         AppError::InternalError(_) | AppError::NotFound(_) | AppError::BadRequest(_) | AppError::Unauthorized(_) => false,
     }
 }
@@ -520,4 +523,26 @@ fn build_rfc822_bytes(message: &SendableMessage, message_id: &str) -> Result<Vec
     }
 
     Ok(email.formatted())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::smtp::error::SmtpError;
+
+    fn send_error(e: SmtpError) -> AppError {
+        AppError::ServiceUnavailable(format!("Failed to send email: {e}"))
+    }
+
+    #[test]
+    fn transient_send_failures_are_retryable() {
+        assert!(is_retryable(&send_error(SmtpError::SendFailed("transient error (451): try again".into()))));
+        assert!(is_retryable(&send_error(SmtpError::ConnectionFailed(crate::error::ConnectError::Timeout))));
+    }
+
+    #[test]
+    fn permanent_rejections_and_auth_failures_are_not_retryable() {
+        assert!(!is_retryable(&send_error(SmtpError::Rejected("permanent error (554): access denied".into()))));
+        assert!(!is_retryable(&send_error(SmtpError::AuthenticationFailed)));
+    }
 }
