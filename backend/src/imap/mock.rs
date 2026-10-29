@@ -17,6 +17,9 @@ pub struct MockImapClient {
     should_fail: Mutex<Option<ImapError>>,
     pub appended: Mutex<Vec<(String, Vec<u8>)>>,
     next_uid: Mutex<u32>,
+    /// UIDs whose BODYSTRUCTURE "fails to parse": `fetch_headers` errors if
+    /// the requested set contains any of them, `fetch_headers_basic` doesn't.
+    unparseable_uids: Mutex<Vec<u32>>,
 }
 
 impl MockImapClient {
@@ -31,6 +34,7 @@ impl MockImapClient {
             should_fail: Mutex::new(None),
             appended: Mutex::new(Vec::new()),
             next_uid: Mutex::new(1),
+            unparseable_uids: Mutex::new(Vec::new()),
         }
     }
 
@@ -66,11 +70,29 @@ impl MockImapClient {
         self
     }
 
+    /// Make `fetch_headers` fail for any UID set containing one of these.
+    pub fn with_unparseable_uids(self, uids: Vec<u32>) -> Self {
+        *self.unparseable_uids.lock().unwrap() = uids;
+        self
+    }
+
     /// Make every subsequent call return this error.
     pub fn with_error(self, error: ImapError) -> Self {
         *self.should_fail.lock().unwrap() = Some(error);
         self
     }
+}
+
+/// Whether `uid` is in an IMAP UID set such as `"1:5,9,20:*"`.
+fn uid_set_contains(uid_set: &str, uid: u32) -> bool {
+    uid_set.split(',').any(|part| match part.split_once(':') {
+        Some((lo, hi)) => {
+            let lo: u32 = lo.parse().unwrap_or(u32::MAX);
+            let hi: u32 = if hi == "*" { u32::MAX } else { hi.parse().unwrap_or(0) };
+            (lo.min(hi)..=lo.max(hi)).contains(&uid)
+        }
+        None => part == "*" || part.parse::<u32>().ok() == Some(uid),
+    })
 }
 
 /// Helper to clone an `ImapError` for the mock (the real errors are not
@@ -132,12 +154,34 @@ impl ImapClient for MockImapClient {
         &self,
         _creds: &ImapCredentials,
         _folder: &str,
-        _uid_range: &str,
+        uid_range: &str,
     ) -> Result<Vec<ImapMessageHeader>, ImapError> {
         if let Some(ref err) = *self.should_fail.lock().unwrap() {
             return Err(clone_error(err));
         }
-        Ok(self.headers.lock().unwrap().clone())
+        if self.unparseable_uids.lock().unwrap().iter().any(|uid| uid_set_contains(uid_range, *uid)) {
+            return Err(ImapError::ConnectionFailed(ConnectError::Unreachable));
+        }
+        Ok(self.headers.lock().unwrap().iter().filter(|h| uid_set_contains(uid_range, h.uid)).cloned().collect())
+    }
+
+    async fn fetch_headers_basic(
+        &self,
+        _creds: &ImapCredentials,
+        _folder: &str,
+        uid_range: &str,
+    ) -> Result<Vec<ImapMessageHeader>, ImapError> {
+        if let Some(ref err) = *self.should_fail.lock().unwrap() {
+            return Err(clone_error(err));
+        }
+        Ok(self
+            .headers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|h| uid_set_contains(uid_range, h.uid))
+            .map(|h| ImapMessageHeader { has_attachments: false, ..h.clone() })
+            .collect())
     }
 
     async fn fetch_body(

@@ -16,7 +16,6 @@ use crate::email_theme;
 use crate::error::AppError;
 use crate::folder_cipher::FolderId;
 use crate::imap::client::{ImapClient, ImapCredentials};
-use crate::realtime::events::{EventBus, MailEvent};
 use crate::search::engine::{IndexableMessage, SearchEngine, UserIndex};
 
 // ---------------------------------------------------------------------------
@@ -121,7 +120,6 @@ pub async fn list_messages(
         config,
         imap_client,
         search_engine,
-        event_bus,
         sync_worker_manager,
         db_pool_manager,
         ..
@@ -236,10 +234,18 @@ pub async fn list_messages(
 
                 tracing::info!(folder = %folder, uid_range = %recent_range, "Partial sync: fetching recent headers");
 
-                let headers = imap_client
-                    .fetch_headers(&creds, &folder, &recent_range)
-                    .await
-                    .map_err(|e| AppError::ServiceUnavailable(format!("IMAP error: {e}")))?;
+                // A message whose BODYSTRUCTURE the IMAP parser rejects aborts the
+                // whole FETCH; retry without it so the folder still opens.
+                let headers = match imap_client.fetch_headers(&creds, &folder, &recent_range).await {
+                    Ok(headers) => headers,
+                    Err(e) => {
+                        tracing::warn!(folder = %folder, error = %e, "Partial sync: header fetch failed, retrying without BODYSTRUCTURE");
+                        imap_client
+                            .fetch_headers_basic(&creds, &folder, &recent_range)
+                            .await
+                            .map_err(|e| AppError::ServiceUnavailable(format!("IMAP error: {e}")))?
+                    }
+                };
 
                 tracing::info!(folder = %folder, fetched = headers.len(), "Partial sync: fetched recent headers");
 
@@ -259,21 +265,11 @@ pub async fn list_messages(
                     .map_err(|e| AppError::InternalError(format!("Database error: {e}")))?;
                 }
 
-                // Spawn background task to fetch the remaining older headers.
+                // The sync worker backfills the older headers in batches.
                 if recent_start > 1 {
-                    let remaining_range = format!("1:{}", recent_start - 1);
-                    tokio::spawn(sync_remaining_headers(BackgroundSyncParams {
-                        creds,
-                        folder: folder.clone(),
-                        imap_client: imap_client.clone(),
-                        db_pool_manager: db_pool_manager.clone(),
-                        user_hash: session.user_hash.clone(),
-                        search_engine: search_engine.clone(),
-                        event_bus: event_bus.clone(),
-                        uid_range: remaining_range,
-                        uid_validity: status.uid_validity,
-                        exists: status.exists,
-                    }));
+                    sync_worker_manager
+                        .ensure_worker(session.user_hash.clone(), creds)
+                        .notify_one();
                     syncing = true;
                 }
             }
@@ -424,118 +420,6 @@ fn upsert_and_index_headers(
     }
 
     Ok(())
-}
-
-/// Parameters for a background sync task, bundled to avoid too-many-arguments.
-struct BackgroundSyncParams {
-    creds: ImapCredentials,
-    folder: String,
-    imap_client: Arc<dyn ImapClient>,
-    db_pool_manager: Arc<db::pool::DbPoolManager>,
-    user_hash: String,
-    search_engine: Arc<SearchEngine>,
-    event_bus: Arc<EventBus>,
-    uid_range: String,
-    uid_validity: u32,
-    exists: u32,
-}
-
-/// Background task: fetch remaining headers for a folder and notify the
-/// frontend via EventBus when done. All errors are logged but non-fatal.
-async fn sync_remaining_headers(params: BackgroundSyncParams) {
-    let BackgroundSyncParams {
-        creds, folder, imap_client, db_pool_manager, user_hash,
-        search_engine, event_bus, uid_range, uid_validity, exists,
-    } = params;
-    let result = sync_remaining_headers_inner(BackgroundSyncParams {
-        creds, folder: folder.clone(), imap_client, db_pool_manager, user_hash: user_hash.clone(),
-        search_engine, event_bus: event_bus.clone(), uid_range, uid_validity, exists,
-    })
-    .await;
-
-    match result {
-        Ok(()) => {
-            tracing::info!(folder = %folder, "Background sync: complete");
-            event_bus.publish(&user_hash, MailEvent::FolderUpdated { folder: Some(folder.clone()) }).await;
-        }
-        Err(e) => {
-            tracing::warn!(folder = %folder, error = %e, "Background sync: failed (will retry on next request)");
-        }
-    }
-}
-
-async fn sync_remaining_headers_inner(params: BackgroundSyncParams) -> Result<(), String> {
-    let BackgroundSyncParams {
-        creds, folder, imap_client, db_pool_manager, user_hash, search_engine, uid_range, uid_validity, exists, ..
-    } = params;
-    tracing::info!(folder = %folder, uid_range = %uid_range, "Background sync: fetching remaining headers");
-
-    let headers = imap_client
-        .fetch_headers(&creds, &folder, &uid_range)
-        .await
-        .map_err(|e| format!("IMAP error: {e}"))?;
-
-    tracing::info!(folder = %folder, fetched = headers.len(), "Background sync: fetched headers");
-
-    if headers.is_empty() {
-        return Ok(());
-    }
-
-    let pool_user_hash = user_hash.clone();
-    db::pool::with_user_db(&db_pool_manager, &pool_user_hash, move |conn| {
-            for header in &headers {
-                let from_address = header.from.first().map(|a| a.address.as_str()).unwrap_or("");
-                let from_name = header.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
-                let to_json = serde_json::to_string(&header.to).unwrap_or_else(|_| "[]".to_string());
-                let cc_json = serde_json::to_string(&header.cc).unwrap_or_else(|_| "[]".to_string());
-                let subject = header.subject.as_deref().unwrap_or("");
-                let date = header.date.as_deref().unwrap_or("");
-                let flags_csv = header.flags.join(",");
-
-                db::messages::upsert_message(conn, &folder, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() })
-                .map_err(|e| format!("Database error: {e}"))?;
-
-                // Populate denormalized known_addresses table.
-                db::contacts::populate_known_addresses(conn, from_address, from_name, &to_json, &cc_json)
-                    .map_err(|e| format!("Known addresses error: {e}"))?;
-            }
-
-            // Index for search.
-            if !UserIndex::is_excluded_folder(&folder)
-                && let Ok(user_index) = search_engine.open_user_index(&user_hash)
-            {
-                let indexable: Vec<IndexableMessage> = headers
-                    .iter()
-                    .map(|h| {
-                        let from_address = h.from.first().map(|a| a.address.as_str()).unwrap_or("");
-                        let from_name = h.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
-                        let subject = h.subject.as_deref().unwrap_or("");
-                        let to_json = serde_json::to_string(&h.to).unwrap_or_else(|_| "[]".to_string());
-                        IndexableMessage {
-                            uid: h.uid,
-                            folder: folder.clone(),
-                            subject: subject.to_string(),
-                            from_address: from_address.to_string(),
-                            from_name: from_name.to_string(),
-                            to_addresses: to_json,
-                            body_text: String::new(),
-                            date_epoch: h.date_epoch,
-                            has_attachments: h.has_attachments,
-                        }
-                    })
-                    .collect();
-                let _ = user_index.index_messages_batch(&indexable);
-            }
-
-            // Update folder status and unread count.
-            db::folders::update_folder_status(conn, &folder, uid_validity, exists)
-                .map_err(|e| format!("Database error: {e}"))?;
-            db::folders::refresh_unread_count(conn, &folder)
-                .map_err(|e| format!("Database error: {e}"))?;
-
-            Ok(())
-        })
-        .await
 }
 
 /// Request body for `POST /api/messages/by-message-id`.

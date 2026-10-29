@@ -25,6 +25,14 @@ pub(crate) const HEADER_FETCH_ITEMS: &str =
     "(UID ENVELOPE INTERNALDATE FLAGS BODYSTRUCTURE RFC822.SIZE BODY.PEEK[HEADER.FIELDS \
      (Message-ID In-Reply-To References Content-Class x-ms-exchange-generated-message-class)])";
 
+/// Fallback for `HEADER_FETCH_ITEMS` without BODYSTRUCTURE. Some messages have
+/// a BODYSTRUCTURE the IMAP parser rejects (e.g. raw 8-bit bytes in an
+/// attachment filename), which aborts the whole FETCH; fetching them without
+/// it still yields a listable header, just without attachment detection.
+pub(crate) const HEADER_FETCH_ITEMS_BASIC: &str =
+    "(UID ENVELOPE INTERNALDATE FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS \
+     (Message-ID In-Reply-To References Content-Class x-ms-exchange-generated-message-class)])";
+
 #[cfg(test)]
 #[path = "mock.rs"]
 pub mod mock;
@@ -52,6 +60,15 @@ pub trait ImapClient: Send + Sync {
 
     /// Fetch message headers (envelopes) for a range of UIDs in a folder.
     async fn fetch_headers(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uid_range: &str,
+    ) -> Result<Vec<ImapMessageHeader>, ImapError>;
+
+    /// Like `fetch_headers`, but without BODYSTRUCTURE (see
+    /// `HEADER_FETCH_ITEMS_BASIC`). `has_attachments` is always false.
+    async fn fetch_headers_basic(
         &self,
         creds: &ImapCredentials,
         folder: &str,
@@ -267,90 +284,13 @@ impl RealImapClient {
             transport,
         }
     }
-}
 
-
-// ---- Trait implementation -------------------------------------------------
-
-#[async_trait]
-impl ImapClient for RealImapClient {
-    async fn folder_status(
-        &self,
-        creds: &ImapCredentials,
-        folder: &str,
-    ) -> Result<FolderStatus, ImapError> {
-        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
-
-        let mailbox = session
-            .select(folder)
-            .await
-            .map_err(|e| match &e {
-                async_imap::error::Error::No(msg)
-                    if msg.to_lowercase().contains("not found")
-                        || msg.to_lowercase().contains("doesn't exist")
-                        || msg.to_lowercase().contains("does not exist")
-                        || msg.to_lowercase().contains("no such") =>
-                {
-                    ImapError::FolderNotFound(folder.to_string())
-                }
-                _ => map_imap_error(e),
-            })?;
-
-        let uid_validity = mailbox.uid_validity.unwrap_or(0);
-        let exists = mailbox.exists;
-        let uid_next = mailbox.uid_next.unwrap_or(0);
-
-        self.cache.release(creds, session);
-        Ok(FolderStatus {
-            uid_validity,
-            exists,
-            uid_next,
-        })
-    }
-
-    async fn list_folders(&self, creds: &ImapCredentials) -> Result<Vec<ImapFolder>, ImapError> {
-        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
-
-        let folders = {
-            let names_stream = session
-                .list(Some(""), Some("*"))
-                .await
-                .map_err(map_imap_error)?;
-
-            let mut names_stream = std::pin::pin!(names_stream);
-            let mut names = Vec::new();
-            while let Some(result) = names_stream.next().await {
-                names.push(result.map_err(map_imap_error)?);
-            }
-
-            names
-                .iter()
-                .filter(|n| {
-                    !n.attributes()
-                        .iter()
-                        .any(|a| matches!(a, async_imap::types::NameAttribute::NoSelect))
-                })
-                .map(|n| ImapFolder {
-                    name: n.name().to_string(),
-                    delimiter: n.delimiter().map(|d| d.to_string()),
-                    attributes: n
-                        .attributes()
-                        .iter()
-                        .map(name_attribute_to_string)
-                        .collect(),
-                })
-                .collect()
-        };
-
-        self.cache.release(creds, session);
-        Ok(folders)
-    }
-
-    async fn fetch_headers(
+    async fn fetch_headers_with_items(
         &self,
         creds: &ImapCredentials,
         folder: &str,
         uid_range: &str,
+        fetch_items: &str,
     ) -> Result<Vec<ImapMessageHeader>, ImapError> {
         let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
 
@@ -370,11 +310,11 @@ impl ImapClient for RealImapClient {
             })?;
 
         let headers = {
-            // Fetch ENVELOPE, FLAGS, BODYSTRUCTURE, RFC822.SIZE, and threading headers.
+            // Fetch ENVELOPE, FLAGS, BODYSTRUCTURE (unless basic), RFC822.SIZE, and threading headers.
             // We only fetch Message-ID, In-Reply-To, and References (a few bytes per message)
             // rather than full raw headers, to keep bulk syncs lightweight.
             let mut fetch_stream = session
-                .uid_fetch(uid_range, HEADER_FETCH_ITEMS)
+                .uid_fetch(uid_range, fetch_items)
                 .await
                 .map_err(map_imap_error)?;
 
@@ -519,6 +459,102 @@ impl ImapClient for RealImapClient {
 
         self.cache.release(creds, session);
         Ok(headers)
+    }
+}
+
+
+// ---- Trait implementation -------------------------------------------------
+
+#[async_trait]
+impl ImapClient for RealImapClient {
+    async fn folder_status(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+    ) -> Result<FolderStatus, ImapError> {
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+
+        let mailbox = session
+            .select(folder)
+            .await
+            .map_err(|e| match &e {
+                async_imap::error::Error::No(msg)
+                    if msg.to_lowercase().contains("not found")
+                        || msg.to_lowercase().contains("doesn't exist")
+                        || msg.to_lowercase().contains("does not exist")
+                        || msg.to_lowercase().contains("no such") =>
+                {
+                    ImapError::FolderNotFound(folder.to_string())
+                }
+                _ => map_imap_error(e),
+            })?;
+
+        let uid_validity = mailbox.uid_validity.unwrap_or(0);
+        let exists = mailbox.exists;
+        let uid_next = mailbox.uid_next.unwrap_or(0);
+
+        self.cache.release(creds, session);
+        Ok(FolderStatus {
+            uid_validity,
+            exists,
+            uid_next,
+        })
+    }
+
+    async fn list_folders(&self, creds: &ImapCredentials) -> Result<Vec<ImapFolder>, ImapError> {
+        let mut session = self.cache.acquire(creds, &self.transport.imap_connect_host, &self.transport.imap_connector).await?;
+
+        let folders = {
+            let names_stream = session
+                .list(Some(""), Some("*"))
+                .await
+                .map_err(map_imap_error)?;
+
+            let mut names_stream = std::pin::pin!(names_stream);
+            let mut names = Vec::new();
+            while let Some(result) = names_stream.next().await {
+                names.push(result.map_err(map_imap_error)?);
+            }
+
+            names
+                .iter()
+                .filter(|n| {
+                    !n.attributes()
+                        .iter()
+                        .any(|a| matches!(a, async_imap::types::NameAttribute::NoSelect))
+                })
+                .map(|n| ImapFolder {
+                    name: n.name().to_string(),
+                    delimiter: n.delimiter().map(|d| d.to_string()),
+                    attributes: n
+                        .attributes()
+                        .iter()
+                        .map(name_attribute_to_string)
+                        .collect(),
+                })
+                .collect()
+        };
+
+        self.cache.release(creds, session);
+        Ok(folders)
+    }
+
+    async fn fetch_headers(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uid_range: &str,
+    ) -> Result<Vec<ImapMessageHeader>, ImapError> {
+        self.fetch_headers_with_items(creds, folder, uid_range, HEADER_FETCH_ITEMS).await
+    }
+
+    async fn fetch_headers_basic(
+        &self,
+        creds: &ImapCredentials,
+        folder: &str,
+        uid_range: &str,
+    ) -> Result<Vec<ImapMessageHeader>, ImapError> {
+        self.fetch_headers_with_items(creds, folder, uid_range, HEADER_FETCH_ITEMS_BASIC).await
     }
 
     async fn fetch_body(

@@ -6,6 +6,7 @@ use crate::db::folders::UpsertFolderParams;
 use crate::db::messages::{CacheMessageBodyParams, UpsertMessageParams};
 use crate::email_theme;
 use crate::imap::client::{ImapClient, ImapCredentials};
+use crate::imap::types::ImapMessageHeader;
 use crate::realtime::events::{EventBus, MailEvent};
 use crate::search::engine::{IndexableMessage, SearchEngine};
 use crate::search::engine::UserIndex;
@@ -113,17 +114,28 @@ pub(crate) async fn run_sync(ctx: SyncCtx<'_>) -> Result<(), String> {
         }
 
         // ── Tier 2: CONDSTORE incremental fetch ──────────────────────
-        if status.highest_modseq > 0 && cached_modseq > 0 {
-            let folder_changed = sync_condstore(ctx, folder_name, cached_modseq, &status).await?;
-            if folder_changed {
-                any_changes = true;
-            }
-            continue;
+        // ── Tier 3: Full fetch fallback ──────────────────────────────
+        let folder_changed = if status.highest_modseq > 0 && cached_modseq > 0 {
+            sync_condstore(ctx, folder_name, cached_modseq, &status).await?
+        } else {
+            sync_full(ctx, folder_name, &status).await?
+        };
+        if folder_changed {
+            any_changes = true;
         }
 
-        // ── Tier 3: Full fetch fallback ──────────────────────────────
-        let folder_changed = sync_full(ctx, folder_name, &status).await?;
-        if folder_changed {
+        // ── Gap fill: older messages missing from the cache ──────────
+        // Tiers 2/3 only fetch mail newer than the cache, so an interrupted
+        // first load would otherwise leave the folder incomplete for good.
+        // Only for folders that have been loaded at least once (cached > 0),
+        // so never-opened folders aren't downloaded in the background.
+        let cached_count = db::pool::with_user_db(db_pool_manager, user_hash, {
+            let folder_name = folder_name.clone();
+            move |conn| Ok(db::messages::count_messages(conn, &folder_name).unwrap_or(0))
+        })
+        .await
+        .map_err(|e| format!("DB error: {e}"))?;
+        if cached_count > 0 && status.exists > cached_count && backfill_missing(ctx, folder_name).await? {
             any_changes = true;
         }
     }
@@ -250,6 +262,57 @@ async fn index_message_bodies(
 /// Fetch headers for UIDs >= `from_uid`, upsert them into the cache, and
 /// index them for search. Returns (new_count, latest_sender, latest_subject)
 /// for the highest-UID message fetched, for use in a `FolderStateChanged` event.
+/// Store fetched headers in the cache. Best-effort per message: a row that
+/// fails to write is skipped (a later sync or backfill picks it up again).
+fn upsert_headers(conn: &rusqlite::Connection, folder_name: &str, headers: &[ImapMessageHeader]) {
+    for header in headers {
+        let from_address = header.from.first().map(|a| a.address.as_str()).unwrap_or("");
+        let from_name = header.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
+        let to_json = serde_json::to_string(&header.to).unwrap_or_else(|_| "[]".to_string());
+        let cc_json = serde_json::to_string(&header.cc).unwrap_or_else(|_| "[]".to_string());
+        let subject = header.subject.as_deref().unwrap_or("");
+        let date = header.date.as_deref().unwrap_or("");
+        let flags_csv = header.flags.join(",");
+
+        if db::messages::upsert_message(conn, folder_name, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() }).is_err() {
+            continue;
+        }
+
+        let _ = db::contacts::populate_known_addresses(conn, from_address, from_name, &to_json, &cc_json);
+    }
+}
+
+/// Add fetched headers to the user's search index (skips Spam/Junk/Trash).
+fn index_headers(search_engine: &SearchEngine, user_hash: &str, folder_name: &str, headers: &[ImapMessageHeader]) {
+    if UserIndex::is_excluded_folder(folder_name) {
+        return;
+    }
+    let Ok(user_index) = search_engine.open_user_index(user_hash) else {
+        return;
+    };
+    let indexable: Vec<IndexableMessage> = headers
+        .iter()
+        .map(|h| {
+            let from_address = h.from.first().map(|a| a.address.as_str()).unwrap_or("");
+            let from_name = h.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
+            let subject = h.subject.as_deref().unwrap_or("");
+            let to_json = serde_json::to_string(&h.to).unwrap_or_else(|_| "[]".to_string());
+            IndexableMessage {
+                uid: h.uid,
+                folder: folder_name.to_string(),
+                subject: subject.to_string(),
+                from_address: from_address.to_string(),
+                from_name: from_name.to_string(),
+                to_addresses: to_json,
+                body_text: String::new(),
+                date_epoch: h.date_epoch,
+                has_attachments: h.has_attachments,
+            }
+        })
+        .collect();
+    let _ = user_index.index_messages_batch(&indexable);
+}
+
 async fn fetch_and_store_new(
     user_hash: &str,
     creds: &ImapCredentials,
@@ -279,21 +342,7 @@ async fn fetch_and_store_new(
         let folder_name = folder_name.to_string();
         let headers = headers.clone();
         move |conn| {
-            for header in &headers {
-                let from_address = header.from.first().map(|a| a.address.as_str()).unwrap_or("");
-                let from_name = header.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
-                let to_json = serde_json::to_string(&header.to).unwrap_or_else(|_| "[]".to_string());
-                let cc_json = serde_json::to_string(&header.cc).unwrap_or_else(|_| "[]".to_string());
-                let subject = header.subject.as_deref().unwrap_or("");
-                let date = header.date.as_deref().unwrap_or("");
-                let flags_csv = header.flags.join(",");
-
-                if db::messages::upsert_message(conn, &folder_name, header.uid, UpsertMessageParams { message_id: header.message_id.as_deref(), in_reply_to: header.in_reply_to.as_deref(), references_header: header.references.as_deref(), subject, from_address, from_name, to_json: &to_json, cc_json: &cc_json, date, date_epoch: header.date_epoch, flags_csv: &flags_csv, size: header.size, has_attachments: header.has_attachments, snippet: "", reaction: header.reaction.as_deref() }).is_err() {
-                    continue;
-                }
-
-                let _ = db::contacts::populate_known_addresses(conn, from_address, from_name, &to_json, &cc_json);
-            }
+            upsert_headers(conn, &folder_name, &headers);
             Ok(())
         }
     })
@@ -304,31 +353,7 @@ async fn fetch_and_store_new(
         return (0, None, None);
     }
 
-    if !UserIndex::is_excluded_folder(folder_name)
-        && let Ok(user_index) = search_engine.open_user_index(user_hash)
-    {
-        let indexable: Vec<IndexableMessage> = headers
-            .iter()
-            .map(|h| {
-                let from_address = h.from.first().map(|a| a.address.as_str()).unwrap_or("");
-                let from_name = h.from.first().and_then(|a| a.name.as_deref()).unwrap_or("");
-                let subject = h.subject.as_deref().unwrap_or("");
-                let to_json = serde_json::to_string(&h.to).unwrap_or_else(|_| "[]".to_string());
-                IndexableMessage {
-                    uid: h.uid,
-                    folder: folder_name.to_string(),
-                    subject: subject.to_string(),
-                    from_address: from_address.to_string(),
-                    from_name: from_name.to_string(),
-                    to_addresses: to_json,
-                    body_text: String::new(),
-                    date_epoch: h.date_epoch,
-                    has_attachments: h.has_attachments,
-                }
-            })
-            .collect();
-        let _ = user_index.index_messages_batch(&indexable);
-    }
+    index_headers(search_engine, user_hash, folder_name, &headers);
 
     let latest = headers.iter().max_by_key(|h| h.uid).expect("headers non-empty");
     let latest_sender = latest
@@ -338,6 +363,174 @@ async fn fetch_and_store_new(
     let latest_subject = latest.subject.clone();
 
     (headers.len() as u32, latest_sender, latest_subject)
+}
+
+/// UIDs requested per FETCH while backfilling.
+const BACKFILL_CHUNK: usize = 500;
+
+/// Missing messages backfilled per folder per sync cycle, so a large first
+/// load doesn't hold up new mail in other folders. The rest follows on the
+/// next cycles.
+const BACKFILL_MAX_PER_CYCLE: usize = 5000;
+
+/// Consecutive failed fetches after which a backfill stops until the next
+/// cycle: by then the server is likely unreachable rather than one message
+/// being unparseable. Must exceed log2(BACKFILL_CHUNK) + 2, the most failures
+/// in a row that bisecting a chunk with one bad message can produce.
+const BACKFILL_MAX_CONSECUTIVE_FAILURES: u32 = 20;
+
+/// Format ascending UIDs as a compact IMAP UID set, e.g. `1:5,9,12:14`.
+fn to_uid_set(uids: &[u32]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < uids.len() {
+        let start = uids[i];
+        let mut end = start;
+        while i + 1 < uids.len() && uids[i + 1] == end + 1 {
+            i += 1;
+            end = uids[i];
+        }
+        parts.push(if start == end { start.to_string() } else { format!("{start}:{end}") });
+        i += 1;
+    }
+    parts.join(",")
+}
+
+/// Fetch headers for `uids` (ascending) without letting one bad message
+/// block the rest: a failed fetch is split in halves and retried, and a
+/// single UID that still fails is fetched without BODYSTRUCTURE, or skipped
+/// if that fails too. Returns the headers fetched and whether it gave up
+/// after too many consecutive failures.
+async fn fetch_headers_resilient(
+    imap_client: &dyn ImapClient,
+    creds: &ImapCredentials,
+    folder_name: &str,
+    uids: &[u32],
+    consecutive_failures: &mut u32,
+) -> (Vec<ImapMessageHeader>, bool) {
+    let mut headers = Vec::new();
+    let mut pending: Vec<&[u32]> = vec![uids];
+
+    while let Some(set) = pending.pop() {
+        match imap_client.fetch_headers(creds, folder_name, &to_uid_set(set)).await {
+            Ok(fetched) => {
+                *consecutive_failures = 0;
+                headers.extend(fetched);
+                continue;
+            }
+            Err(e) => {
+                *consecutive_failures += 1;
+                if *consecutive_failures >= BACKFILL_MAX_CONSECUTIVE_FAILURES {
+                    tracing::warn!(folder = %folder_name, error = %e, "Backfill: too many failed fetches, retrying next cycle");
+                    return (headers, true);
+                }
+                if set.len() > 1 {
+                    let (first, second) = set.split_at(set.len() / 2);
+                    pending.push(first);
+                    pending.push(second);
+                    continue;
+                }
+            }
+        }
+
+        let uid = set[0];
+        match imap_client.fetch_headers_basic(creds, folder_name, &uid.to_string()).await {
+            Ok(fetched) => {
+                *consecutive_failures = 0;
+                tracing::warn!(folder = %folder_name, uid = uid, "Backfill: fetched header without BODYSTRUCTURE (unparseable), attachment flag unavailable");
+                headers.extend(fetched);
+            }
+            Err(e) => {
+                tracing::warn!(folder = %folder_name, uid = uid, error = %e, "Backfill: skipping message that cannot be fetched");
+            }
+        }
+    }
+
+    (headers, false)
+}
+
+/// Fetch headers for messages that exist on the server but not in the cache,
+/// newest first, in batches stored as they arrive. Returns whether anything
+/// was stored.
+async fn backfill_missing(ctx: SyncCtx<'_>, folder_name: &str) -> Result<bool, String> {
+    let SyncCtx { user_hash, creds, imap_client, event_bus, search_engine, db_pool_manager } = ctx;
+
+    let server_uids = match imap_client.fetch_uids_and_flags(creds, folder_name).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::debug!(folder = %folder_name, error = %e, "Backfill skipped (UID list fetch failed)");
+            return Ok(false);
+        }
+    };
+
+    let cached: HashSet<u32> = db::pool::with_user_db(db_pool_manager, user_hash, {
+        let folder_name = folder_name.to_string();
+        move |conn| db::messages::get_all_uids_and_flags(conn, &folder_name)
+    })
+    .await
+    .map_err(|e| format!("DB error: {e}"))?
+    .into_iter()
+    .map(|(uid, _)| uid)
+    .collect();
+
+    let mut missing: Vec<u32> = server_uids
+        .into_iter()
+        .map(|(uid, _)| uid)
+        .filter(|uid| !cached.contains(uid))
+        .collect();
+    if missing.is_empty() {
+        return Ok(false);
+    }
+    let total_missing = missing.len();
+    missing.sort_unstable_by(|a, b| b.cmp(a));
+    missing.truncate(BACKFILL_MAX_PER_CYCLE);
+
+    tracing::info!(folder = %folder_name, missing = total_missing, this_cycle = missing.len(), "Backfill: fetching missing message headers");
+
+    let mut stored = 0usize;
+    let mut consecutive_failures = 0u32;
+    for chunk in missing.chunks(BACKFILL_CHUNK) {
+        let mut chunk = chunk.to_vec();
+        chunk.sort_unstable();
+        let (headers, gave_up) =
+            fetch_headers_resilient(imap_client, creds, folder_name, &chunk, &mut consecutive_failures).await;
+
+        if !headers.is_empty() {
+            let upsert_result = db::pool::with_user_db(db_pool_manager, user_hash, {
+                let folder_name = folder_name.to_string();
+                let headers = headers.clone();
+                move |conn| {
+                    upsert_headers(conn, &folder_name, &headers);
+                    Ok(())
+                }
+            })
+            .await;
+            if let Err(e) = upsert_result {
+                tracing::warn!(folder = %folder_name, error = %e, "Backfill: failed to open DB, retrying next cycle");
+                break;
+            }
+            index_headers(search_engine, user_hash, folder_name, &headers);
+            stored += headers.len();
+        }
+
+        if gave_up {
+            break;
+        }
+    }
+
+    if stored > 0 {
+        let _ = db::pool::with_user_db(db_pool_manager, user_hash, {
+            let folder_name = folder_name.to_string();
+            move |conn| db::folders::refresh_unread_count(conn, &folder_name)
+        })
+        .await;
+        event_bus
+            .publish(user_hash, MailEvent::FolderUpdated { folder: Some(folder_name.to_string()) })
+            .await;
+    }
+
+    tracing::info!(folder = %folder_name, stored = stored, remaining = total_missing - stored, "Backfill: stored message headers");
+    Ok(stored > 0)
 }
 
 /// Lightweight snapshot of a cached folder for the sync loop.
@@ -692,6 +885,103 @@ mod tests {
         .unwrap();
 
         user_hash
+    }
+
+    #[test]
+    fn to_uid_set_collapses_consecutive_runs() {
+        assert_eq!(to_uid_set(&[1, 2, 3, 5, 7, 8]), "1:3,5,7:8");
+        assert_eq!(to_uid_set(&[42]), "42");
+        assert_eq!(to_uid_set(&[]), "");
+    }
+
+    /// Seed INBOX with only its newest message cached (uid `newest`), like a
+    /// first load whose background fetch of older headers failed.
+    async fn seed_user_with_newest_message(data_dir: &std::path::Path, newest: u32, highest_modseq: u64) -> String {
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        crate::auth::user_data::provision_user_data(data_dir.to_str().unwrap(), &user_hash).unwrap();
+
+        let db_pool_manager = test_db_pool_manager(data_dir);
+        db::pool::with_user_db(&db_pool_manager, &user_hash, move |conn| {
+            db::folders::upsert_folder(conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 1, unread_count: 0, uid_validity: 1, highest_modseq })?;
+            db::messages::upsert_message(conn, "INBOX", newest, UpsertMessageParams { message_id: None, in_reply_to: None, references_header: None, subject: "Newest", from_address: "carol@example.com", from_name: "Carol", to_json: "[]", cc_json: "[]", date: "2024-01-01T00:00:00Z", date_epoch: newest as i64, flags_csv: "", size: 512, has_attachments: false, snippet: "", reaction: None })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        user_hash
+    }
+
+    /// A folder stuck with only its newest messages cached (unchanged
+    /// MODSEQ, nothing newer on the server) must have its older messages
+    /// backfilled, across several batches and despite one message whose
+    /// full header fetch always fails.
+    #[tokio::test]
+    async fn sync_backfills_older_messages_missing_from_cache() {
+        let data_dir = TempDir::new().unwrap();
+        let user_hash = seed_user_with_newest_message(data_dir.path(), 1200, 5).await;
+        let db_pool_manager = test_db_pool_manager(data_dir.path());
+        let creds = test_creds();
+        let event_bus = Arc::new(EventBus::new());
+        let search_engine = Arc::new(crate::search::engine::SearchEngine::new(data_dir.path().to_path_buf()));
+
+        let headers: Vec<ImapMessageHeader> = (1..=1200)
+            .map(|uid| ImapMessageHeader { has_attachments: uid == 437, ..new_header(uid, "Old mail", "Dave") })
+            .collect();
+        let mock = MockImapClient::new()
+            .with_headers(headers)
+            .with_unparseable_uids(vec![437])
+            .with_folder_status_extended(FolderStatusExtended {
+                uid_validity: 1,
+                exists: 1200,
+                uid_next: 1201,
+                unseen: 0,
+                highest_modseq: 5,
+            });
+        let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
+
+        run_sync(SyncCtx { user_hash: &user_hash, creds: &creds, imap_client: imap_client.as_ref(), event_bus: &event_bus, search_engine: &search_engine, db_pool_manager: &db_pool_manager })
+            .await
+            .expect("sync should succeed");
+
+        let (count, bad) = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
+            Ok((db::messages::count_messages(conn, "INBOX")?, db::messages::get_single_message(conn, "INBOX", 437)?))
+        })
+        .await
+        .unwrap();
+        assert_eq!(count, 1200, "all older messages should have been backfilled");
+        let bad = bad.expect("unparseable message should be stored via the basic fetch");
+        assert!(!bad.has_attachments, "basic fetch has no BODYSTRUCTURE, so no attachment flag");
+    }
+
+    /// Folders the user never opened (nothing cached) are not downloaded in
+    /// the background.
+    #[tokio::test]
+    async fn sync_does_not_backfill_never_loaded_folders() {
+        let data_dir = TempDir::new().unwrap();
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        crate::auth::user_data::provision_user_data(data_dir.path().to_str().unwrap(), &user_hash).unwrap();
+        let db_pool_manager = test_db_pool_manager(data_dir.path());
+        db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
+            db::folders::upsert_folder(conn, UpsertFolderParams { name: "INBOX", delimiter: None, parent: None, flags_csv: "", is_subscribed: true, total_count: 0, unread_count: 0, uid_validity: 1, highest_modseq: 0 })
+        })
+        .await
+        .unwrap();
+        let creds = test_creds();
+        let event_bus = Arc::new(EventBus::new());
+        let search_engine = Arc::new(crate::search::engine::SearchEngine::new(data_dir.path().to_path_buf()));
+
+        let mock = MockImapClient::new().with_headers((1..=10).map(|uid| new_header(uid, "Mail", "Dave")).collect());
+        let imap_client: Arc<dyn ImapClient> = Arc::new(mock);
+
+        run_sync(SyncCtx { user_hash: &user_hash, creds: &creds, imap_client: imap_client.as_ref(), event_bus: &event_bus, search_engine: &search_engine, db_pool_manager: &db_pool_manager })
+            .await
+            .expect("sync should succeed");
+
+        let count = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| db::messages::count_messages(conn, "INBOX"))
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     /// Full-scan tier (no CONDSTORE support cached): a genuinely new message
