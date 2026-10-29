@@ -614,6 +614,78 @@
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// Collects log output written by a test-local tracing subscriber.
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBuffer;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// A rejected login is logged with the real client IP (from X-Real-IP,
+    /// since the connection comes from a trusted proxy), in a form fail2ban
+    /// can match.
+    #[tokio::test]
+    async fn rejected_login_is_logged_with_client_ip() {
+        let static_dir = setup_static_dir();
+        let data_dir = TempDir::new().unwrap();
+        let data_path = data_dir.path().to_str().unwrap();
+        let mut cfg = (*test_config_with_imap(static_dir.path().to_str().unwrap(), data_path)).clone();
+        cfg.trusted_proxies = "127.0.0.1/32".to_string();
+        let config = Arc::new(cfg);
+
+        // A passkey-only account rejects password logins without contacting IMAP.
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_path, &user_hash);
+        let db_pool_manager = test_db_pool_manager(data_path);
+        crate::db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
+            crate::db::mfa::set_passkey_only(conn, true)
+        })
+        .await
+        .unwrap();
+
+        let logs = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt().json().with_writer(logs.clone()).finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let app = create_router(AppServices { config, store: test_store(), db_pool_manager, ..test_services("/tmp") });
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .header("x-requested-with", "XMLHttpRequest")
+            .header("x-real-ip", "203.0.113.7")
+            .body(Body::from(format!(
+                r#"{{"email":"alice@example.com","password":"{}"}}"#,
+                crate::test_support::FAKE_PASSWORD
+            )))
+            .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo("127.0.0.1:40000".parse::<std::net::SocketAddr>().unwrap()));
+
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains(r#""message":"Login failed","client_ip":"203.0.113.7""#),
+            "expected a Login failed line with the client IP, got: {output}"
+        );
+        assert!(output.contains(r#""reason":"passkey_only""#));
+    }
+
     #[tokio::test]
     async fn login_unreachable_imap_returns_503() {
         let dir = setup_static_dir();

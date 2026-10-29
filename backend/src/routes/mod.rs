@@ -31,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ConnectInfo;
-use axum::http::Request;
+use axum::http::{HeaderMap, Request};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Router, middleware};
 use ipnet::IpNet;
@@ -81,7 +81,7 @@ fn parse_trusted_proxies(raw: &str) -> Vec<IpNet> {
         .collect()
 }
 
-/// Per-IP key extractor for rate limiting.
+/// The client's IP address for a request.
 ///
 /// X-Real-IP and X-Forwarded-For headers are only trusted when the TCP
 /// connection came from a known proxy address (configured via TRUSTED_PROXIES).
@@ -90,6 +90,58 @@ fn parse_trusted_proxies(raw: &str) -> Vec<IpNet> {
 ///
 /// This prevents a client from spoofing their IP by setting the header
 /// themselves before the request reaches the proxy.
+fn client_ip(trusted: &[IpNet], socket_ip: Option<IpAddr>, headers: &HeaderMap) -> IpAddr {
+    if let Some(ip) = socket_ip
+        && trusted.iter().any(|net| net.contains(&ip))
+    {
+        if let Some(real_ip) = headers
+            .get("x-real-ip")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        {
+            return real_ip;
+        }
+        if let Some(xff_ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        {
+            return xff_ip;
+        }
+    }
+
+    socket_ip.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
+/// Extractor for the client's IP address (see `client_ip`), trusting
+/// forwarded headers per the configured `TRUSTED_PROXIES`.
+pub(crate) struct ClientIp(pub IpAddr);
+
+impl<S> axum::extract::FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let socket_ip = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        let trusted = parts
+            .extensions
+            .get::<Arc<AppConfig>>()
+            .map(|config| parse_trusted_proxies(&config.trusted_proxies))
+            .unwrap_or_default();
+        Ok(ClientIp(client_ip(&trusted, socket_ip, &parts.headers)))
+    }
+}
+
+/// Per-IP key extractor for rate limiting, keyed by `client_ip`.
 #[derive(Debug, Clone)]
 struct RealIpKeyExtractor {
     trusted: Vec<IpNet>,
@@ -104,29 +156,7 @@ impl KeyExtractor for RealIpKeyExtractor {
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ci: &ConnectInfo<SocketAddr>| ci.0.ip());
 
-        if let Some(ip) = socket_ip
-            && self.trusted.iter().any(|net| net.contains(&ip))
-        {
-            if let Some(real_ip) = req
-                .headers()
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            {
-                return Ok(real_ip);
-            }
-            if let Some(xff_ip) = req
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.split(',').next())
-                .and_then(|s| s.trim().parse::<IpAddr>().ok())
-            {
-                return Ok(xff_ip);
-            }
-        }
-
-        Ok(socket_ip.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+        Ok(client_ip(&self.trusted, socket_ip, req.headers()))
     }
 }
 

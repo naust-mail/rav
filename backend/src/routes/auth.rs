@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::Path;
@@ -221,6 +222,7 @@ pub async fn login(
     Extension(transport): Extension<Arc<crate::mail_transport::MailTransport>>,
     Extension(mfa_crypto): Extension<Arc<MfaCrypto>>,
     Extension(db_pool_manager): Extension<Arc<db::pool::DbPoolManager>>,
+    super::ClientIp(client_ip): super::ClientIp,
     Json(body): Json<LoginRequest>,
 ) -> Response {
     if body.email.trim().is_empty() || body.password.trim().is_empty() {
@@ -288,7 +290,14 @@ pub async fn login(
     };
 
     match gate {
-        MfaGate::PasskeyOnly | MfaGate::LockedOut => return unauthorized_response(),
+        MfaGate::PasskeyOnly => {
+            log_failed_login(client_ip, &body.email, "passkey_only");
+            return unauthorized_response();
+        }
+        MfaGate::LockedOut => {
+            log_failed_login(client_ip, &body.email, "totp_locked_out");
+            return unauthorized_response();
+        }
         MfaGate::NeedsCode => {
             // Tell the client to show the TOTP field and re-submit.
             return (
@@ -339,7 +348,10 @@ pub async fn login(
                         .to_string(),
                     )
                         .into_response(),
-                    _ => unauthorized_response(),
+                    _ => {
+                        log_failed_login(client_ip, &body.email, "invalid_credentials");
+                        unauthorized_response()
+                    }
                 };
             }
 
@@ -362,7 +374,10 @@ pub async fn login(
                     )
                     .await;
                 }
-                Ok(false) => return unauthorized_response(),
+                Ok(false) => {
+                    log_failed_login(client_ip, &body.email, "invalid_totp");
+                    return unauthorized_response();
+                }
                 Err(e) => {
                     tracing::error!(error = %e, "TOTP verification error");
                     return internal_error_response();
@@ -392,7 +407,10 @@ pub async fn login(
         AuthResult::Success => {
             return create_login_session(body, server, user_hash, &store, &config, &db_pool_manager).await;
         }
-        AuthResult::InvalidCredentials => return unauthorized_response(),
+        AuthResult::InvalidCredentials => {
+            log_failed_login(client_ip, &body.email, "invalid_credentials");
+            return unauthorized_response();
+        }
         AuthResult::ServerUnreachable(e) => return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("content-type", "application/json")],
@@ -420,6 +438,14 @@ fn load_totp_secret(conn: &rusqlite::Connection, mfa_crypto: &MfaCrypto) -> Opti
     let (enc, nonce) = db::mfa::get_totp_secret(conn).ok()??;
     let plaintext = mfa_crypto.decrypt(&enc, &nonce).ok()?;
     String::from_utf8(plaintext).ok()
+}
+
+/// Log a rejected login with the client IP, so tools like fail2ban can ban
+/// brute-force sources. `client_ip` must come first after the message: with
+/// JSON logging that gives a stable `"message":"Login failed","client_ip":"…"`
+/// prefix to match on.
+fn log_failed_login(client_ip: IpAddr, email: &str, reason: &str) {
+    tracing::warn!(client_ip = %client_ip, email = %email, reason = reason, "Login failed");
 }
 
 fn unauthorized_response() -> Response {
