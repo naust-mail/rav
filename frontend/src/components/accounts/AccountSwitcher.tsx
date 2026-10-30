@@ -249,7 +249,7 @@ export function AccountSwitcher() {
                   <span className="font-medium">Add account</span>
                 </button>
 
-                {accounts.length > 1 && (
+                {accounts.length > 0 && (
                   <button
                     type="button"
                     onClick={handleLogoutAll}
@@ -262,7 +262,9 @@ export function AccountSwitcher() {
                     <div className="size-8 rounded-full bg-muted flex items-center justify-center shrink-0">
                       <LogOut className="size-4" />
                     </div>
-                    <span className="font-medium">Sign out all accounts</span>
+                    <span className="font-medium">
+                      {accounts.length > 1 ? "Sign out all accounts" : "Sign out"}
+                    </span>
                   </button>
                 )}
               </div>
