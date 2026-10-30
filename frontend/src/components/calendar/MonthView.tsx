@@ -206,7 +206,7 @@ export function MonthView({ weekStartsOn, timeFormat, stickerCatalog = [] }: Mon
                       setOverflowPopover({
                         anchor: e.currentTarget.getBoundingClientRect(),
                         events: dayEvents,
-                        title: day.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }),
+                        title: day.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }),
                       });
                     }}
                     className="text-[10px] text-muted-foreground hover:text-foreground"

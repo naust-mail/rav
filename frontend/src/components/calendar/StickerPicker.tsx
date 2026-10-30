@@ -58,7 +58,7 @@ export function StickerPicker({
   if (typeof document === "undefined" || !open) return null;
 
   const label = date
-    ? date.toLocaleDateString("en-US", { month: "long", day: "numeric" })
+    ? date.toLocaleDateString(undefined, { month: "long", day: "numeric" })
     : "";
 
   return createPortal(

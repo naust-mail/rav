@@ -91,12 +91,12 @@ export function EventDetail({ timeFormat }: EventDetailProps) {
     if (event.all_day) {
       const start = new Date(event.start_time);
       const end = new Date(event.end_time);
-      const startStr = start.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-      const endStr = end.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      const startStr = start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      const endStr = end.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
       return startStr === endStr ? startStr : `${startStr} - ${endStr}`;
     }
     const start = new Date(event.start_time);
-    const dateStr = start.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    const dateStr = start.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
     return `${dateStr}, ${formatTime(event.start_time, timeFormat)} - ${formatTime(event.end_time, timeFormat)}`;
   };
 

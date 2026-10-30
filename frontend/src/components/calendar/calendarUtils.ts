@@ -88,12 +88,13 @@ export function getWeekDays(date: Date, weekStartsOn: number): Date[] {
   return days;
 }
 
-/** Get abbreviated day names starting from the given week start. */
+/** Get abbreviated day names in the browser locale, starting from the given week start. */
 export function getDayNames(weekStartsOn: number): string[] {
-  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const fmt = new Intl.DateTimeFormat(undefined, { weekday: "short" });
   const result: string[] = [];
   for (let i = 0; i < 7; i++) {
-    result.push(names[(i + weekStartsOn) % 7]);
+    // 2026-01-04 is a Sunday
+    result.push(fmt.format(new Date(2026, 0, 4 + ((i + weekStartsOn) % 7))));
   }
   return result;
 }
@@ -130,34 +131,33 @@ export function formatDateTimeLocal(date: Date): string {
   return `${y}-${mo}-${d}T${h}:${mi}`;
 }
 
-/** Format time in 12h or 24h format from a datetime string. */
+/**
+ * Format time from a datetime string using the browser locale.
+ * "24h" forces a 24-hour clock; any other value (including the "12h"
+ * DB default, which has no settings UI) follows the locale.
+ */
 export function formatTime(
   dateStr: string,
-  format: string = "12h",
+  format: string = "auto",
 ): string {
   const date = new Date(dateStr);
   if (isNaN(date.getTime())) return dateStr;
 
-  const hours = date.getHours();
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-
-  if (format === "24h") {
-    return `${String(hours).padStart(2, "0")}:${minutes}`;
-  }
-
-  const period = hours >= 12 ? "PM" : "AM";
-  const h12 = hours % 12 || 12;
-  return `${h12}:${minutes} ${period}`;
+  return date.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(format === "24h" && { hourCycle: "h23" }),
+  });
 }
 
 /** Format month and year for header display. */
 export function formatMonthYear(date: Date): string {
-  return date.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
 
 /** Format a date for day view header. */
 export function formatDayHeader(date: Date): string {
-  return date.toLocaleDateString("en-US", {
+  return date.toLocaleDateString(undefined, {
     weekday: "long",
     month: "long",
     day: "numeric",
@@ -332,14 +332,11 @@ export function getThreeDayRange(date: Date): { start: string; end: string } {
   };
 }
 
-/** Format a 3-day range for the header (e.g. "Jun 28 - 30" or "Jun 28 - Jul 1"). */
+/** Format a 3-day range for the header in the browser locale (e.g. "Jun 28 – 30" or "28–30 jun"). */
 export function formatThreeDayRange(date: Date): string {
   const days = getThreeDays(date);
-  const start = days[0].toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  if (days[0].getMonth() === days[2].getMonth()) {
-    return `${start} - ${days[2].getDate()}`;
-  }
-  return `${start} - ${days[2].toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" })
+    .formatRange(days[0], days[2]);
 }
 
 /** Calculate top position and height for an event in a time grid. */

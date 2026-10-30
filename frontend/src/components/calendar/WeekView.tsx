@@ -140,7 +140,7 @@ export function WeekView({ weekStartsOn, timeFormat }: WeekViewProps) {
             )}
           >
             <div className="text-xs text-muted-foreground">
-              {day.toLocaleDateString("en-US", { weekday: "short" })}
+              {day.toLocaleDateString(undefined, { weekday: "short" })}
             </div>
             <div
               className={cn(

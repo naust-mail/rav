@@ -162,13 +162,12 @@ function quoteText(text: string): string {
 function formatQuoteDate(iso: string): string {
   try {
     const date = new Date(iso);
-    return date.toLocaleString("en-US", {
+    return date.toLocaleString(undefined, {
       month: "short",
       day: "numeric",
       year: "numeric",
       hour: "numeric",
       minute: "2-digit",
-      hour12: true,
     });
   } catch {
     return iso;

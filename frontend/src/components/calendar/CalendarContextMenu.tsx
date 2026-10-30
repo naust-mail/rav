@@ -177,7 +177,7 @@ export function CalendarContextMenu({ state, onClose, timeFormat, onAddSticker }
               >
                 <Plus className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">
-                  New event on {state.date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  New event on {state.date.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                 </span>
               </button>
               {onAddSticker && (

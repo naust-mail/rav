@@ -136,6 +136,7 @@ describe("CalendarContextMenu", () => {
     const state: CalendarContextMenuState = { x: 0, y: 0, type: "day", date: new Date("2026-06-15") };
     render(<CalendarContextMenu state={state} onClose={vi.fn()} timeFormat="12h" />);
     expect(screen.getByText(/New event on/)).toBeTruthy();
-    expect(screen.getByText(/Jun 15/)).toBeTruthy();
+    const label = state.date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    expect(screen.getByText(new RegExp(label))).toBeTruthy();
   });
 });

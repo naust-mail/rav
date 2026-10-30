@@ -29,7 +29,7 @@ export function CalendarPanel() {
   const { goPrev, goNext } = useCalendarNavigation();
 
   const weekStartsOn = settings?.week_starts_on ?? 0;
-  const timeFormat = settings?.time_format ?? "12h";
+  const timeFormat = settings?.time_format ?? "auto";
 
   // Load the sticker catalog once at panel level (not per view-switch).
   const [stickerCatalog, setStickerCatalog] = useState<StickerDef[]>([]);
