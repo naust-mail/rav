@@ -60,6 +60,18 @@ function bufferToBase64url(buf: ArrayBuffer): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
+// PRF salt arrives base64url-encoded; WebAuthn expects it as binary.
+function prepareExtensions(
+  ext: Record<string, unknown> | undefined,
+): AuthenticationExtensionsClientInputs | undefined {
+  const prf = ext?.prf as { eval?: { first: string } } | undefined;
+  if (!prf?.eval) return ext as AuthenticationExtensionsClientInputs | undefined;
+  return {
+    ...ext,
+    prf: { eval: { first: base64urlToBuffer(prf.eval.first) } },
+  } as AuthenticationExtensionsClientInputs;
+}
+
 function prepareCreationOptions(
   opts: PasskeyRegisterBeginResponse["options"]["publicKey"],
 ): PublicKeyCredentialCreationOptions {
@@ -82,7 +94,7 @@ function prepareCreationOptions(
     })),
     authenticatorSelection: opts.authenticatorSelection as AuthenticatorSelectionCriteria | undefined,
     attestation: opts.attestation as AttestationConveyancePreference | undefined,
-    extensions: opts.extensions,
+    extensions: prepareExtensions(opts.extensions),
   };
 }
 

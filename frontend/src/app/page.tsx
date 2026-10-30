@@ -41,6 +41,22 @@ function bufferToBase64url(buf: ArrayBuffer): string {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 }
 
+// PRF salts arrive base64url-encoded; WebAuthn expects them as binary.
+// Without the PRF extension the server cannot decrypt the IMAP password.
+function prepareExtensions(
+  ext: Record<string, unknown> | undefined,
+): AuthenticationExtensionsClientInputs | undefined {
+  const prf = ext?.prf as
+    | { evalByCredential?: Record<string, { first: string }> }
+    | undefined;
+  if (!prf?.evalByCredential) return undefined;
+  const byCred: Record<string, { first: ArrayBuffer }> = {};
+  for (const [credId, values] of Object.entries(prf.evalByCredential)) {
+    byCred[credId] = { first: base64urlToBuffer(values.first) };
+  }
+  return { prf: { evalByCredential: byCred } } as AuthenticationExtensionsClientInputs;
+}
+
 function preparePublicKeyOptions(
   opts: PasskeyLoginBeginResponse["options"]["publicKey"],
 ): PublicKeyCredentialRequestOptions {
@@ -54,6 +70,7 @@ function preparePublicKeyOptions(
     })),
     userVerification:
       (opts.userVerification as UserVerificationRequirement) ?? "required",
+    extensions: prepareExtensions(opts.extensions),
   };
 }
 
