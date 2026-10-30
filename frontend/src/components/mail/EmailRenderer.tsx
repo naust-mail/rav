@@ -438,6 +438,8 @@ export function EmailRenderer({
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: cid: ${blockRemoteResources ? '' : 'https: http:'}; media-src data:;" />
   <meta name="color-scheme" content="${iframeColorScheme}" />
+  <!-- Don't leak the webmail origin to remote hosts; some CDNs (e.g. LinkedIn) reject foreign referers -->
+  <meta name="referrer" content="no-referrer" />
   <style>
     html {
       background-color: ${iframeBg};
@@ -609,6 +611,7 @@ export function EmailRenderer({
           ref={iframeRef}
           scrolling="no"
           sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+          referrerPolicy="no-referrer"
           srcDoc={wrappedHtml}
           className="w-full border-none"
           style={{
