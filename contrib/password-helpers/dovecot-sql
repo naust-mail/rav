@@ -1,0 +1,77 @@
+#!/usr/bin/bash
+# dovecot-sql — example Rav password helper: change a mailbox password in a Dovecot SQL passdb.
+#
+# Invoked by Rav (PASSWORD_CHANGE_COMMAND) after it has verified the user's
+# current password against IMAP. Contract:
+#   stdin : {"username": "<login as used for IMAP>", "new_password": "<plaintext>"}
+#   exit 0: password updated
+#   exit 1: invalid input
+#   exit 2: no matching active user
+#   exit 3: internal error (hashing, database)
+# Secrets never appear in argv or the environment, and nothing is written to
+# stdout/stderr that contains them.
+#
+# Example for this Dovecot passdb (adapt the UPDATE below to your schema, and
+# drop the domain stripping if your password_query matches '%u'):
+#   password_query = SELECT username, password FROM users
+#                    WHERE username = '%n' AND active=1
+#   - '%n' is the local part of the login, so the domain is stripped here too.
+#   - The hash is stored as {SHA512-CRYPT}$6$..., the prefix makes Dovecot
+#     ignore default_pass_scheme for this row, so hashes in an older scheme
+#     keep working side by side.
+#
+# Database credentials come from a MariaDB option file passed by systemd:
+#   /etc/rav/passwd-db.cnf (root:root 0600):
+#     [client]
+#     user=<helper db user>
+#     password=...
+#     database=<mail db>
+#   systemd drop-in for rav.service:
+#     [Service]
+#     LoadCredential=rav-passwd-db:/etc/rav/passwd-db.cnf
+#   Least-privilege database user:
+#     CREATE USER '<helper db user>'@'localhost' IDENTIFIED BY '...';
+#     GRANT SELECT (username, active), UPDATE (password)
+#       ON <mail db>.users TO '<helper db user>'@'localhost';
+
+set -euo pipefail
+umask 077
+export PATH=/usr/bin:/bin
+export LC_ALL=C
+
+die() { echo "rav-passwd: $2" >&2; exit "$1"; }
+
+db_conf="${CREDENTIALS_DIRECTORY:-}/rav-passwd-db"
+[[ -n "${CREDENTIALS_DIRECTORY:-}" && -r "$db_conf" ]] || die 3 "database credential not available"
+
+# Read both fields NUL-separated so any byte except NUL survives intact.
+{
+    IFS= read -r -d '' username
+    IFS= read -r -d '' new_password
+} < <(jq -j '(.username // empty), "\u0000", (.new_password // empty), "\u0000"' 2>/dev/null) \
+    || die 1 "malformed input"
+
+[[ "$username" =~ ^[A-Za-z0-9._+-]+(@[A-Za-z0-9.-]+)?$ ]] || die 1 "invalid username"
+local_part="${username%%@*}"
+[[ ${#local_part} -le 128 ]] || die 1 "invalid username"
+
+[[ -n "$new_password" ]] || die 1 "empty password"
+[[ ${#new_password} -le 1024 ]] || die 1 "password too long"
+[[ ! "$new_password" =~ [[:cntrl:]] ]] || die 1 "password contains control characters"
+
+# printf is a builtin, so the password only travels through the pipe.
+hash="$(printf '%s\n' "$new_password" | openssl passwd -6 -stdin)" || die 3 "hashing failed"
+unset new_password
+[[ "$hash" =~ ^\$6\$[./A-Za-z0-9]{1,16}\$[./A-Za-z0-9]{86}$ ]] || die 3 "unexpected hash format"
+
+# Both interpolated values are restricted to [A-Za-z0-9._+-] and [./$A-Za-z0-9]
+# above, so they cannot break out of the quoted SQL literals.
+rows="$(mariadb --defaults-file="$db_conf" --batch --skip-column-names <<SQL
+UPDATE users SET password = '{SHA512-CRYPT}${hash}'
+ WHERE username = '${local_part}' AND active = 1 LIMIT 1;
+SELECT ROW_COUNT();
+SQL
+)" || die 3 "database update failed"
+
+[[ "$rows" == "1" ]] || die 2 "no active user matches"
+exit 0

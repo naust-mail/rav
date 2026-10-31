@@ -26,7 +26,9 @@ import {
   usePasskeyDelete,
   usePasskeySetOnly,
 } from "@/hooks/useMfa";
+import { useServerCapability } from "@/hooks/usePgp";
 import { apiPost } from "@/lib/api";
+import { ChangePasswordCard } from "@/components/settings/ChangePasswordCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -136,6 +138,7 @@ export function SecuritySettings() {
   );
 
   const { data: status, isLoading } = useMfaStatus();
+  const canChangePassword = useServerCapability("password_change");
   const setup = useTotpSetup();
   const confirm = useTotpConfirm();
   const remove = useTotpDelete();
@@ -303,9 +306,15 @@ export function SecuritySettings() {
       <div>
         <h2 className="text-base font-semibold">Security</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Manage two-factor authentication for your webmail session.
+          {canChangePassword
+            ? "Manage your password and two-factor authentication."
+            : "Manage two-factor authentication for your webmail session."}
         </p>
       </div>
+
+      {canChangePassword && (
+        <ChangePasswordCard passkeyCount={passkeyCount} passkeyOnly={status?.passkey_only ?? false} />
+      )}
 
       {/* TOTP status card */}
       <div className="rounded-lg border border-border p-4">

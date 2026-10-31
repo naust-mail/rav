@@ -7,12 +7,14 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 
 use crate::auth::imap_auth::{self, AuthResult};
+use crate::auth::password_change;
 use crate::auth::session::{ServerEndpoint, SessionState, SessionStore};
 use crate::auth::user_data;
 use crate::config::AppConfig;
 use crate::db;
 use crate::mfa::crypto::MfaCrypto;
 use crate::mfa::totp;
+use crate::routes::AppServices;
 
 pub const BROWSER_COOKIE: &str = "rav_browser";
 
@@ -845,6 +847,221 @@ pub async fn logout(
     }
 
     response
+}
+
+/// JSON body expected on `POST /api/auth/password`.
+#[derive(Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+fn json_error(status: StatusCode, code: &str, message: &str) -> Response {
+    (
+        status,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "error": {
+                "code": code,
+                "message": message,
+                "status": status.as_u16()
+            }
+        })
+        .to_string(),
+    )
+        .into_response()
+}
+
+/// How often, and how far apart, the new password is tried over IMAP after
+/// the helper reports success. The mail server may cache the old credentials
+/// for a short while (e.g. Dovecot's auth cache).
+const VERIFY_ATTEMPTS: u32 = 3;
+const VERIFY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Try `password` for the session's mailbox with an IMAP login.
+async fn verify_password(
+    session: &SessionState,
+    transport: &crate::mail_transport::MailTransport,
+    password: &str,
+) -> AuthResult {
+    imap_auth::validate_imap_credentials(
+        &session.imap_host,
+        &transport.imap_connect_host,
+        session.imap_port,
+        session.imap_tls,
+        &session.email,
+        password,
+        &transport.imap_connector,
+    )
+    .await
+}
+
+/// `POST /api/auth/password`
+///
+/// Changes the mailbox password through the configured
+/// `PASSWORD_CHANGE_COMMAND`. Requires the current password, verified over
+/// IMAP. On success the current session and the user's background workers
+/// continue with the new password, other sessions of the same mailbox are
+/// signed out, and passkeys (which wrap the old password) are removed.
+pub async fn change_password(
+    Extension(session): Extension<SessionState>,
+    services: AppServices,
+    Json(body): Json<ChangePasswordRequest>,
+) -> Response {
+    let AppServices {
+        config,
+        transport,
+        store,
+        idle_manager,
+        sync_worker_manager,
+        outbox_worker_manager,
+        db_pool_manager,
+        ..
+    } = services;
+
+    let Some(command) = config.password_change_command.as_deref() else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "PASSWORD_CHANGE_DISABLED",
+            "Changing the password is not enabled on this server",
+        );
+    };
+
+    // The helper manages the configured mail server's accounts only, not
+    // those of custom servers users may have signed in to.
+    if config.imap_host.as_deref() != Some(session.imap_host.as_str()) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "PASSWORD_CHANGE_UNAVAILABLE",
+            "The password of this account cannot be changed here",
+        );
+    }
+
+    if body.current_password.is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "BAD_REQUEST", "The current password is required");
+    }
+
+    if let Err(msg) = password_change::validate_new_password(
+        &body.current_password,
+        &body.new_password,
+        config.password_min_length,
+    ) {
+        return json_error(StatusCode::BAD_REQUEST, "INVALID_NEW_PASSWORD", &msg);
+    }
+
+    // Passkey-only accounts would be locked out: their passkeys wrap the old
+    // password and are removed below, and password login is disabled.
+    let passkey_only = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        Ok(db::mfa::get_mfa_settings(conn).map(|s| s.passkey_only).unwrap_or(false))
+    })
+    .await
+    .unwrap_or(false);
+    if passkey_only {
+        return json_error(
+            StatusCode::CONFLICT,
+            "PASSKEY_ONLY",
+            "Turn off passkey-only sign-in before changing your password",
+        );
+    }
+
+    match verify_password(&session, &transport, &body.current_password).await {
+        AuthResult::Success => {}
+        AuthResult::InvalidCredentials => {
+            tracing::warn!(email = %session.email, "password change: current password incorrect");
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "INVALID_CURRENT_PASSWORD",
+                "The current password is incorrect",
+            );
+        }
+        AuthResult::ServerUnreachable(e) => {
+            return json_error(StatusCode::SERVICE_UNAVAILABLE, "SERVER_UNREACHABLE", &e.to_string());
+        }
+    }
+
+    let timeout = std::time::Duration::from_secs(config.password_change_timeout_secs);
+    match password_change::run_helper(command, &session.email, &body.new_password, timeout).await {
+        Ok(()) => {}
+        Err(password_change::ChangeError::Rejected) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "PASSWORD_REJECTED",
+                "The mail server did not accept the new password",
+            );
+        }
+        Err(e) => {
+            tracing::error!(email = %session.email, error = ?e, "password change helper failed");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "PASSWORD_CHANGE_FAILED",
+                "The password could not be changed. Try again later or contact your administrator.",
+            );
+        }
+    }
+
+    let mut verified = false;
+    for attempt in 1..=VERIFY_ATTEMPTS {
+        if matches!(verify_password(&session, &transport, &body.new_password).await, AuthResult::Success) {
+            verified = true;
+            break;
+        }
+        if attempt < VERIFY_ATTEMPTS {
+            tokio::time::sleep(VERIFY_DELAY).await;
+        }
+    }
+    if !verified {
+        tracing::warn!(email = %session.email, "password change: helper succeeded but IMAP does not accept the new password yet");
+    }
+
+    // The helper reported success, so the old password is (or soon will be)
+    // invalid: move everything that logs in on the user's behalf over.
+    let signed_out = store.rotate_password(&session.account_id, &session.user_hash, &body.new_password);
+    sync_worker_manager.update_password(&session.user_hash, &body.new_password);
+    outbox_worker_manager.update_password(&session.user_hash, &body.new_password);
+    idle_manager
+        .restart_with_credentials(
+            &session.user_hash,
+            crate::imap::client::ImapCredentials {
+                host: session.imap_host.clone(),
+                port: session.imap_port,
+                tls: session.imap_tls,
+                email: session.email.clone(),
+                password: body.new_password.clone(),
+            },
+            transport.clone(),
+            sync_worker_manager.clone(),
+        )
+        .await;
+
+    let passkeys_removed = db::pool::with_user_db(&db_pool_manager, &session.user_hash, |conn| {
+        db::mfa::delete_all_passkeys(conn)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::error!(email = %session.email, error = %e, "password change: failed to remove passkeys");
+        0
+    });
+
+    tracing::info!(
+        email = %session.email,
+        verified,
+        other_sessions_signed_out = signed_out,
+        passkeys_removed,
+        "password changed"
+    );
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/json")],
+        serde_json::json!({
+            "status": "changed",
+            "verified": verified,
+            "passkeysRemoved": passkeys_removed,
+            "otherSessionsSignedOut": signed_out,
+        })
+        .to_string(),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

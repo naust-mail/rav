@@ -64,6 +64,36 @@ impl IdleManager {
         }
     }
 
+    /// Restart a user's running IDLE tasks with new credentials (after a
+    /// password change), so a reconnect doesn't log in with the old password.
+    pub async fn restart_with_credentials(
+        &self,
+        user_hash: &str,
+        creds: ImapCredentials,
+        transport: Arc<MailTransport>,
+        sync_worker_manager: Arc<crate::realtime::worker::SyncWorkerManager>,
+    ) {
+        let folders: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|entry| entry.key().0 == user_hash)
+            .map(|entry| entry.key().1.clone())
+            .collect();
+
+        self.stop_all(user_hash).await;
+
+        for folder in folders {
+            self.start_idle(
+                user_hash.to_string(),
+                folder,
+                creds.clone(),
+                transport.clone(),
+                sync_worker_manager.clone(),
+            )
+            .await;
+        }
+    }
+
     /// Stop all IDLE tasks for a user (called on WebSocket disconnect).
     pub async fn stop_all(&self, user_hash: &str) {
         let keys_to_remove: Vec<_> = self

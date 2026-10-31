@@ -143,9 +143,32 @@ All configuration is via environment variables. The essentials:
 | `RSPAMD_URL`                 | none          | Base URL for rspamd's HTTP API; enables spam/ham training when set             |
 | `LINK_PROXY_ENABLED`         | `false`       | Rewrite links in rendered emails through an HMAC-signed proxy                  |
 | `TRUSTED_PROXIES`            | none          | Comma-separated CIDRs whose forwarded-IP headers are trusted for rate limiting |
+| `PASSWORD_CHANGE_COMMAND`    | none          | Helper program that changes mailbox passwords; enables Settings → Security → Password |
+| `PASSWORD_MIN_LENGTH`        | `8`           | Minimum length of a new password                                              |
+| `PASSWORD_CHANGE_TIMEOUT_SECS` | `10`        | Seconds the password helper may run before it is killed                       |
 | `RUST_LOG`                   | `info`        | Log level filter                                                               |
 
 </details>
+
+### Password changes
+
+IMAP has no command to change a password, so Rav delegates it to a helper
+program that knows where your mail server keeps its credentials. Set
+`PASSWORD_CHANGE_COMMAND` to its path to let users change their password
+under Settings → Security. Rav first checks the current password over IMAP,
+then runs the helper with `{"username": "...", "new_password": "..."}` as
+JSON on stdin (never in argv or the environment). Exit status `0` means
+changed, `1` new password rejected, `2` unknown user, anything else failure.
+The helper runs with an empty environment apart from `PATH` and systemd's
+`CREDENTIALS_DIRECTORY`, so database secrets can be supplied with
+`LoadCredential=`.
+
+After a change, the user's other sessions are signed out and their passkeys,
+which wrap the old password, are removed. Accounts on custom mail servers
+cannot change their password.
+
+[`contrib/password-helpers/dovecot-sql`](contrib/password-helpers/dovecot-sql)
+is an example helper for Dovecot with a MySQL/MariaDB passdb.
 
 ## Architecture
 

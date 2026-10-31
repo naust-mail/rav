@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -49,6 +49,9 @@ pub struct SyncWorkerManager {
     db_pool_manager: Arc<db::pool::DbPoolManager>,
     bells: DashMap<String, Arc<Notify>>,
     tasks: DashMap<String, JoinHandle<()>>,
+    /// Credentials of each running worker, read at the start of every cycle
+    /// so `update_password` reaches a worker without restarting it.
+    creds: DashMap<String, Arc<RwLock<ImapCredentials>>>,
 }
 
 impl SyncWorkerManager {
@@ -71,6 +74,7 @@ impl SyncWorkerManager {
             db_pool_manager,
             bells: DashMap::new(),
             tasks: DashMap::new(),
+            creds: DashMap::new(),
         }
     }
 
@@ -88,6 +92,8 @@ impl SyncWorkerManager {
 
         let bell = Arc::new(Notify::new());
         self.bells.insert(user_hash.clone(), bell.clone());
+        let creds = Arc::new(RwLock::new(creds));
+        self.creds.insert(user_hash.clone(), creds.clone());
 
         let worker_user_hash = user_hash.clone();
         let worker_bell = bell.clone();
@@ -107,6 +113,15 @@ impl SyncWorkerManager {
 
         bell
     }
+
+    /// Hand a running worker the user's new password (after a password
+    /// change). A worker that isn't running picks up fresh credentials from
+    /// whoever spawns it next.
+    pub fn update_password(&self, user_hash: &str, password: &str) {
+        if let Some(creds) = self.creds.get(user_hash) {
+            creds.write().unwrap_or_else(|e| e.into_inner()).password = password.to_string();
+        }
+    }
 }
 
 /// Long-lived services a sync worker's cycle needs, bundled so `worker_loop`
@@ -122,7 +137,7 @@ struct WorkerDeps {
     db_pool_manager: Arc<db::pool::DbPoolManager>,
 }
 
-async fn worker_loop(user_hash: String, creds: ImapCredentials, deps: WorkerDeps, bell: Arc<Notify>) {
+async fn worker_loop(user_hash: String, shared_creds: Arc<RwLock<ImapCredentials>>, deps: WorkerDeps, bell: Arc<Notify>) {
     let WorkerDeps { config, imap_client, event_bus, search_engine, smtp_client, transport, db_pool_manager } = deps;
     loop {
         tokio::select! {
@@ -133,6 +148,7 @@ async fn worker_loop(user_hash: String, creds: ImapCredentials, deps: WorkerDeps
             }
         }
 
+        let creds = shared_creds.read().unwrap_or_else(|e| e.into_inner()).clone();
         let max_uid_before = inbox_max_uid(&db_pool_manager, &user_hash).await;
 
         match tokio::time::timeout(

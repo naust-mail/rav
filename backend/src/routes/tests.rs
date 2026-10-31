@@ -47,6 +47,9 @@
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         })
     }
 
@@ -80,6 +83,9 @@
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         })
     }
 
@@ -113,6 +119,9 @@
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         })
     }
 
@@ -224,6 +233,9 @@
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         }).expect("test PasskeyService with WebAuthn"))
     }
 
@@ -257,6 +269,9 @@
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         }).expect("test PasskeyService"))
     }
 
@@ -3340,4 +3355,178 @@
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // Password change
+    // -----------------------------------------------------------------------
+
+    /// Config with a password change helper for the mail server the test
+    /// accounts use ("imap.example.com"). The helper is never reached by
+    /// these tests: they all stop before the IMAP check of the current password.
+    fn password_change_config(data_dir: &str) -> Arc<AppConfig> {
+        let mut config = (*test_config("/tmp")).clone();
+        config.imap_host = Some("imap.example.com".to_string());
+        config.data_dir = data_dir.to_string();
+        config.password_change_command = Some("/nonexistent/rav-passwd".to_string());
+        Arc::new(config)
+    }
+
+    async fn post_password_change(
+        app: Router,
+        store: &SessionStore,
+        email: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let (browser_id, account_id, token) = setup_test_account(store, email);
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/password")
+            .header("content-type", "application/json")
+            .header("x-requested-with", "XMLHttpRequest");
+        for (name, value) in auth_headers(&browser_id, &account_id, &token) {
+            req = req.header(name, value);
+        }
+        let response = app
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn password_change_without_helper_returns_404() {
+        let store = test_store();
+        let app = create_router(AppServices { store: store.clone(), ..test_services("/tmp") });
+
+        let (status, json) = post_password_change(
+            app,
+            &store,
+            "alice@example.com",
+            serde_json::json!({ "current_password": "old-password", "new_password": "new-password" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(json["error"]["code"], "PASSWORD_CHANGE_DISABLED");
+    }
+
+    #[tokio::test]
+    async fn password_change_for_custom_server_account_returns_403() {
+        let data_dir = TempDir::new().unwrap();
+        let mut config = (*password_change_config(data_dir.path().to_str().unwrap())).clone();
+        config.imap_host = Some("mail.other.example".to_string());
+        let store = test_store();
+        let app = create_router(AppServices { config: Arc::new(config), store: store.clone(), ..test_services("/tmp") });
+
+        let (status, json) = post_password_change(
+            app,
+            &store,
+            "alice@example.com",
+            serde_json::json!({ "current_password": "old-password", "new_password": "new-password" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json["error"]["code"], "PASSWORD_CHANGE_UNAVAILABLE");
+    }
+
+    #[tokio::test]
+    async fn password_change_rejects_short_new_password() {
+        let data_dir = TempDir::new().unwrap();
+        let config = password_change_config(data_dir.path().to_str().unwrap());
+        let store = test_store();
+        let app = create_router(AppServices { config, store: store.clone(), ..test_services("/tmp") });
+
+        let (status, json) = post_password_change(
+            app,
+            &store,
+            "alice@example.com",
+            serde_json::json!({ "current_password": "old-password", "new_password": "short" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json["error"]["code"], "INVALID_NEW_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn password_change_requires_current_password() {
+        let data_dir = TempDir::new().unwrap();
+        let config = password_change_config(data_dir.path().to_str().unwrap());
+        let store = test_store();
+        let app = create_router(AppServices { config, store: store.clone(), ..test_services("/tmp") });
+
+        let (status, _) = post_password_change(
+            app,
+            &store,
+            "alice@example.com",
+            serde_json::json!({ "current_password": "", "new_password": "new-password" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn password_change_refused_in_passkey_only_mode() {
+        let data_dir = TempDir::new().unwrap();
+        let data_path = data_dir.path().to_str().unwrap();
+        let user_hash = crate::auth::user_data::hash_email("alice@example.com");
+        provision_user_db(data_path, &user_hash);
+        crate::db::mfa::set_passkey_only(&test_open_db(data_path, &user_hash), true).unwrap();
+
+        let config = password_change_config(data_path);
+        let store = test_store();
+        let app = create_router(AppServices {
+            config,
+            store: store.clone(),
+            db_pool_manager: test_db_pool_manager(data_path),
+            ..test_services("/tmp")
+        });
+
+        let (status, json) = post_password_change(
+            app,
+            &store,
+            "alice@example.com",
+            serde_json::json!({ "current_password": "old-password", "new_password": "new-password" }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"]["code"], "PASSKEY_ONLY");
+    }
+
+    #[tokio::test]
+    async fn password_change_requires_auth() {
+        let app = create_router(test_services("/tmp"));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/password")
+                    .header("content-type", "application/json")
+                    .header("x-requested-with", "XMLHttpRequest")
+                    .body(Body::from(r#"{"current_password":"a","new_password":"b"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn health_reports_password_change_capability() {
+        let data_dir = TempDir::new().unwrap();
+        let config = password_change_config(data_dir.path().to_str().unwrap());
+        let app = create_router(AppServices { config, ..test_services("/tmp") });
+        let response = app
+            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["capabilities"].as_array().unwrap().contains(&serde_json::json!("password_change")));
     }

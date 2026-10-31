@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
@@ -61,6 +61,9 @@ fn parse_iso(ts: &str) -> Option<DateTime<Utc>> {
 struct Worker {
     bell: Arc<Notify>,
     handle: JoinHandle<()>,
+    /// Read before each batch of sends, so `update_password` reaches a
+    /// running worker without interrupting a send in progress.
+    creds: Arc<RwLock<SendCredentials>>,
 }
 
 pub struct OutboxWorkerManager {
@@ -114,7 +117,8 @@ impl OutboxWorkerManager {
 
                 let worker_user_hash = user_hash.clone();
                 let worker_bell = bell.clone();
-                let creds = SendCredentials { user_hash: worker_user_hash, email, password };
+                let creds = Arc::new(RwLock::new(SendCredentials { user_hash: worker_user_hash, email, password }));
+                let worker_creds = creds.clone();
                 let deps = OutboxDeps {
                     config: self.config.clone(),
                     imap_client: self.imap_client.clone(),
@@ -124,16 +128,24 @@ impl OutboxWorkerManager {
                     db_pool_manager: self.db_pool_manager.clone(),
                 };
                 let handle = tokio::spawn(async move {
-                    worker_loop(creds, deps, worker_bell).await;
+                    worker_loop(worker_creds, deps, worker_bell).await;
                 });
 
                 match entry {
-                    Entry::Occupied(mut occupied) => { occupied.insert(Worker { bell: bell.clone(), handle }); }
-                    Entry::Vacant(vacant) => { vacant.insert(Worker { bell: bell.clone(), handle }); }
+                    Entry::Occupied(mut occupied) => { occupied.insert(Worker { bell: bell.clone(), handle, creds }); }
+                    Entry::Vacant(vacant) => { vacant.insert(Worker { bell: bell.clone(), handle, creds }); }
                 }
 
                 bell
             }
+        }
+    }
+
+    /// Hand a running worker the user's new password (after a password
+    /// change). Sends already in progress finish with the old one.
+    pub fn update_password(&self, user_hash: &str, password: &str) {
+        if let Some(worker) = self.workers.get(user_hash) {
+            worker.creds.write().unwrap_or_else(|e| e.into_inner()).password = password.to_string();
         }
     }
 }
@@ -151,8 +163,8 @@ struct OutboxDeps {
     db_pool_manager: Arc<db::pool::DbPoolManager>,
 }
 
-async fn worker_loop(creds: SendCredentials, deps: OutboxDeps, bell: Arc<Notify>) {
-    let user_hash = creds.user_hash.clone();
+async fn worker_loop(shared_creds: Arc<RwLock<SendCredentials>>, deps: OutboxDeps, bell: Arc<Notify>) {
+    let user_hash = shared_creds.read().unwrap_or_else(|e| e.into_inner()).user_hash.clone();
     let db_pool_manager = deps.db_pool_manager.clone();
     loop {
         let due_result = db::pool::with_user_db(&db_pool_manager, &user_hash, |conn| {
@@ -171,6 +183,7 @@ async fn worker_loop(creds: SendCredentials, deps: OutboxDeps, bell: Arc<Notify>
 
         tracing::debug!(user_hash = %user_hash, due_count = due.len(), "Outbox worker: tick");
 
+        let creds = shared_creds.read().unwrap_or_else(|e| e.into_inner()).clone();
         for entry in due {
             process_entry(&entry, &creds, &deps).await;
         }

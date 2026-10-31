@@ -18,6 +18,7 @@ use crate::smtp::types::{PgpMode, PgpSendParams};
 /// (from the live session) and passed down to `perform_send`. The outbox
 /// worker builds this same shape from the credentials it holds in memory
 /// for the user's worker task.
+#[derive(Clone)]
 pub(crate) struct SendCredentials {
     pub user_hash: String,
     pub email: String,

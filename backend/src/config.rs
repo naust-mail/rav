@@ -139,6 +139,22 @@ pub struct AppConfig {
     /// When exceeded, the least-recently-used pool is evicted to make room.
     #[serde(default = "default_db_pool_max_users")]
     pub db_pool_max_users: usize,
+
+    /// Absolute path of a helper program that changes a mailbox password in
+    /// whatever store the mail server authenticates against. When unset,
+    /// password changes are disabled. The helper receives
+    /// `{"username": ..., "new_password": ...}` as JSON on stdin and exits 0
+    /// on success, 1 for a rejected password, 2 when the user is unknown.
+    #[serde(default)]
+    pub password_change_command: Option<String>,
+
+    /// Minimum length (in characters) of a new password.
+    #[serde(default = "default_password_min_length")]
+    pub password_min_length: usize,
+
+    /// Seconds the password change helper may run before it is killed.
+    #[serde(default = "default_password_change_timeout_secs")]
+    pub password_change_timeout_secs: u64,
 }
 
 fn default_pgp_enabled() -> bool {
@@ -201,6 +217,14 @@ fn default_db_pool_max_users() -> usize {
     500
 }
 
+fn default_password_min_length() -> usize {
+    8
+}
+
+fn default_password_change_timeout_secs() -> u64 {
+    10
+}
+
 impl AppConfig {
     /// Load configuration by layering serde defaults with environment variables.
     ///
@@ -239,6 +263,9 @@ mod tests {
         assert_eq!(config.db_pool_max_connections_per_user, 4);
         assert_eq!(config.db_pool_idle_timeout_secs, 600);
         assert_eq!(config.db_pool_max_users, 500);
+        assert!(config.password_change_command.is_none());
+        assert_eq!(config.password_min_length, 8);
+        assert_eq!(config.password_change_timeout_secs, 10);
     }
 
     #[test]

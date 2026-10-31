@@ -335,6 +335,13 @@ pub fn delete_passkey(conn: &Connection, credential_id: &str) -> Result<bool, St
     Ok(n > 0)
 }
 
+/// Delete every passkey (they wrap the old password after a password
+/// change). Returns how many were deleted.
+pub fn delete_all_passkeys(conn: &Connection) -> Result<usize, String> {
+    conn.execute("DELETE FROM mfa_passkeys", [])
+        .map_err(|e| format!("DB error deleting passkeys: {e}"))
+}
+
 // ---------------------------------------------------------------------------
 // MFA settings
 // ---------------------------------------------------------------------------

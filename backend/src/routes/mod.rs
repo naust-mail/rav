@@ -234,7 +234,16 @@ pub fn create_router(svc: AppServices) -> Router {
         .expect("valid governor config");
 
     let login_governor = GovernorConfigBuilder::default()
-        .key_extractor(key_extractor)
+        .key_extractor(key_extractor.clone())
+        .period(Duration::from_secs(12))
+        .burst_size(5)
+        .finish()
+        .expect("valid governor config");
+
+    // Password change verifies the current password over IMAP, so it gets
+    // the same per-IP limit as login against guessing with a stolen session.
+    let password_governor = GovernorConfigBuilder::default()
+        .key_extractor(key_extractor.clone())
         .period(Duration::from_secs(12))
         .burst_size(5)
         .finish()
@@ -266,11 +275,19 @@ pub fn create_router(svc: AppServices) -> Router {
         .layer(middleware::from_fn(auth_guard))
         .layer(middleware::from_fn(csrf_protection));
 
+    // Password change: GovernorLayer (outermost) -> CSRF -> auth_guard -> handler.
+    let password_auth = Router::new()
+        .route("/password", post(auth::change_password))
+        .layer(middleware::from_fn(auth_guard))
+        .layer(middleware::from_fn(csrf_protection))
+        .layer(GovernorLayer::new(password_governor));
+
     let auth_router = Router::new()
         .merge(public_passkey)
         .merge(public_auth)
         .merge(browser_routes)
-        .merge(protected_auth);
+        .merge(protected_auth)
+        .merge(password_auth);
 
     // Protected data routes (auth_guard + CSRF).
     let protected_data = Router::new()

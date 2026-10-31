@@ -22,6 +22,9 @@ pub async fn health_check(
     if config.pgp_enabled {
         capabilities.push("pgp");
     }
+    if config.password_change_command.is_some() {
+        capabilities.push("password_change");
+    }
     Json(HealthResponse {
         status: "ok".to_string(),
         capabilities,
@@ -73,6 +76,9 @@ mod tests {
             db_pool_max_connections_per_user: 4,
             db_pool_idle_timeout_secs: 600,
             db_pool_max_users: 500,
+            password_change_command: None,
+            password_min_length: 8,
+            password_change_timeout_secs: 10,
         });
         let store = Arc::new(SessionStore::new(Duration::from_secs(3600)));
         let transport = Arc::new(crate::mail_transport::MailTransport {

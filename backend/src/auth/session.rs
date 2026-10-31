@@ -163,6 +163,27 @@ impl SessionStore {
             .collect()
     }
 
+    /// Apply a mailbox password change: store `new_password` in the session
+    /// of `account_id` and sign out every other session of the same mailbox
+    /// (same `user_hash`), in any browser. Returns how many were signed out.
+    pub fn rotate_password(&self, account_id: &str, user_hash: &str, new_password: &str) -> usize {
+        // Collect first: removing while iterating a DashMap would deadlock.
+        let others: Vec<AccountId> = self
+            .sessions
+            .iter()
+            .filter(|s| s.user_hash == user_hash && s.account_id != account_id)
+            .map(|s| s.account_id.clone())
+            .collect();
+
+        if let Some(session_id) = self.account_to_session.get(account_id).map(|s| s.value().clone())
+            && let Some(mut session) = self.sessions.get_mut(&session_id)
+        {
+            session.password = new_password.to_string();
+        }
+
+        others.iter().filter(|id| self.remove_account(id)).count()
+    }
+
     pub fn browser_exists(&self, browser_id: &str) -> bool {
         self.browsers.contains_key(browser_id)
     }
@@ -934,5 +955,25 @@ mod tests {
             !store.account_to_session.contains_key(&account_id),
             "account_to_session should be cleaned up via get_account_session"
         );
+    }
+
+    #[test]
+    fn rotate_password_updates_current_and_signs_out_other_sessions() {
+        let store = long_lived_store();
+        let imap = || ServerEndpoint { host: "imap.example.com".into(), port: 993, tls: true };
+        let smtp = || ServerEndpoint { host: "smtp.example.com".into(), port: 587, tls: true };
+
+        let laptop = store.create_browser();
+        let phone = store.create_browser();
+        let (token, account_id) = store.add_account_to_browser(&laptop, "user@example.com".into(), "old".into(), "hash".into(), imap(), smtp());
+        let (phone_token, phone_account) = store.add_account_to_browser(&phone, "user@example.com".into(), "old".into(), "hash".into(), imap(), smtp());
+        let (other_token, _) = store.add_account_to_browser(&laptop, "other@example.com".into(), "theirs".into(), "other-hash".into(), imap(), smtp());
+
+        assert_eq!(store.rotate_password(&account_id, "hash", "new"), 1);
+
+        assert_eq!(store.get(&token).unwrap().password, "new");
+        assert!(store.get(&phone_token).is_none());
+        assert!(store.get_account_session(&phone, &phone_account, &phone_token).is_none());
+        assert_eq!(store.get(&other_token).unwrap().password, "theirs");
     }
 }

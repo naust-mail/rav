@@ -1,5 +1,5 @@
 /** Optional capability flags exposed by the server's health endpoint. */
-export type ServerCapability = 'pgp';
+export type ServerCapability = 'pgp' | 'password_change';
 
 /** Response shape of `GET /api/health`. */
 export type HealthResponse = {
